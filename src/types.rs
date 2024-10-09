@@ -1,0 +1,142 @@
+//Various byte-tables and hashing methods are taken from miniprot by Heng Li. Attached below is their license:
+//The MIT License
+
+// **** miniprot LICENSE ***
+//Copyright (c) 2022-     Dana-Farber Cancer Institute
+//
+//Permission is hereby granted, free of charge, to any person obtaining
+//a copy of this software and associated documentation files (the
+//"Software"), to deal in the Software without restriction, including
+//without limitation the rights to use, copy, modify, merge, publish,
+//distribute, sublicense, and/or sell copies of the Software, and to
+//permit persons to whom the Software is furnished to do so, subject to
+//the following conditions:
+//
+//The above copyright notice and this permission notice shall be
+//included in all copies or substantial portions of the Software.
+//
+//THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+//EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+//MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+//NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+//BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+//ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+//CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+//SOFTWARE.
+//******************************
+
+
+use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::collections::HashSet;
+use smallvec::SmallVec;
+use serde::{Deserialize, Serialize};
+use fxhash::FxHashMap;
+use fxhash::FxHashSet;
+
+pub type Kmer64 = u64;
+pub type Kmer32 = u32;
+pub type KmerHash64 = u64;
+pub type KmerHash32 = u32;
+
+pub const BYTE_TO_SEQ: [u8; 256] = [
+    0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+#[inline]
+pub fn mm_hash(bytes: &[u8]) -> usize {
+    let mut key = usize::from_ne_bytes(bytes.try_into().unwrap()) as usize;
+    key = (!key).wrapping_add(key << 21); // key = (key << 21) - key - 1;
+    key = key ^ key >> 24;
+    key = (key.wrapping_add(key << 3)).wrapping_add(key << 8); // key * 265
+    key = key ^ key >> 14;
+    key = (key.wrapping_add(key << 2)).wrapping_add(key << 4); // key * 21
+    key = key ^ key >> 28;
+    key = key.wrapping_add(key << 31);
+    return key;
+}
+
+pub struct MMHasher {
+    hash: usize,
+}
+
+impl Hasher for MMHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        self.hash = mm_hash(bytes);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.hash as u64
+    }
+}
+
+impl Default for MMHasher {
+    #[inline]
+    fn default() -> MMHasher {
+        MMHasher { hash: 0 }
+    }
+}
+
+//Implement minimap2 hashing, will test later.
+pub type MMBuildHasher = BuildHasherDefault<MMHasher>;
+pub type MMHashMap<K, V> = HashMap<K, V, MMBuildHasher>;
+pub type MMHashSet<K> = HashSet<K, MMBuildHasher>;
+
+// Take a bit-encoded k-mer (k <= 32) and decode it as a string of ACGT
+
+pub fn decode_kmer(kmer: Kmer64, k: u8) -> String {
+    let mut seq = String::new();
+    for i in 0..k {
+        let c = (kmer >> (i * 2)) & 0b11;
+        seq.push(match c {
+            0 => 'A',
+            1 => 'C',
+            2 => 'G',
+            3 => 'T',
+            _ => unreachable!(),
+        });
+    }
+    //reverse string
+    seq.chars().rev().collect()
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct PreFragment {
+    pub kmers_with_refpos: Vec<(Kmer64,u64)>,
+    pub upper_base:usize,
+    pub lower_base: usize,
+    pub id: String,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VarmerFragment {
+    pub upper: usize,
+    pub lower: usize,
+    pub varmers: FxHashSet<usize>,
+    pub upper_base:usize,
+    pub lower_base: usize,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct Varmer{
+    pub kmer: Kmer64,
+    pub count: u32,
+    pub pos: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub struct BasePileup
+{
+    pub ref_pos: u64,
+    pub ref_base: u8,
+    pub base_freqs: [u32; 4],
+}
