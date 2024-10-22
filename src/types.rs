@@ -25,14 +25,13 @@
 //SOFTWARE.
 //******************************
 
-
-use std::collections::HashMap;
-use std::hash::{BuildHasherDefault, Hasher};
-use std::collections::HashSet;
-use smallvec::SmallVec;
-use serde::{Deserialize, Serialize};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
+use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::hash::{BuildHasherDefault, Hasher};
 
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
@@ -110,8 +109,8 @@ pub fn decode_kmer(kmer: Kmer64, k: u8) -> String {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct PreFragment {
-    pub kmers_with_refpos: Vec<(Kmer64,u64)>,
-    pub upper_base:usize,
+    pub kmers_with_refpos: Vec<(Kmer64, u64)>,
+    pub upper_base: usize,
     pub lower_base: usize,
     pub id: String,
 }
@@ -121,22 +120,224 @@ pub struct VarmerFragment {
     pub upper: usize,
     pub lower: usize,
     pub varmers: FxHashSet<usize>,
-    pub upper_base:usize,
+    pub upper_base: usize,
     pub lower_base: usize,
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub struct Varmer{
+pub struct Varmer {
     pub kmer: Kmer64,
     pub count: u32,
     pub pos: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
-pub struct BasePileup
-{
+pub struct BasePileup {
     pub ref_pos: u64,
     pub ref_base: u8,
     pub base_freqs: [u32; 4],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, Default)]
+pub struct TigdexOverlap {
+    pub tig1: usize,
+    pub tig2: usize,
+    pub tig1_start: usize,
+    pub tig1_end: usize,
+    pub tig2_start: usize,
+    pub tig2_end: usize,
+    pub shared_tig: usize,
+    pub variable_roots: usize,
+    pub variable_tigs: usize,
+    pub chain_reverse: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ChainInfo {
+    pub chain: Vec<(usize, usize, usize)>,
+    pub reverse: bool,
+    pub score: f64,
+}
+
+pub type EdgeIndex = usize;
+pub type NodeIndex = usize;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
+pub struct ReadData {
+    pub index: NodeIndex,
+    pub in_edges: Vec<EdgeIndex>,
+    pub out_edges: Vec<EdgeIndex>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
+pub struct ReadOverlapEdge {
+    pub node1: NodeIndex,
+    pub node2: NodeIndex,
+    pub forward1: bool,
+    pub forward2: bool,
+    pub overlap_len_bases: usize,
+    pub overlap_len_tigs: usize,
+    pub shared_tigs: usize,
+    pub variable_tigs: usize,
+    pub variable_roots: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct OverlapGraph {
+    pub reads: Vec<TigRead>,
+    pub nodes: FxHashMap<NodeIndex, ReadData>,
+    pub edges: Vec<Option<ReadOverlapEdge>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TigRead {
+    pub tig_seq: Vec<u32>,
+    pub id: String,
+}
+
+// Transitive reduction implementation
+impl OverlapGraph {
+    pub fn other_node(&self, node: NodeIndex, edge: &ReadOverlapEdge) -> NodeIndex {
+        if edge.node1 == node {
+            edge.node2
+        } else {
+            edge.node1
+        }
+    }
+    pub fn transitive_reduction(&mut self) {
+        const FUZZ: usize = 10;
+
+        // Initialize reduce array for edges
+        let mut reduce = vec![false; self.edges.len()];
+        let mut mark: HashMap<NodeIndex, Mark> = HashMap::new();
+
+        // Step 1: Mark all nodes as vacant initially and set reduce to false for all edges
+        for (node_id, node_data) in self.nodes.iter() {
+            mark.insert(*node_id, Mark::Vacant);
+            for &edge_id in &node_data.out_edges {
+                reduce[edge_id] = false;
+            }
+        }
+
+        // Step 2: Iterate over all edges, marking nodes and evaluating paths
+        for (node_id, node_data) in self.nodes.iter() {
+            let sorted_all_edges = self.get_edges_sorted_by_length(*node_id);
+
+            for &(length, edge_id, outer) in sorted_all_edges.iter() {
+                let edge = self.edges[edge_id].as_ref().unwrap();
+                let other_node = self.other_node(*node_id, edge);
+                mark.insert(other_node, Mark::InPlay);
+            }
+
+            let longest = sorted_all_edges.last().unwrap().0 + FUZZ;
+
+            for &(length, edge_id, outer) in sorted_all_edges.iter() {
+                let edge = self.edges[edge_id].as_ref().unwrap();
+                let other_node = self.other_node(*node_id, edge);
+                let outgoing = self.outgoing_edge(other_node, edge_id);
+                for &(length2, edge_id2, outer2) in &self.get_edges_sorted_by_length(other_node) {
+                    //outgoing edge for other node, requires incoming
+                    if outgoing && outer2{
+                        continue
+                    }
+                    //incoming edge for other node, requires outgoing
+                    if !outgoing && !outer2{
+                        continue
+                    }
+                    if edge_id2 == edge_id{
+                        continue
+                    }
+                    let next_edge = self.edges[edge_id2].as_ref().unwrap();
+                    let third_node = self.other_node(other_node, next_edge);
+                    if mark.get(&third_node).unwrap() == &Mark::InPlay {
+                        let lensum = if length + length2 < self.reads[other_node].tig_seq.len() {0} else {length + length2 - self.reads[other_node].tig_seq.len()};
+                        if lensum <= longest + FUZZ || true
+                        {
+                            if let Some(true) =
+                                mark.get(&third_node).map(|m| *m == Mark::InPlay)
+                            {
+                                mark.insert(third_node, Mark::Eliminated);
+                                println!("Eliminated edge from {} to {}, length1 {}, length2 {}, longets {}, lensum {}, edge_info1 {:?}, edge_info2 {:?}, outgoing_edge {}, direction_out {}", node_id, third_node, length, length2, longest, lensum, &edge, &next_edge, outer2, outgoing);
+                            }
+                        }
+                    }
+                }
+            }
+            // Step 3: Final pass to mark reduced edges
+            for &edge_id in node_data.out_edges.iter().chain(node_data.in_edges.iter()){
+                let edge = self.edges[edge_id].as_ref().unwrap();
+                let other_node = self.other_node(*node_id, edge);
+                if let Some(Mark::Eliminated) = mark.get(&other_node) {
+                    reduce[edge_id] = true;
+                }
+            }
+        }
+
+        // Apply reduction by removing edges
+        for (i, &reduced) in reduce.iter().enumerate() {
+            if reduced {
+                self.edges[i] = None; // Remove reduced edges
+            }
+        }
+
+        for (_, node_data) in self.nodes.iter_mut() {
+            node_data.out_edges.retain(|&edge_id| self.edges[edge_id].is_some());
+            node_data.in_edges.retain(|&edge_id| self.edges[edge_id].is_some());
+        }
+    }
+
+    fn get_edges_sorted_by_length(&self, node_id: NodeIndex) -> Vec<(usize, EdgeIndex, bool)> {
+        let mut sorted_all_edges = vec![];
+        let node_data = self.nodes.get(&node_id).unwrap();
+        for (l, edge_ind) in node_data
+            .out_edges
+            .iter()
+            .chain(node_data.in_edges.iter())
+            .enumerate()
+        {
+            let outer;
+            if l < node_data.out_edges.len() {
+                outer = true;
+            } else {
+                outer = false;
+            }
+            let edge = self.edges[*edge_ind].as_ref().unwrap();
+            let n1 = self.nodes.get(&edge.node1).unwrap();
+            let n2 = self.nodes.get(&edge.node2).unwrap();
+            let string_length = self.reads[n1.index].tig_seq.len()
+                + self.reads[n2.index].tig_seq.len()
+                - edge.shared_tigs;
+            sorted_all_edges.push((string_length, *edge_ind, outer));
+        }
+        sorted_all_edges.sort();
+        sorted_all_edges
+    }
+
+    fn outgoing_edge(&self, node_id: NodeIndex, edge_id: EdgeIndex) -> bool {
+        let edge = self.edges[edge_id].as_ref().unwrap();
+        if edge.node1 == node_id {
+            if edge.forward1{
+                true
+            }
+            else{
+                false
+            }
+        } else {
+            if edge.forward2{
+                false
+            }
+            else{
+                true
+            }
+        }
+    }
+}
+
+// Enum for marking the state of a node during processing
+#[derive(PartialEq, Eq, Clone)]
+enum Mark {
+    Vacant,
+    InPlay,
+    Eliminated,
 }
