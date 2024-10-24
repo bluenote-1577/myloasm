@@ -1,4 +1,5 @@
 use crate::types::*;
+use fxhash::FxHashSet;
 
 //create new alias kmer = u64
 pub type Kmer64 = u64;
@@ -303,4 +304,156 @@ pub fn fmh_seeds_positions(
             positions.push((i + 1 - k) as u64);
         }
     }
+}
+
+pub fn get_twin_read(
+    string: Vec<u8>,
+    k: usize,
+    c: usize,
+    snpmer_set: &FxHashSet<u64>,
+    id: String,
+) -> Option<TwinRead> {
+
+    let mut snpmers_in_read = vec![];
+    let mut minimizers_in_read = vec![];
+    let marker_k = k;
+
+    type MarkerBits = u64;
+    if string.len() < k {
+        return None;
+    }
+
+    let mut rolling_kmer_f_marker: MarkerBits = 0;
+    let mut rolling_kmer_r_marker: MarkerBits = 0;
+
+    let marker_reverse_shift_dist = 2 * (marker_k - 1);
+
+    let marker_mask = MarkerBits::MAX >> (std::mem::size_of::<MarkerBits>() * 8 - 2 * marker_k);
+    let marker_rev_mask = !(3 << (2 * marker_k - 2));
+    let len = string.len();
+    let threshold = u64::MAX / (c as u64);
+
+    for i in 0..marker_k - 1 {
+        let nuc_f = BYTE_TO_SEQ[string[i] as usize] as u64;
+        let nuc_r = 3 - nuc_f;
+        rolling_kmer_f_marker <<= 2;
+        rolling_kmer_f_marker |= nuc_f;
+        rolling_kmer_r_marker >>= 2;
+        rolling_kmer_r_marker |= nuc_r << marker_reverse_shift_dist;
+    }
+
+    for i in marker_k-1..len {
+        let nuc_byte = string[i] as usize;
+        let nuc_f = BYTE_TO_SEQ[nuc_byte] as u64;
+        let nuc_r = 3 - nuc_f;
+        rolling_kmer_f_marker <<= 2;
+        rolling_kmer_f_marker |= nuc_f;
+        rolling_kmer_f_marker &= marker_mask;
+        rolling_kmer_r_marker >>= 2;
+        rolling_kmer_r_marker &= marker_rev_mask;
+        rolling_kmer_r_marker |= nuc_r << marker_reverse_shift_dist;
+
+        let split_mask = !(3 << (k-1));
+        let split_f = rolling_kmer_f_marker & split_mask;
+        let split_r = rolling_kmer_r_marker & split_mask;
+    
+        let canonical_marker = split_f < split_r;
+        let canonical_kmer_marker; 
+        if canonical_marker {
+            canonical_kmer_marker = rolling_kmer_f_marker;
+        } else {
+            canonical_kmer_marker = rolling_kmer_r_marker;
+        };
+        
+        if snpmer_set.contains(&canonical_kmer_marker){
+            snpmers_in_read.push((i, canonical_kmer_marker));
+        }
+        else if mm_hash64(canonical_kmer_marker) < threshold {
+            minimizers_in_read.push((i, canonical_kmer_marker));
+        }
+    }
+
+    return Some(TwinRead{
+        snpmers: snpmers_in_read,
+        minimizers: minimizers_in_read,
+        id,
+        k: k as u8,
+        base_length: len 
+    });
+
+}
+
+pub fn split_kmer_mid(
+    string: Vec<u8>,
+    k: usize
+) -> Vec<SplitKmerInfo>{
+    let mut split_kmers = vec![];
+    type MarkerBits = u64;
+    if string.len() < k {
+        return vec![];
+    }
+
+    let marker_k = k;
+    if marker_k % 2 != 1{
+        panic!("k must be odd");
+    }
+    let mut rolling_kmer_f_marker: MarkerBits = 0;
+    let mut rolling_kmer_r_marker: MarkerBits = 0;
+
+    let marker_reverse_shift_dist = 2 * (marker_k - 1);
+
+    //split representation 11|11|11|00|11|11|11 for k = 6 and marker_k = 7
+    let marker_mask = MarkerBits::MAX >> (std::mem::size_of::<MarkerBits>() * 8 - 2 * marker_k);
+    let marker_rev_mask = !(3 << (2 * marker_k - 2));
+    let split_mask = !(3 << (k-1));
+    let split_mask_extract = !split_mask;
+    let len = string.len();
+
+    for i in 0..marker_k - 1 {
+        let nuc_f = BYTE_TO_SEQ[string[i] as usize] as u64;
+        let nuc_r = 3 - nuc_f;
+        rolling_kmer_f_marker <<= 2;
+        rolling_kmer_f_marker |= nuc_f;
+        rolling_kmer_r_marker >>= 2;
+        rolling_kmer_r_marker |= nuc_r << marker_reverse_shift_dist;
+    }
+
+    for i in marker_k-1..len {
+        let nuc_byte = string[i] as usize;
+        let nuc_f = BYTE_TO_SEQ[nuc_byte] as u64;
+        let nuc_r = 3 - nuc_f;
+        rolling_kmer_f_marker <<= 2;
+        rolling_kmer_f_marker |= nuc_f;
+        rolling_kmer_f_marker &= marker_mask;
+        rolling_kmer_r_marker >>= 2;
+        rolling_kmer_r_marker &= marker_rev_mask;
+        rolling_kmer_r_marker |= nuc_r << marker_reverse_shift_dist;
+
+        let split_f = rolling_kmer_f_marker & split_mask;
+        let split_r = rolling_kmer_r_marker & split_mask;
+        //        rolling_kmer_r &= max_mask;
+        //        KmerEnc::print_string(rolling_kmer_f, k);
+        //        KmerEnc::print_string(rolling_kmer_r, k);
+        //
+
+        let canonical_marker = split_f < split_r;
+        let canonical_kmer_marker; 
+        let mid_base; 
+        if canonical_marker {
+            canonical_kmer_marker = split_f;
+            mid_base = (rolling_kmer_f_marker & split_mask_extract) >> (k-1) as u64;
+        } else {
+            canonical_kmer_marker = split_r;
+            mid_base = (rolling_kmer_r_marker & split_mask_extract) >> (k-1) as u64;
+        };
+        let split_kmer_info = SplitKmerInfo{
+            split_kmer: canonical_kmer_marker,
+            mid_base : mid_base as u8,
+            canonical: canonical_marker,
+            k: k as u8
+        };
+        split_kmers.push(split_kmer_info);
+    }
+
+    return split_kmers;
 }
