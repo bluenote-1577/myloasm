@@ -63,7 +63,7 @@ pub fn disjoint_distance(
         .enumerate()
         .collect::<Vec<(usize, u64)>>();
 
-    let chain_info = find_optimal_chain(&v1_roots, &v2_roots, 5., 1., 50);
+    let chain_info = find_optimal_chain(&v1_roots, &v2_roots, 5., 1., 25);
     let chain = &chain_info.chain;
 
     let mut shared_x = 0;
@@ -327,7 +327,7 @@ fn find_optimal_chain(
 }
 
 pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize) -> Option<TwinOverlap> {
-    let mini_chain_info = find_optimal_chain(&seq1.minimizers, &seq2.minimizers, 10., 1., 50);
+    let mini_chain_info = find_optimal_chain(&seq1.minimizers, &seq2.minimizers, 10., 1., 25);
     let mini_chain = &mini_chain_info.chain;
     if mini_chain_info.score < 15. {
         return None;
@@ -344,7 +344,7 @@ pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize
         .iter()
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>();
-    let split_chain = find_optimal_chain(&splitmers1, &splitmers2, 50., 1., 50);
+    let split_chain = find_optimal_chain(&splitmers1, &splitmers2, 50., 1., 25);
 
     let mut shared_snpmer = 0;
     let mut diff_snpmer = 0;
@@ -390,6 +390,7 @@ pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize
         shared_minimizers: mini_chain.len(),
         shared_snpmers: shared_snpmer,
         diff_snpmers: diff_snpmer,
+        snpmers_in_both: (seq1.snpmers.len(), seq2.snpmers.len()),
         chain_reverse: mini_chain_info.reverse,
         intersect: (intersect_split, intersection_snp),
     };

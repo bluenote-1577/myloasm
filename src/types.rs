@@ -32,6 +32,7 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
+use bio_seq::prelude::*;
 
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
@@ -169,14 +170,14 @@ pub struct TigRead {
     pub id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Default, Eq, Hash)]
 pub struct TwinRead {
     pub minimizers: Vec<(usize, u64)>,
     pub snpmers: Vec<(usize, u64)>,
     pub id: String,
     pub k: u8,
-    pub base_length: usize
-
+    pub base_length: usize,
+    pub dna_seq: Seq<Dna>
 }
 
 
@@ -206,6 +207,7 @@ pub struct TwinOverlap{
     pub end2: usize,
     pub shared_minimizers: usize,
     pub shared_snpmers: usize,
+    pub snpmers_in_both: (usize, usize),
     pub diff_snpmers: usize,
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
@@ -219,3 +221,11 @@ pub struct Anchor{
     pub pos2: usize,
     pub score: f64
 }
+
+// Enum for marking the state of a node during processing
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub enum Direction {
+    Incoming,
+    Outgoing
+}
+

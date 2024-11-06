@@ -1,4 +1,5 @@
 use crate::types::*;
+use bio_seq::prelude::*;
 use fxhash::FxHashSet;
 
 //create new alias kmer = u64
@@ -378,7 +379,8 @@ pub fn get_twin_read(
         minimizers: minimizers_in_read,
         id,
         k: k as u8,
-        base_length: len 
+        base_length: len,
+        dna_seq: string.try_into().unwrap(),
     });
 
 }

@@ -8,10 +8,27 @@ use crate::seeding;
 use fishers_exact::fishers_exact;
 use fxhash::FxHashSet;
 
+fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
+    let mut compressed_seq = vec![];
+    let mut last_base = seq[0];
+    let mut count = 1;
+    for i in 1..seq.len() {
+        if seq[i] == last_base {
+            count += 1;
+        } else {
+            compressed_seq.push(last_base);
+            last_base = seq[i];
+            count = 1;
+        }
+    }
+    return compressed_seq;
+}
+
 pub fn read_to_split_kmers(
     fastq_file: &str,
     k: usize,
-    threads: usize
+    threads: usize,
+    homopolymer_comp: bool
 ) -> DashMap<(u64, u8), [u32;2]>{
 
     let (mut tx, rx) = spmc::channel();
@@ -21,7 +38,13 @@ pub fn read_to_split_kmers(
         let mut reader = needletail::parse_fastx_file(file).expect("valid path");
         while let Some(record) = reader.next() {
             let rec = record.expect("Error reading record");
-            let seq = rec.seq().to_vec();
+
+            let seq;
+            if homopolymer_comp {
+                seq = homopolymer_compression(rec.seq().to_vec());
+            } else {
+                seq = rec.seq().to_vec();
+            }
             tx.send(seq).unwrap();
         }
     });
@@ -61,7 +84,7 @@ pub fn read_to_split_kmers(
    return Arc::try_unwrap(map).unwrap();
 }
 
-pub fn twin_reads_from_snpmers(snpmer_vec: &Vec<SnpmerInfo>, fastq_files: &[&str], k: usize, c: usize, threads: usize) -> Vec<TwinRead>{
+pub fn twin_reads_from_snpmers(snpmer_vec: &Vec<SnpmerInfo>, fastq_files: &[String], k: usize, c: usize, threads: usize, homopolymer_comp: bool) -> Vec<TwinRead>{
 
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in snpmer_vec.iter(){
@@ -83,7 +106,12 @@ pub fn twin_reads_from_snpmers(snpmer_vec: &Vec<SnpmerInfo>, fastq_files: &[&str
             let mut reader = needletail::parse_fastx_file(fastq_file).expect("valid path");
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
-                let seq = rec.seq().to_vec();
+                let seq;
+                if homopolymer_comp {
+                    seq = homopolymer_compression(rec.seq().to_vec());
+                } else {
+                    seq = rec.seq().to_vec();
+                }
                 let id = String::from_utf8_lossy(rec.id()).to_string();
                 tx.send((seq, id)).unwrap();
             }
@@ -179,14 +207,14 @@ pub fn get_snpmers(big_kmer_map: DashMap<(u64, u8), [u32;2]>, k: usize) -> Vec<S
 
                 let snpmer1 = *kmer as u64 | ((vec[0].1 as u64) << k);
                 let snpmer2 = *kmer as u64 | ((vec[1].1 as u64) << k);
-                println!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer(snpmer1, k as u8 + 1), vec[0].0, decode_kmer(snpmer2, k as u8 + 1), vec[1].0, p_value, odds);
+                log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer(snpmer1, k as u8), vec[0].0, decode_kmer(snpmer2, k as u8), vec[1].0, p_value, odds);
                 potential_snps += 1;
 
             }
         }
     }
 
-    dbg!(potential_snps);
+    log::info!("Number of snpmers: {}", potential_snps);
     return snpmers;
 }
 

@@ -15,7 +15,7 @@ smallvec = { version = "1", features = ["union","serde","write"] }
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 fxhash = "0"
-clap = { version = "3", features = ["derive"] }
+clap = { version = "4.4", features = ["derive"] }
 rust-htslib= { version = "*", default-features = false }
 statrs = "0.16"
 disjoint = "0.8"
@@ -23,6 +23,7 @@ csv = "1.3"
 spmc = "0.3"
 dashmap = "6"
 fishers_exact = "1.0"
+bio-seq = "0.13"
 #noodles = { version = "0.74.0", features = ["bam", "async", "cram", "vcf"] }
 #nlopt="*"
 #statrs="0.16"
