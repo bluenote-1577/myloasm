@@ -112,6 +112,9 @@ pub fn twin_reads_from_snpmers(snpmer_vec: &Vec<SnpmerInfo>, fastq_files: &[Stri
                 } else {
                     seq = rec.seq().to_vec();
                 }
+                if seq.len() < 1000{
+                    continue;
+                }
                 let id = String::from_utf8_lossy(rec.id()).to_string();
                 tx.send((seq, id)).unwrap();
             }

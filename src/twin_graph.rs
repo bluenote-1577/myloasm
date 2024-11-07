@@ -1,7 +1,10 @@
 use fxhash::FxHashMap;
+use statrs::distribution::{Binomial, DiscreteCDF};
 use rayon::prelude::*;
 use std::sync::Mutex;
+use std::sync::RwLock;
 use crate::types::*;
+use crate::constants;
 use fxhash::FxHashSet;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -205,11 +208,19 @@ enum Mark {
 pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Vec<TwinOverlap>, c: usize) -> OverlapTwinGraph
 {
     let mut nodes = FxHashMap::default();
+    let mut seen_overlaps = FxHashSet::default();
     let mut edges = vec![];
 
     for twlap in overlaps.iter() {
         let i = twlap.i1;
         let j = twlap.i2;
+        let sorted_ij = if i < j { (i, j) } else { (j, i) };
+        if seen_overlaps.contains(&sorted_ij) {
+            continue;
+        }
+        else{
+            seen_overlaps.insert(sorted_ij);
+        }
         let read1 = &all_reads_cat[i];
         let read2 = &all_reads_cat[j];
 
@@ -219,7 +230,7 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Ve
         let mut r1_r2 = true;
         let mut ol = false;
         let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, c as u64);
-        let same_strain = if identity > 0.9999 {true} else {false};
+        let same_strain = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, c as u64);
         if !same_strain {
             continue;
         }
@@ -279,7 +290,7 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Ve
                 node2: end,
                 forward1,
                 forward2,
-                overlap_len_bases: aln_len1.max(aln_len2),
+                overlap_len_bases: aln_len1.max(aln_len2).min(read1.base_length.min(read2.base_length)),
                 shared_minimizers: twlap.shared_minimizers,
                 diff_snpmers: twlap.diff_snpmers
             };
@@ -330,7 +341,7 @@ pub fn print_graph_stdout(graph: &OverlapTwinGraph, file: &str) {
             let forward2 = edge.forward2;
             let _aln_len = edge.overlap_len_bases;
 
-            if read.id.contains("junk") || read2.id.contains("junk") || read.id.contains("chimera") || read2.id.contains("chimera"){
+            if read.id.contains("junk") || read2.id.contains("junk"){
                 log::trace!("{} {} edge {} CHIMERA OR JUNK", i,j,l);
                 continue;
             }
@@ -354,7 +365,7 @@ pub fn print_graph_stdout(graph: &OverlapTwinGraph, file: &str) {
 
 pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices: &[usize],  _k: u64, c: u64) -> Vec<TwinOverlap>{
 
-    let mut bufwriter = BufWriter::new(File::create("overlaps.txt").unwrap());
+    let bufwriter = Mutex::new(BufWriter::new(File::create("overlaps.txt").unwrap()));
     let vec_format = twin_reads.iter().enumerate().filter(|(i, _)| outer_read_indices.contains(i)).map(|(i, x)| (i,&x.minimizers)).collect::<Vec<_>>();
 
     let mut inverted_index_hashmap_outer = FxHashMap::default();
@@ -364,9 +375,9 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
         }
     }
     
-    let mut overlaps = vec![];
+    let overlaps = Mutex::new(vec![]);
+    let compared_reads = RwLock::new(FxHashSet::default());
 
-    let mut compared_reads = FxHashSet::default();
     for i in outer_read_indices.iter() {
         let read = &twin_reads[*i];
         let mut index_count_map = FxHashMap::default();
@@ -381,25 +392,22 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
             }
         }
         //sort
-        let mut top_indices = index_count_map.into_iter().collect::<Vec<_>>();
+        let mut top_indices = index_count_map.into_iter().filter(|(_, count)| *count > 500 / c).collect::<Vec<_>>();
         top_indices.sort_by(|a, b| b.1.cmp(&a.1));
 
-        for (index, count) in top_indices.iter() {
-            if *count < 500 / c{
-                break;
+        top_indices.into_par_iter().for_each(|(index, _)| {
+            let sorted_readpair = if i < index { (i, index) } else { (index, i) };
+            if compared_reads.read().unwrap().contains(&sorted_readpair) {
+                return;
             }
-            let sorted_readpair = if i < *index { (i, *index) } else { (*index, i) };
-            if compared_reads.contains(&sorted_readpair) {
-                continue;
-            }
-            let read2 = &twin_reads[**index];
-            let twlap = compare_twin_reads(&read, &read2, *i, **index);
+            let read2 = &twin_reads[*index];
+            let twlap = compare_twin_reads(&read, &read2, *i, *index);
             if twlap.is_none(){
-                continue;
+                return;
             }
             let twlap = twlap.unwrap();
             let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, c);
-            writeln!(bufwriter,
+            writeln!(bufwriter.lock().unwrap(),
                 "{} {} fsv: {} leni: {} {}-{} lenj: {} {}-{} shared_mini: {} REVERSE:{}, snp_diff: {} snp_share: {}, intersect: {:?}, snp_both: {:?}, r1 {} r2 {}",
                 i,
                 *index,
@@ -421,14 +429,14 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
 
             ).unwrap();
-            if identity > 0.9999 {
-                overlaps.push(twlap);
+            if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, c as u64) {
+                overlaps.lock().unwrap().push(twlap);
             }
-            compared_reads.insert(sorted_readpair);
-        }
+            compared_reads.write().unwrap().insert(sorted_readpair);
+        });
     }
 
-    return overlaps;
+    return overlaps.into_inner().unwrap();
 
 }
 
@@ -494,17 +502,8 @@ pub fn remove_contained_reads_twin<'a>(twin_reads: &'a [TwinRead], _k: u64, c: u
             let shared_minimizers = twin_overlap.shared_minimizers;
             let diff_snpmers = twin_overlap.diff_snpmers;
 
-            let mut same_strain = false;
-            let identity;
-            if diff_snpmers == 0 {
-                same_strain = true;
-                identity = 1.;
-            } else {
-                identity = id_est(shared_minimizers, diff_snpmers, c);
-                if identity > 0.9999 {
-                    same_strain = true;
-                }
-            }
+            let identity = id_est(shared_minimizers, diff_snpmers, c);
+            let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, c as u64);
 
             write!(
                 bufwriter.lock().unwrap(),
@@ -550,4 +549,35 @@ pub fn remove_contained_reads_twin<'a>(twin_reads: &'a [TwinRead], _k: u64, c: u
     return outer_reads;
 }
 
+fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
+    // n: number of trials
+    // k: number of successes
+    // p: probability of success
 
+    // Create a binomial distribution
+    let binomial = Binomial::new(p, n).unwrap();
+
+    // Calculate the probability of observing k or more successes
+    let p_value = 1.0 - binomial.cdf(k);
+
+    p_value
+}
+
+pub fn same_strain(minimizers: usize, snp_diff: usize, snp_shared: usize,  c: u64) -> bool {
+    let identity = id_est(minimizers, snp_diff, c);
+    let high_id;
+    if identity > constants::ID_CUTOFF{
+        high_id = true;
+    } else {
+        high_id = false;
+    }
+    let p_val = binomial_test((snp_diff + snp_shared) as u64, snp_diff as u64, 0.025);
+    let miscalled_snpmers;
+    if p_val > 0.05 {
+        miscalled_snpmers = true;
+    } else {
+        miscalled_snpmers = false; 
+    }
+
+    return high_id || miscalled_snpmers;
+}

@@ -63,7 +63,7 @@ pub fn disjoint_distance(
         .enumerate()
         .collect::<Vec<(usize, u64)>>();
 
-    let chain_info = find_optimal_chain(&v1_roots, &v2_roots, 5., 1., 25);
+    let chain_info = find_optimal_chain(&v1_roots, &v2_roots, 5., 1., None);
     let chain = &chain_info.chain;
 
     let mut shared_x = 0;
@@ -192,7 +192,8 @@ fn smith_waterman(
     (max_score as f64, aln1.len(), aln2.len())
 }
 
-fn find_exact_matches_indexes(seq1: &[(usize, u64)], seq2: &[(usize, u64)]) -> Vec<Anchor> {
+fn find_exact_matches_indexes(seq1: &[(usize, u64)], seq2: &[(usize, u64)]) -> (Vec<Anchor>, usize) {
+    let mut max_mult = 0;
     let mut matches = Vec::new();
     let index_seq = &seq2;
     let query_seq = &seq1;
@@ -206,8 +207,11 @@ fn find_exact_matches_indexes(seq1: &[(usize, u64)], seq2: &[(usize, u64)]) -> V
     //Sorted
     for (i, (pos, s)) in query_seq.iter().enumerate() {
         if let Some(indices) = index_map.get(s) {
-            if indices.len() > 500 {
+            if indices.len() > 1000 {
                 continue;
+            }
+            if indices.len() > max_mult {
+                max_mult = indices.len();
             }
             for (j, pos2) in indices {
                 let anchor = Anchor {
@@ -222,7 +226,7 @@ fn find_exact_matches_indexes(seq1: &[(usize, u64)], seq2: &[(usize, u64)]) -> V
         }
     }
 
-    matches
+    (matches, max_mult)
 }
 
 fn find_exact_matches_quadratic(seq1: &[usize], seq2: &[usize]) -> Vec<(usize, usize, usize)> {
@@ -300,9 +304,16 @@ fn find_optimal_chain(
     seq2: &[(usize, u64)],
     match_score: f64,
     gap_cost: f64,
-    band: usize,
+    band_opt: Option<usize>,
 ) -> ChainInfo {
-    let matches = find_exact_matches_indexes(seq1, seq2);
+    let (matches, max_mult) = find_exact_matches_indexes(seq1, seq2);
+    let band;
+    if band_opt.is_none(){
+        band = (max_mult * 10).min(20);
+    }
+    else{
+        band = band_opt.unwrap();
+    }
 
     if matches.is_empty() {
         return ChainInfo::default();
@@ -327,7 +338,7 @@ fn find_optimal_chain(
 }
 
 pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize) -> Option<TwinOverlap> {
-    let mini_chain_info = find_optimal_chain(&seq1.minimizers, &seq2.minimizers, 10., 1., 25);
+    let mini_chain_info = find_optimal_chain(&seq1.minimizers, &seq2.minimizers, 10., 1., None);
     let mini_chain = &mini_chain_info.chain;
     if mini_chain_info.score < 15. {
         return None;
@@ -344,7 +355,7 @@ pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize
         .iter()
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>();
-    let split_chain = find_optimal_chain(&splitmers1, &splitmers2, 50., 1., 25);
+    let split_chain = find_optimal_chain(&splitmers1, &splitmers2, 50., 1., None);
 
     let mut shared_snpmer = 0;
     let mut diff_snpmer = 0;
@@ -404,7 +415,7 @@ pub fn parse_badread(id: &str) -> Option<(String, String)> {
         .split(",")
         .collect::<Vec<&str>>();
     if spl.len() < 3 {
-        return None;
+        return Some((spl[0].to_string(), "0".to_string()));
     }
     let name = spl[0];
     let range = spl[2];

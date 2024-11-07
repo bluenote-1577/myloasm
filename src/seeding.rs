@@ -1,5 +1,5 @@
 use crate::types::*;
-use bio_seq::prelude::*;
+use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 
 //create new alias kmer = u64
@@ -317,6 +317,7 @@ pub fn get_twin_read(
 
     let mut snpmers_in_read = vec![];
     let mut minimizers_in_read = vec![];
+    let mut dedup_snpmers = FxHashMap::default();
     let marker_k = k;
 
     type MarkerBits = u64;
@@ -329,6 +330,7 @@ pub fn get_twin_read(
 
     let marker_reverse_shift_dist = 2 * (marker_k - 1);
 
+    let split_mask = !(3 << (k-1));
     let marker_mask = MarkerBits::MAX >> (std::mem::size_of::<MarkerBits>() * 8 - 2 * marker_k);
     let marker_rev_mask = !(3 << (2 * marker_k - 2));
     let len = string.len();
@@ -354,7 +356,6 @@ pub fn get_twin_read(
         rolling_kmer_r_marker &= marker_rev_mask;
         rolling_kmer_r_marker |= nuc_r << marker_reverse_shift_dist;
 
-        let split_mask = !(3 << (k-1));
         let split_f = rolling_kmer_f_marker & split_mask;
         let split_r = rolling_kmer_r_marker & split_mask;
     
@@ -368,14 +369,22 @@ pub fn get_twin_read(
         
         if snpmer_set.contains(&canonical_kmer_marker){
             snpmers_in_read.push((i, canonical_kmer_marker));
+            *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
         }
         else if mm_hash64(canonical_kmer_marker) < threshold {
             minimizers_in_read.push((i, canonical_kmer_marker));
         }
     }
 
+    let mut no_dup_snpmers_in_read = vec![];
+    for (pos, kmer) in snpmers_in_read.iter_mut(){
+        if dedup_snpmers[&(*kmer & split_mask)] == 1{
+            no_dup_snpmers_in_read.push((*pos, *kmer));
+        }
+    }
+
     return Some(TwinRead{
-        snpmers: snpmers_in_read,
+        snpmers: no_dup_snpmers_in_read,
         minimizers: minimizers_in_read,
         id,
         k: k as u8,

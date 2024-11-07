@@ -1,11 +1,11 @@
 use phaller::unitig;
+use dashmap::DashMap;
 use clap::Parser;
 use phaller::cli;
 use phaller::kmer_comp;
 use phaller::twin_graph;
 
 fn main() {
-    #![allow(warnings)]
     let args = cli::Cli::parse();
 
     // Initialize logger with CLI-specified level
@@ -20,6 +20,7 @@ fn main() {
         std::process::exit(1);
     }
 
+    let threads = args.threads;
    // Initialize thread pool
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.threads)
@@ -28,8 +29,6 @@ fn main() {
 
 
     let fastq_files = args.input_files;
-    let threads = 5;
-    rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
     let k = args.kmer_size;
     let c = args.c;
     let start = std::time::Instant::now();
@@ -43,7 +42,9 @@ fn main() {
     log::info!("Time elapsed in for parsing split-mers is: {:?}", duration);
 
     let mut big_kmer_map = std::mem::take(&mut all_maps[0]);
-    big_kmer_map.extend(std::mem::take(&mut all_maps[1]));
+    for i in 1..all_maps.len() {
+        big_kmer_map.extend(std::mem::take(&mut all_maps[i]));
+    }
 
     let start = std::time::Instant::now();
     let snpmer_info = kmer_comp::get_snpmers(big_kmer_map, k);

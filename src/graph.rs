@@ -503,7 +503,7 @@ pub fn print_graph_stdout(graph: &OverlapGraph, file: &str) {
             let forward2 = edge.forward2;
             let aln_len = edge.overlap_len_tigs;
 
-            if read.id.contains("junk") || read2.id.contains("junk") || read.id.contains("chimera") || read2.id.contains("chimera"){
+            if read.id.contains("junk") || read2.id.contains("junk"){
                 continue;
             }
             let name1 = read.id.split_whitespace().collect::<Vec<&str>>()[1]

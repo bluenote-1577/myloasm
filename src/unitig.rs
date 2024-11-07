@@ -107,6 +107,7 @@ impl UnitigGraph {
                 .iter()
                 .map(|&node_idx| overlap_graph.reads[node_idx].base_length)
                 .sum();
+            //DOESN"T WORK
             let overlap_lengths: usize = overlaps
                 .iter()
                 .map(|overlap| overlap.overlap_len_bases)
@@ -257,7 +258,7 @@ impl UnitigGraph {
         for (id, unitig) in &self.unitigs {
             let (base_seq, ranges) = unitig.raw_consensus(&graph.reads);
             gfa.push_str(&format!(
-                "S\t{}\t{}\tLN:i:{}\tDP:f:{:.1}\n",
+                "S\tu{}\t{}\tLN:i:{}\tDP:f:{:.1}\n",
                 id,
                 //String::from_utf8(unitig.raw_consensus()).unwrap(),
                 base_seq,
@@ -274,7 +275,7 @@ impl UnitigGraph {
                     let range = ranges[count];
                     let length = range.1 - range.0;
                     gfa.push_str(&format!(
-                        "a\t{},{}-{}\t{}\t{}\t{}\t{}\t{}\n",
+                        "a\tu{},{}-{}\t{}\t{}\t{}\t{}\t{}\n",
                         id, range.0, range.1, read_idx, curr_pos, read.id, ori_string, length
                     ));
                     curr_pos += length;
@@ -289,10 +290,10 @@ impl UnitigGraph {
             let to_orient = if edge.f2 { "+" } else { "-" };
 
             gfa.push_str(&format!(
-                "L\t{}\t{}\t{}\t{}\t{}M\n",
+                "L\tu{}\t{}\tu{}\t{}\t{}M\n",
                 edge.from_unitig,
-                edge.to_unitig,
                 from_orient,
+                edge.to_unitig,
                 to_orient,
                 edge.overlap.overlap_len_bases
             ));
@@ -417,6 +418,15 @@ impl UnitigGraph {
             let unitig = self.unitigs.get_mut(&node).unwrap();
             unitig.left_cut = left_cut;
             unitig.right_cut = right_cut;
+            if unitig.length > left_cut + right_cut {
+                unitig.length -= left_cut + right_cut;
+            } else {
+//                dbg!(unitig.length);
+//                dbg!(left_cut);
+//                dbg!(right_cut);
+//                dbg!(&unitig);
+                unitig.length = 0;
+            }
         }
     }
 
@@ -445,7 +455,12 @@ impl UnitigGraph {
                 cut_dir_edges = &unitig.out_edges;
             }
         } else {
-            cut_dir_edges = &unitig.in_edges;
+            if unitig.in_edges.len() != 0{
+                cut_dir_edges = &unitig.in_edges;
+            }
+            else{
+                cut_dir_edges = &unitig.out_edges;
+            }
         }
         let mut max_overlap = 0;
         for e_ind in cut_dir_edges.iter() {
