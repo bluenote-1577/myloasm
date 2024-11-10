@@ -170,7 +170,7 @@ pub struct TigRead {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Default, Eq, Hash, Serialize, Deserialize)]
 pub struct TwinRead {
     pub minimizers: Vec<(usize, u64)>,
     pub snpmers: Vec<(usize, u64)>,
@@ -197,7 +197,7 @@ pub struct SnpmerInfo {
     pub k: u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct TwinOverlap{
     pub i1: usize,
     pub i2: usize,

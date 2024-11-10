@@ -35,6 +35,14 @@ pub struct Cli {
     /// Verbosity level
     #[arg(short, long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
+
+    /// Length of tip to remove
+    #[arg(long, default_value_t = 20000)]
+    pub tip_length_cutoff: usize,
+
+    /// Number of reads in tips to remove
+    #[arg(long, default_value_t = 4)]
+    pub tip_read_cutoff: usize,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

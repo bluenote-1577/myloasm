@@ -23,7 +23,7 @@ csv = "1.3"
 spmc = "0.3"
 dashmap = "6"
 fishers_exact = "1.0"
-bio-seq = "0.13"
+bio-seq = { version = "0.13", features = ["serde"]}
 #noodles = { version = "0.74.0", features = ["bam", "async", "cram", "vcf"] }
 #nlopt="*"
 #statrs="0.16"

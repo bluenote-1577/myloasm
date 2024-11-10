@@ -1,528 +1,266 @@
-use fxhash::FxHashMap;
 use crate::types::*;
-use disjoint::DisjointSet;
+use fxhash::FxHashMap;
 use fxhash::FxHashSet;
-use std::fs::File;
-use std::io::{BufWriter, Write};
-use crate::mapping::*;
-use serde::{Deserialize, Serialize};
 
+// Common node trait - both ReadData and UnitigNode share these properties
+pub trait GraphNode {
+    fn in_edges(&self) -> &[EdgeIndex];
+    fn out_edges(&self) -> &[EdgeIndex];
+    fn both_edges(&self) -> impl Iterator<Item = &EdgeIndex> {
+        self.in_edges().iter().chain(self.out_edges().iter())
+    }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
-pub struct ReadData {
-    pub index: NodeIndex,
-    pub in_edges: Vec<EdgeIndex>,
-    pub out_edges: Vec<EdgeIndex>,
+    fn in_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
+    fn out_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
-pub struct ReadOverlapEdge {
-    pub node1: NodeIndex,
-    pub node2: NodeIndex,
-    pub forward1: bool,
-    pub forward2: bool,
-    pub overlap_len_bases: usize,
-    pub overlap_len_tigs: usize,
-    pub shared_tigs: usize,
-    pub variable_tigs: usize,
-    pub variable_roots: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct OverlapGraph {
-    pub reads: Vec<TigRead>,
-    pub nodes: FxHashMap<NodeIndex, ReadData>,
-    pub edges: Vec<Option<ReadOverlapEdge>>,
-}
-
-
-// Transitive reduction implementation
-impl OverlapGraph {
-    pub fn other_node(&self, node: NodeIndex, edge: &ReadOverlapEdge) -> NodeIndex {
-        if edge.node1 == node {
-            edge.node2
+// Common edge trait - both ReadOverlapEdgeTwin and UnitigEdge share these
+pub trait GraphEdge {
+    fn node1(&self) -> NodeIndex;
+    fn node2(&self) -> NodeIndex;
+    fn orientation1(&self) -> bool;
+    fn orientation2(&self) -> bool;
+    fn other_node(&self, node: NodeIndex) -> NodeIndex {
+        if node == self.node1() {
+            return self.node2();
+        } else if node == self.node2() {
+            return self.node1();
         } else {
-            edge.node1
+            panic!("Node not in edge");
         }
     }
-    pub fn transitive_reduction(&mut self) {
-        const FUZZ: usize = 10;
-
-        // Initialize reduce array for edges
-        let mut reduce = vec![false; self.edges.len()];
-        let mut mark: FxHashMap<NodeIndex, Mark> = FxHashMap::default();
-
-        // Step 1: Mark all nodes as vacant initially and set reduce to false for all edges
-        for (node_id, node_data) in self.nodes.iter() {
-            mark.insert(*node_id, Mark::Vacant);
-            for &edge_id in &node_data.out_edges {
-                reduce[edge_id] = false;
-            }
+    fn get_orientation(&self, node1: NodeIndex, node2: NodeIndex) -> (bool, bool){
+        if self.node1() == node1 && self.node2() == node2{
+            (self.orientation1(), self.orientation2())
         }
-
-        // Step 2: Iterate over all edges, marking nodes and evaluating paths
-        for (node_id, node_data) in self.nodes.iter() {
-            let sorted_all_edges = self.get_edges_sorted_by_length(*node_id);
-
-            for &(length, edge_id, outer) in sorted_all_edges.iter() {
-                let edge = self.edges[edge_id].as_ref().unwrap();
-                let other_node = self.other_node(*node_id, edge);
-                mark.insert(other_node, Mark::InPlay);
-            }
-
-            let longest = sorted_all_edges.last().unwrap().0 + FUZZ;
-
-            for &(length, edge_id, outer) in sorted_all_edges.iter() {
-                let edge = self.edges[edge_id].as_ref().unwrap();
-                let other_node = self.other_node(*node_id, edge);
-                let outgoing = self.outgoing_edge(other_node, edge_id);
-                for &(length2, edge_id2, outer2) in &self.get_edges_sorted_by_length(other_node) {
-                    //outgoing edge for other node, requires incoming
-                    if outgoing && outer2{
-                        continue
-                    }
-                    //incoming edge for other node, requires outgoing
-                    if !outgoing && !outer2{
-                        continue
-                    }
-                    if edge_id2 == edge_id{
-                        continue
-                    }
-                    let next_edge = self.edges[edge_id2].as_ref().unwrap();
-                    let third_node = self.other_node(other_node, next_edge);
-                    if mark.get(&third_node).unwrap() == &Mark::InPlay {
-                        let lensum = if length + length2 < self.reads[other_node].tig_seq.len() {0} else {length + length2 - self.reads[other_node].tig_seq.len()};
-                        if lensum <= longest + FUZZ || true
-                        {
-                            if let Some(true) =
-                                mark.get(&third_node).map(|m| *m == Mark::InPlay)
-                            {
-                                mark.insert(third_node, Mark::Eliminated);
-                                println!("Eliminated edge from {} to {}, length1 {}, length2 {}, longets {}, lensum {}, edge_info1 {:?}, edge_info2 {:?}, outgoing_edge {}, direction_out {}", node_id, third_node, length, length2, longest, lensum, &edge, &next_edge, outer2, outgoing);
-                            }
-                        }
-                    }
-                }
-            }
-            // Step 3: Final pass to mark reduced edges
-            for &edge_id in node_data.out_edges.iter().chain(node_data.in_edges.iter()){
-                let edge = self.edges[edge_id].as_ref().unwrap();
-                let other_node = self.other_node(*node_id, edge);
-                if let Some(Mark::Eliminated) = mark.get(&other_node) {
-                    reduce[edge_id] = true;
-                }
-            }
+        else if self.node1() == node2 && self.node2() == node1{
+            (!self.orientation2(), !self.orientation1())
         }
-
-        // Apply reduction by removing edges
-        for (i, &reduced) in reduce.iter().enumerate() {
-            if reduced {
-                self.edges[i] = None; // Remove reduced edges
-            }
-        }
-
-        for (_, node_data) in self.nodes.iter_mut() {
-            node_data.out_edges.retain(|&edge_id| self.edges[edge_id].is_some());
-            node_data.in_edges.retain(|&edge_id| self.edges[edge_id].is_some());
+        else{
+            panic!("Nodes do not match edge")
         }
     }
-
-    fn get_edges_sorted_by_length(&self, node_id: NodeIndex) -> Vec<(usize, EdgeIndex, bool)> {
-        let mut sorted_all_edges = vec![];
-        let node_data = self.nodes.get(&node_id).unwrap();
-        for (l, edge_ind) in node_data
-            .out_edges
-            .iter()
-            .chain(node_data.in_edges.iter())
-            .enumerate()
-        {
-            let outer;
-            if l < node_data.out_edges.len() {
-                outer = true;
+    //o>--->o is outgoing for n1, incoming for n2
+    //o<---->o is incoming for n1, incoming for n2. etc
+    fn node_edge_direction(&self, node: &NodeIndex) -> Direction {
+        if self.node1() == *node {
+            if self.orientation1() {
+                Direction::Outgoing
             } else {
-                outer = false;
+                Direction::Incoming
             }
-            let edge = self.edges[*edge_ind].as_ref().unwrap();
-            let n1 = self.nodes.get(&edge.node1).unwrap();
-            let n2 = self.nodes.get(&edge.node2).unwrap();
-            let string_length = self.reads[n1.index].tig_seq.len()
-                + self.reads[n2.index].tig_seq.len()
-                - edge.shared_tigs;
-            sorted_all_edges.push((string_length, *edge_ind, outer));
-        }
-        sorted_all_edges.sort();
-        sorted_all_edges
-    }
-
-    fn outgoing_edge(&self, node_id: NodeIndex, edge_id: EdgeIndex) -> bool {
-        let edge = self.edges[edge_id].as_ref().unwrap();
-        if edge.node1 == node_id {
-            if edge.forward1{
-                true
-            }
-            else{
-                false
+        } else if self.node2() == *node {
+            if self.orientation2() {
+                Direction::Incoming
+            } else {
+                Direction::Outgoing
             }
         } else {
-            if edge.forward2{
-                false
-            }
-            else{
-                true
-            }
+            panic!("Edge does not connect to node");
         }
     }
 }
 
-// Enum for marking the state of a node during processing
-#[derive(PartialEq, Eq, Clone)]
-enum Mark {
-    Vacant,
-    InPlay,
-    Eliminated,
+// Base implementation of a bidirected graph that both can use
+#[derive(Debug, Clone)]
+pub struct BidirectedGraph<N, E> {
+    pub nodes: FxHashMap<NodeIndex, N>,
+    pub edges: Vec<Option<E>>,
 }
 
+impl<N: GraphNode, E: GraphEdge> BidirectedGraph<N, E> {
 
-pub fn remove_contained_reads(all_reads_cat: &Vec<TigRead>, disjoint_set: &DisjointSet, used_ids: &FxHashSet<u64>) -> Vec<usize>
-{
-    let inverted_index_hashmap =
-        all_reads_cat
-            .iter()
-            .enumerate()
-            .fold(FxHashMap::default(), |mut acc, (i, x)| {
-                for &y in x.tig_seq.iter() {
-                    acc.entry(y).or_insert(vec![]).push(i);
+    //Checks the connextion if it's valid. Returns None if it's not, e.g. the next node is a branch
+    //point that can not be integrated
+    fn valid_unitig_connection(
+        &self,
+        curr: NodeIndex,
+        next_node: NodeIndex,
+        orientation: (bool, bool),
+    ) -> bool {
+        let deg1;
+        if orientation.0 {
+            deg1 = self.nodes.get(&curr).unwrap().out_edges().len();
+        } else {
+            deg1 = self.nodes.get(&curr).unwrap().in_edges().len();
+        }
+        let deg2;
+        if orientation.1 {
+            deg2 = self.nodes.get(&next_node).unwrap().in_edges().len();
+        } else {
+            deg2 = self.nodes.get(&next_node).unwrap().out_edges().len();
+        }
+
+        if deg1 == 1 && deg2 == 1 {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn traverse_inout_nonbranch(&self, node_idx: NodeIndex, previous_node: Option<NodeIndex>) -> Vec<EdgeIndex> {
+        let node = self.nodes.get(&node_idx).unwrap();
+        let in_deg = node.in_edges().len();
+        let out_deg = node.out_edges().len();
+        if in_deg == 1 && out_deg == 1 {
+            if previous_node.is_none() {
+                return vec![node.in_edges()[0], node.out_edges()[0]];
+            } else {
+                for &edge_idx in node.both_edges() {
+                    let edge = self.edges.get(edge_idx).unwrap().as_ref().unwrap();
+                    if edge.node1() != previous_node.unwrap() && edge.node2() != previous_node.unwrap() {
+                        return vec![edge_idx];
+                    }
                 }
-                acc
+                return vec![];
+            }
+        } else if in_deg == 1 && out_deg != 1 {
+            return vec![node.in_edges()[0]];
+        } else if in_deg != 1 && out_deg == 1 {
+            return vec![node.out_edges()[0]];
+        } else {
+            return vec![];
+        }
+    }
+
+    pub fn find_non_branching_paths(&self) -> Vec<(Vec<NodeIndex>, Vec<EdgeIndex>)> {
+        let mut paths = Vec::new();
+        let mut visited_nodes = FxHashSet::default();
+
+        // Start from each potential unitig endpoint
+        for (&start_node, _) in &self.nodes {
+            // Skip if we've already processed this node
+            if visited_nodes.contains(&start_node) {
+                continue;
+            }
+
+            // Start a new path if this is an endpoint or branch point
+            let mut path_both = [(vec![], vec![]), (vec![], vec![])];
+            visited_nodes.insert(start_node);
+
+            let edges_to_search = self.traverse_inout_nonbranch(start_node, None);
+
+            for (i, edge_idx) in edges_to_search.into_iter().enumerate() {
+                let mut current_edges = Vec::new();
+                let mut curr_edge = edge_idx;
+                let mut current_path = vec![];
+                let mut prev_node = Some(start_node);
+                loop {
+                    let edge = self.edges.get(curr_edge).unwrap().as_ref().unwrap();
+                    let next_node = edge.other_node(prev_node.unwrap());
+                    if visited_nodes.contains(&next_node) {
+                        path_both[i] = (current_path, current_edges);
+                        break;
+                    }
+                    let orientation = edge.get_orientation(prev_node.unwrap(), next_node);
+                    if self.valid_unitig_connection(prev_node.unwrap(), next_node, orientation) {
+                        current_edges.push(curr_edge);
+                        current_path.push(next_node);
+                        visited_nodes.insert(next_node);
+                        let current_node = next_node;
+                        let next = self.traverse_inout_nonbranch(current_node, prev_node);
+                        if next.len() != 1 {
+                            panic!("Unitig path is not linear");
+                        }
+                        curr_edge = next[0];
+                        prev_node = Some(current_node);
+                    } else {
+                        path_both[i] = (current_path, current_edges);
+                        break;
+                    }
+                }
+            }
+
+            let mut unitig_node_path = vec![];
+            let mut unitig_edge_path = vec![];
+            for node in path_both[0].0.iter().rev() {
+                unitig_node_path.push(*node);
+            }
+            for edge in path_both[0].1.iter().rev() {
+                unitig_edge_path.push(*edge);
+            }
+            unitig_node_path.push(start_node);
+            for node in path_both[1].0.iter() {
+                unitig_node_path.push(*node);
+            }
+            for edge in path_both[1].1.iter() {
+                unitig_edge_path.push(*edge);
+            }
+            paths.push((unitig_node_path, unitig_edge_path));
+        }
+
+        paths
+
+        // Implementation that works for both graph types
+    }
+
+    pub fn remove_nodes(&mut self, nodes_to_remove: &[NodeIndex]) {
+        let mut touched_nodes = FxHashSet::default();
+        let remove_set = FxHashSet::from_iter(nodes_to_remove.iter());
+        for &node_idx in nodes_to_remove {
+            if let Some(node) = self.nodes.get(&node_idx) {
+                let edge_lists = self.nodes.get(&node_idx).unwrap().both_edges();
+                for &edge_idx in edge_lists {
+                    if let Some(Some(edge)) = self.edges.get(edge_idx) {
+                        let other_idx = if edge.node1() == node_idx {
+                            edge.node2()
+                        } else {
+                            edge.node1()
+                        };
+                        touched_nodes.insert(other_idx);
+                    }
+                }
+                // Remove edges
+                for &edge_idx in node.both_edges(){
+                    self.edges[edge_idx] = None;
+                }
+            }
+        }
+        for node_idx in touched_nodes{
+            let node = self.nodes.get_mut(&node_idx).unwrap();
+            node.in_edges_mut().retain(|&edge| {
+                if let Some(Some(edge)) = self.edges.get(edge) {
+                    !remove_set.contains(&edge.node1())
+                } else {
+                    false
+                }
             });
-
-    //open file for writing
-    let mut bufwriter = BufWriter::new(File::create("histo.txt").unwrap());
-    let mut bufwriter2 = BufWriter::new(File::create("histo.dbg").unwrap());
-
-    //check contained reads
-    let mut outer_reads = vec![];
-    let mut contained_reads = FxHashSet::default();
-    for (i, read) in all_reads_cat.iter().enumerate() {
-        let mut contained = false;
-        let mut index_count_map = FxHashMap::default();
-        for &y in read.tig_seq.iter() {
-            if let Some(indices) = inverted_index_hashmap.get(&y) {
-                for &index in indices {
-                    if index == i {
-                        continue;
-                    }
-                    *index_count_map.entry(index).or_insert(0) += 1;
-                }
-            }
-        }
-
-        //look at top 5 indices and do disjoint_set distance
-        let mut top_indices = index_count_map.iter().collect::<Vec<_>>();
-        top_indices.sort_by(|a, b| b.1.cmp(a.1));
-        for (index, count) in top_indices.iter() {
-            if **count < 5 {
-                break;
-            }
-            if contained_reads.contains(*index) {
-                continue;
-            }
-            let read2 = &all_reads_cat[**index];
-            dbg!("{} {} {} {}, {}", i, **index, &read.id, &read2.id);
-            let tiglap = disjoint_distance(&read.tig_seq, &read2.tig_seq, &disjoint_set, &used_ids, i, **index);
-            if read.id.contains("junk") || read2.id.contains("junk") {
-                continue;
-            }
-            let name1 = read.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[0];
-            let name2 = read2.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[0];
-            let _range1 = read.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[2];
-            let _range2 = read2.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[2];
-            let aln_len1 = tiglap.tig1_end - tiglap.tig1_start + 1;
-            let aln_len2 = tiglap.tig2_end - tiglap.tig2_start + 1;
-            let frac_shared = tiglap.shared_tig as f64 / aln_len1.max(aln_len2) as f64;
-            let frac_shared_variable = tiglap.variable_tigs as f64 / tiglap.variable_roots as f64;
-
-            let mut within = false;
-            if name1 == name2 {
-                within = true;
-            }
-
-            if !frac_shared_variable.is_nan()
-                && aln_len1 as f64 > (read.tig_seq.len() as f64) * 0.4
-                && aln_len2 as f64 > (read2.tig_seq.len() as f64) * 0.4
-            {
-                write!(
-                    bufwriter2,
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-                    tiglap.variable_tigs,
-                    tiglap.variable_roots,
-                    tiglap.shared_tig,
-                    aln_len1,
-                    within,
-                    read.id,
-                    read2.id
-                )
-                .unwrap();
-                write!(
-                    bufwriter,
-                    "{}\t{}\t{}\n",
-                    frac_shared, frac_shared_variable, within
-                )
-                .unwrap();
-            }
-
-            let span_read1 = tiglap.tig1_end - tiglap.tig1_start + 1;
-            if frac_shared_variable > 0.8 && span_read1 as f64 > (read.tig_seq.len() as f64) * 0.9 {
-                contained = true;
-                log::trace!("{} {} CONTAINED", read.id, read2.id);
-                contained_reads.insert(i);
-            }
-        }
-        if !contained {
-            outer_reads.push(i);
-        }
-    }
-
-    log::info!("OUTER READS: {}", outer_reads.len());
-    for i in outer_reads.iter() {
-        log::info!("{}", all_reads_cat[*i].id);
-    }
-
-
-
-    return outer_reads
-
-}
-
-pub fn get_overlaps_outer_reads(
-    all_reads_cat: &Vec<TigRead>,
-    disjoint_set: &DisjointSet,
-    used_ids: &FxHashSet<u64>,
-    outer_reads: &Vec<usize>,
-) -> Vec<TigdexOverlap> {
-    let mut bufwriter = BufWriter::new(File::create("overlaps.txt").unwrap());
-    let inverted_index_hashmap_outer = outer_reads
-        .iter()
-        .map(|&i| {
-            all_reads_cat[i]
-                .tig_seq
-                .iter()
-                .map(|&x| (x, i))
-                .collect::<Vec<(u32, usize)>>()
-        })
-        .flatten()
-        .fold(FxHashMap::default(), |mut acc, x| {
-            acc.entry(x.0).or_insert(vec![]).push(x.1);
-            acc
-        });
-    let mut overlaps = vec![];
-
-    let mut compared_reads = FxHashSet::default();
-    for (i, read) in all_reads_cat.iter().enumerate() {
-        let mut index_count_map = FxHashMap::default();
-        if !outer_reads.contains(&i) {
-            continue;
-        }
-        for &y in read.tig_seq.iter() {
-            if let Some(indices) = inverted_index_hashmap_outer.get(&y) {
-                for &index in indices {
-                    if index == i {
-                        continue;
-                    }
-                    *index_count_map.entry(index).or_insert(0) += 1;
-                }
-            }
-        }
-        //sort
-        let mut top_indices = index_count_map.into_iter().collect::<Vec<_>>();
-        top_indices.sort_by(|a, b| b.1.cmp(&a.1));
-
-        for (index, count) in top_indices.iter() {
-            let sorted_readpair = if i < *index { (i, *index) } else { (*index, i) };
-            if compared_reads.contains(&sorted_readpair) {
-                continue;
-            }
-            let read2 = &all_reads_cat[*index];
-            let tiglap = disjoint_distance(&read.tig_seq, &read2.tig_seq, &disjoint_set, &used_ids, i, *index);
-            let frac_shared_variable = tiglap.variable_tigs as f64 / tiglap.variable_roots as f64;
-            writeln!(bufwriter,
-                "intersect tigs: {} i: {} j: {} fsv: {} leni: {} {}-{} lenj: {} {}-{} shared_tigs: {} REVERSE:{}",
-                count,
-                i,
-                *index,
-                frac_shared_variable,
-                read.tig_seq.len(),
-                tiglap.tig1_start,
-                tiglap.tig1_end,
-                read2.tig_seq.len(),
-                tiglap.tig2_start,
-                tiglap.tig2_end,
-                tiglap.shared_tig,
-                tiglap.chain_reverse
-            ).unwrap();
-            if frac_shared_variable > 0.8 {
-                overlaps.push(tiglap);
-            }
-            compared_reads.insert(sorted_readpair);
-        }
-    }
-
-    return overlaps;
-}
-
-pub fn read_graph_from_overlaps(all_reads_cat: Vec<TigRead>, overlaps: &Vec<TigdexOverlap>) -> OverlapGraph
-{
-    let mut nodes = FxHashMap::default();
-    let mut edges = vec![];
-
-    for tiglap in overlaps.iter() {
-        let i_tig = tiglap.tig1;
-        let j_tig = tiglap.tig2;
-        let read = &all_reads_cat[tiglap.tig1].tig_seq;
-        let read2 = &all_reads_cat[tiglap.tig2].tig_seq;
-        let frac_shared_variable = tiglap.variable_tigs as f64 / tiglap.variable_roots as f64;
-
-        //check if end-to-end overlap
-        let mut forward1 = false;
-        let mut forward2 = false;
-        let mut r1_r2 = true;
-        let mut ol = false;
-
-        if tiglap.chain_reverse {
-            if tiglap.tig1_start < read.len() / 10 && tiglap.tig2_start < read2.len() / 10 {
-                forward1 = false;
-                forward2 = true;
-                r1_r2 = true;
-                ol = true;
-            } else if tiglap.tig1_end > read.len() * 9 / 10
-                && tiglap.tig2_end > read2.len() * 9 / 10
-            {
-                forward1 = true;
-                forward2 = false;
-                r1_r2 = true;
-                ol = true;
-            }
-        } else {
-            if tiglap.tig1_start < read.len() / 10 && tiglap.tig2_end > read2.len() * 9 / 10 {
-                forward1 = true;
-                forward2 = true;
-                r1_r2 = false;
-                ol = true;
-            } else if tiglap.tig2_start < read2.len() / 10
-                && tiglap.tig1_end > read.len() * 9 / 10
-            {
-                forward1 = true;
-                forward2 = true;
-                r1_r2 = true;
-                ol = true;
-            }
-        }
-        let aln_len1 = tiglap.tig1_end - tiglap.tig1_start + 1;
-        let aln_len2 = tiglap.tig2_end - tiglap.tig2_start + 1;
-        if ol && frac_shared_variable > 0.8 && aln_len1.max(aln_len2) > 20 {
-            log::info!(
-                "OVERLAP {} {} {} {} {}-{} {} {}-{}, REVERSE: {}",
-                i_tig,
-                j_tig,
-                frac_shared_variable,
-                read.len(),
-                tiglap.tig1_start,
-                tiglap.tig1_end,
-                read2.len(),
-                tiglap.tig2_start,
-                tiglap.tig2_end,
-                tiglap.chain_reverse
-            );
-
-            let start = if r1_r2 { i_tig } else { j_tig };
-            let end = if r1_r2 { j_tig } else { i_tig };
-            let new_read_overlap = ReadOverlapEdge {
-                node1: start,
-                node2: end,
-                forward1,
-                forward2,
-                overlap_len_bases: 0,
-                overlap_len_tigs: aln_len1.max(aln_len2),
-                shared_tigs: tiglap.shared_tig,
-                variable_tigs: tiglap.variable_tigs,
-                variable_roots: tiglap.variable_roots,
-            };
-
-            edges.push(Some(new_read_overlap));
-            let ind = edges.len() - 1;
-            {
-                let rd1 = nodes.entry(i_tig).or_insert(ReadData::default());
-                rd1.index = i_tig;
-                if r1_r2 && forward1 {
-                    rd1.out_edges.push(ind)
-                } else if !r1_r2 && !forward2 {
-                    rd1.out_edges.push(ind)
+            node.out_edges_mut().retain(|&edge| {
+                if let Some(Some(edge)) = self.edges.get(edge) {
+                    !remove_set.contains(&edge.node2())
                 } else {
-                    rd1.in_edges.push(ind)
+                    false
                 }
-            }
-            {
-                let rd2 = nodes.entry(j_tig).or_insert(ReadData::default());
-                rd2.index = j_tig;
-                if r1_r2 && forward2 {
-                    rd2.in_edges.push(ind)
-                } else if !r1_r2 && !forward1 {
-                    rd2.in_edges.push(ind)
-                } else {
-                    rd2.out_edges.push(ind)
-                }
-            }
+            });
+        }
+
+        // Remove nodes
+        for node_idx in nodes_to_remove {
+            self.nodes.remove(node_idx);
         }
     }
 
-    let graph = OverlapGraph { reads: all_reads_cat, nodes, edges };
-
-    return graph;
 }
 
-
-pub fn print_graph_stdout(graph: &OverlapGraph, file: &str) {
-    let mut bufwriter = BufWriter::new(File::create(file).unwrap());
-    let all_reads_cat = &graph.reads;
-    for edge in graph.edges.iter() {
-        if let Some(edge) = edge {
-            let i = edge.node1;
-            let j = edge.node2;
-            let read = &all_reads_cat[i];
-            let read2 = &all_reads_cat[j];
-            let frac_shared_variable = edge.variable_tigs as f64 / edge.variable_roots as f64;
-            let forward1 = edge.forward1;
-            let forward2 = edge.forward2;
-            let aln_len = edge.overlap_len_tigs;
-
-            if read.id.contains("junk") || read2.id.contains("junk"){
-                continue;
+pub fn orientation_list<E: GraphEdge>(node_indices: &[NodeIndex], edges: &[E]) -> Vec<bool> {
+    let mut orientations = Vec::new();
+    if node_indices.len() == 0 {
+        panic!("No reads in a graph node; something went wrong.");
+    }
+    else if node_indices.len() == 1{
+        return vec![true];
+    }
+    else {
+        for i in 0..node_indices.len() - 1{
+            let node = &node_indices[i];
+            let next_node = &node_indices[i + 1];
+            let edge = &edges[i];
+            let orientation = edge.get_orientation(*node, *next_node);
+            if i == 0{
+                orientations.push(orientation.0);
             }
-            let name1 = read.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[0];
-            let name2 = read2.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[0];
-            let range1 = read.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[2];
-            let range2 = read2.id.split_whitespace().collect::<Vec<&str>>()[1]
-                .split(",")
-                .collect::<Vec<&str>>()[2];
-
-            writeln!(bufwriter, 
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                i, j, name1, name2, range1, range2, forward1, forward2
-            );
+            orientations.push(orientation.1);
         }
     }
+    return orientations
 }

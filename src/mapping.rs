@@ -309,7 +309,7 @@ fn find_optimal_chain(
     let (matches, max_mult) = find_exact_matches_indexes(seq1, seq2);
     let band;
     if band_opt.is_none(){
-        band = (max_mult * 10).min(20);
+        band = (max_mult * 5).min(50);
     }
     else{
         band = band_opt.unwrap();

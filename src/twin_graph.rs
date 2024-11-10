@@ -1,4 +1,5 @@
 use fxhash::FxHashMap;
+use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
 use rayon::prelude::*;
 use std::sync::Mutex;
@@ -10,12 +11,30 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use crate::mapping::*;
 
-
 #[derive(Debug, Clone, PartialEq, Default, Hash, Eq)]
 pub struct ReadData {
     pub index: NodeIndex,
     pub in_edges: Vec<EdgeIndex>,
     pub out_edges: Vec<EdgeIndex>,
+    pub base_length: usize,
+    pub read_id: String
+}
+
+impl GraphNode for ReadData {
+    fn in_edges(&self) -> &[EdgeIndex] { &self.in_edges }
+    fn out_edges(&self) -> &[EdgeIndex] { &self.out_edges }
+
+    fn both_edges(&self) -> impl Iterator<Item = &EdgeIndex> {
+        self.in_edges.iter().chain(self.out_edges.iter())
+    }
+
+    fn in_edges_mut(&mut self) -> &mut Vec<EdgeIndex> {
+        &mut self.in_edges
+    }
+
+    fn out_edges_mut(&mut self) -> &mut Vec<EdgeIndex> {
+        &mut self.out_edges
+    }
 }
 
 #[derive(Debug, Clone,PartialEq, Default, Hash, Eq)]
@@ -27,6 +46,17 @@ pub struct ReadOverlapEdgeTwin {
     pub overlap_len_bases: usize,
     pub shared_minimizers: usize,
     pub diff_snpmers: usize
+}
+
+impl GraphEdge for ReadOverlapEdgeTwin {
+    fn node1(&self) -> NodeIndex { self.node1 }
+    fn node2(&self) -> NodeIndex { self.node2 }
+    fn orientation1(&self) -> bool {
+        self.forward1
+    }
+    fn orientation2(&self) -> bool {
+        self.forward2
+    }
 }
 
 impl ReadOverlapEdgeTwin{
@@ -43,13 +73,7 @@ impl ReadOverlapEdgeTwin{
     }
 }
 
-#[derive(Debug, Clone,  PartialEq, Default)]
-pub struct OverlapTwinGraph {
-    pub reads: Vec<TwinRead>,
-    pub nodes: FxHashMap<NodeIndex, ReadData>,
-    pub edges: Vec<Option<ReadOverlapEdgeTwin>>,
-}
-
+pub type OverlapTwinGraph = BidirectedGraph<ReadData, ReadOverlapEdgeTwin>;
 
 // Transitive reduction implementation
 impl OverlapTwinGraph{
@@ -106,7 +130,7 @@ impl OverlapTwinGraph{
                     let next_edge = self.edges[edge_id2].as_ref().unwrap();
                     let third_node = self.other_node(other_node, next_edge);
                     if mark.get(&third_node).unwrap() == &Mark::InPlay {
-                        let lensum = if length + length2 < self.reads[other_node].base_length {0} else {length + length2 - self.reads[other_node].base_length};
+                        let lensum = if length + length2 < self.nodes[&other_node].base_length {0} else {length + length2 - self.nodes[&other_node].base_length};
                         if lensum <= longest + FUZZ || true
                         {
                             if let Some(true) =
@@ -166,8 +190,8 @@ impl OverlapTwinGraph{
             let edge = self.edges[*edge_ind].as_ref().unwrap();
             let n1 = self.nodes.get(&edge.node1).unwrap();
             let n2 = self.nodes.get(&edge.node2).unwrap();
-            let string_length = self.reads[n1.index].base_length
-                + self.reads[n2.index].base_length
+            let string_length = self.nodes[&n1.index].base_length
+                + self.nodes[&n2.index].base_length
                 - edge.overlap_len_bases;
             sorted_all_edges.push((string_length, *edge_ind, outer));
         }
@@ -203,9 +227,7 @@ enum Mark {
     Eliminated,
 }
 
-
-
-pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Vec<TwinOverlap>, c: usize) -> OverlapTwinGraph
+pub fn read_graph_from_overlaps_twin(all_reads_cat: &Vec<TwinRead>, overlaps: &Vec<TwinOverlap>, c: usize) -> OverlapTwinGraph
 {
     let mut nodes = FxHashMap::default();
     let mut seen_overlaps = FxHashSet::default();
@@ -307,6 +329,8 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Ve
                 } else {
                     rd1.in_edges.push(ind)
                 }
+                rd1.base_length = read1.base_length;
+                rd1.read_id = read1.id.clone();
             }
             {
                 let rd2 = nodes.entry(j).or_insert(ReadData::default());
@@ -318,11 +342,13 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Ve
                 } else {
                     rd2.out_edges.push(ind)
                 }
+                rd2.base_length = read2.base_length;
+                rd2.read_id = read2.id.clone();
             }
         }
     }
 
-    let graph = OverlapTwinGraph { reads: all_reads_cat, nodes, edges };
+    let graph = OverlapTwinGraph { nodes, edges };
 
     return graph;
 }
@@ -330,24 +356,23 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: Vec<TwinRead>, overlaps: &Ve
 
 pub fn print_graph_stdout(graph: &OverlapTwinGraph, file: &str) {
     let mut bufwriter = BufWriter::new(File::create(file).unwrap());
-    let all_reads_cat = &graph.reads;
     for (l, edge) in graph.edges.iter().enumerate() {
         if let Some(edge) = edge {
             let i = edge.node1;
             let j = edge.node2;
-            let read = &all_reads_cat[i];
-            let read2 = &all_reads_cat[j];
+            let read = &graph.nodes[&i];
+            let read2 = &graph.nodes[&j];
             let forward1 = edge.forward1;
             let forward2 = edge.forward2;
             let _aln_len = edge.overlap_len_bases;
 
-            if read.id.contains("junk") || read2.id.contains("junk"){
+            if read.read_id.contains("junk") || read2.read_id.contains("junk"){
                 log::trace!("{} {} edge {} CHIMERA OR JUNK", i,j,l);
                 continue;
             }
 
-            let res1 = parse_badread(&read.id);
-            let res2 = parse_badread(&read2.id);
+            let res1 = parse_badread(&read.read_id);
+            let res2 = parse_badread(&read2.read_id);
             if res1.is_none() || res2.is_none() {
                 continue;
             }

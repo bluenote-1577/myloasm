@@ -123,6 +123,8 @@ checksum = "0ed38e02e56d0a9455e95c182d78f1f06cf02aa76a846655eb982a05c28cfd19"
 dependencies = [
  "bio-seq-derive",
  "bitvec",
+ "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -163,6 +165,7 @@ checksum = "1bc2832c24239b0141d5674bb9174f9d68a8b5b3f2753311927c172ca46f7e9c"
 dependencies = [
  "funty",
  "radium",
+ "serde",
  "tap",
  "wyz",
 ]
