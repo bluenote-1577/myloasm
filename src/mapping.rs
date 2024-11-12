@@ -1,12 +1,13 @@
+use crate::cli::Cli;
+use crate::seeding;
+use crate::twin_graph::same_strain;
 use crate::types::*;
-use disjoint::DisjointSet;
+use crate::unitig;
+use bio_seq::codec::Codec;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
-use std::fs::File;
-use std::io::BufWriter;
-use std::io::Write;
 
-fn edit_distance(v1: &[u32], v2: &[u32]) -> usize {
+fn _edit_distance(v1: &[u32], v2: &[u32]) -> usize {
     let len1 = v1.len();
     let len2 = v2.len();
 
@@ -36,83 +37,8 @@ fn edit_distance(v1: &[u32], v2: &[u32]) -> usize {
     dp[len1][len2]
 }
 
-pub fn disjoint_distance(
-    v1: &[u32],
-    v2: &[u32],
-    disjoint_set: &DisjointSet,
-    used_ids: &FxHashSet<u64>,
-    ind1: usize,
-    ind2: usize,
-) -> TigdexOverlap {
-    let v1_as_disjoint = v1
-        .iter()
-        .map(|&x| (disjoint_set.root_of(x as usize) as u64, x))
-        .collect::<Vec<(u64, u32)>>();
-    let v2_as_disjoint = v2
-        .iter()
-        .map(|&x| (disjoint_set.root_of(x as usize) as u64, x))
-        .collect::<Vec<(u64, u32)>>();
-    let v1_roots = v1_as_disjoint.iter().map(|x| x.0).collect::<Vec<u64>>();
-    let v2_roots = v2_as_disjoint.iter().map(|x| x.0).collect::<Vec<u64>>();
-    let v1_roots = v1_roots
-        .into_iter()
-        .enumerate()
-        .collect::<Vec<(usize, u64)>>();
-    let v2_roots = v2_roots
-        .into_iter()
-        .enumerate()
-        .collect::<Vec<(usize, u64)>>();
 
-    let chain_info = find_optimal_chain(&v1_roots, &v2_roots, 5., 1., None);
-    let chain = &chain_info.chain;
-
-    let mut shared_x = 0;
-    let mut variable_roots = 0;
-    let mut variable_shared_x = 0;
-
-    for anchor in chain.iter() {
-        let start1 = anchor.i;
-        let start2 = anchor.j;
-        if used_ids.contains(&(v1_as_disjoint[start1].1 as u64)) {
-            variable_roots += 1;
-            if v1_as_disjoint[start1].1 == v2_as_disjoint[start2].1 {
-                variable_shared_x += 1;
-            }
-        }
-        if v1_as_disjoint[start1].1 == v2_as_disjoint[start2].1 {
-            shared_x += 1;
-        }
-    }
-
-    if shared_x > v1.len() || shared_x > v2.len() {
-        dbg!(shared_x, v1.len(), &chain);
-        panic!();
-    }
-
-    let l1 = chain[0].pos1;
-    let r1 = chain[chain.len() - 1].pos1;
-    let l2 = chain[0].pos2;
-    let r2 = chain[chain.len() - 1].pos2;
-    let start1 = l1.min(r1);
-    let end1 = l1.max(r1);
-    let start2 = l2.min(r2);
-    let end2 = l2.max(r2);
-    let tiger = TigdexOverlap {
-        tig1: ind1,
-        tig2: ind2,
-        tig1_start: start1,
-        tig1_end: end1,
-        tig2_start: start2,
-        tig2_end: end2,
-        shared_tig: shared_x,
-        variable_roots,
-        variable_tigs: variable_shared_x,
-        chain_reverse: chain_info.reverse,
-    };
-    return tiger;
-}
-
-fn smith_waterman(
+fn _smith_waterman(
     v1: &[u32],
     v2: &[u32],
     match_score: i32,
@@ -192,7 +118,44 @@ fn smith_waterman(
     (max_score as f64, aln1.len(), aln2.len())
 }
 
-fn find_exact_matches_indexes(seq1: &[(usize, u64)], seq2: &[(usize, u64)]) -> (Vec<Anchor>, usize) {
+fn find_exact_matches_with_full_index(
+    seq1: &[(usize, u64)],
+    index: &FxHashMap<u64, Vec<HitInfo>>,
+) -> FxHashMap<usize, Anchors> {
+    let mut max_mult = 0;
+    let mut matches = FxHashMap::default();
+
+    for (i, (pos, s)) in seq1.iter().enumerate() {
+        if let Some(indices) = index.get(s) {
+            if indices.len() > 1000 {
+                continue;
+            }
+            if indices.len() > max_mult {
+                max_mult = indices.len();
+            }
+            for hit in indices {
+                let contig = hit.contig_id;
+                let anchor = Anchor {
+                    i,
+                    j: hit.index,
+                    pos1: *pos,
+                    pos2: hit.pos as usize,
+                    score: 1.,
+                };
+
+                matches.entry(contig).or_insert(vec![]).push(anchor);
+            }
+        }
+    }
+
+    matches.into_iter().map(|(k, v)| (k, Anchors{anchors: v, max_mult})).collect()
+
+}
+
+fn find_exact_matches_indexes(
+    seq1: &[(usize, u64)],
+    seq2: &[(usize, u64)],
+) -> (Vec<Anchor>, usize) {
     let mut max_mult = 0;
     let mut matches = Vec::new();
     let index_seq = &seq2;
@@ -229,7 +192,7 @@ fn find_exact_matches_indexes(seq1: &[(usize, u64)], seq2: &[(usize, u64)]) -> (
     (matches, max_mult)
 }
 
-fn find_exact_matches_quadratic(seq1: &[usize], seq2: &[usize]) -> Vec<(usize, usize, usize)> {
+fn _find_exact_matches_quadratic(seq1: &[usize], seq2: &[usize]) -> Vec<(usize, usize, usize)> {
     let mut matches = Vec::new();
     let len1 = seq1.len();
     let len2 = seq2.len();
@@ -299,28 +262,9 @@ fn dp_anchors(
     (max_score, chain)
 }
 
-fn find_optimal_chain(
-    seq1: &[(usize, u64)],
-    seq2: &[(usize, u64)],
-    match_score: f64,
-    gap_cost: f64,
-    band_opt: Option<usize>,
-) -> ChainInfo {
-    let (matches, max_mult) = find_exact_matches_indexes(seq1, seq2);
-    let band;
-    if band_opt.is_none(){
-        band = (max_mult * 5).min(50);
-    }
-    else{
-        band = band_opt.unwrap();
-    }
-
-    if matches.is_empty() {
-        return ChainInfo::default();
-    }
-
-    let (score_f, chain_f) = dp_anchors(&matches, false, gap_cost, match_score, band);
-    let (score_r, chain_r) = dp_anchors(&matches, true, gap_cost, match_score, band);
+fn chain_bothsides(matches: &[Anchor], gap_cost: f64, match_score: f64, band: usize) -> ChainInfo {
+    let (score_f, chain_f) = dp_anchors(matches, false, gap_cost, match_score, band);
+    let (score_r, chain_r) = dp_anchors(matches, true, gap_cost, match_score, band);
 
     if score_f > score_r {
         ChainInfo {
@@ -337,8 +281,41 @@ fn find_optimal_chain(
     }
 }
 
-pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize) -> Option<TwinOverlap> {
-    let mini_chain_info = find_optimal_chain(&seq1.minimizers, &seq2.minimizers, 10., 1., None);
+fn find_optimal_chain(
+    anchors: &Vec<Anchor>,
+    match_score: f64,
+    gap_cost: f64,
+    band_opt: Option<usize>,
+) -> ChainInfo {
+    let band;
+    if band_opt.is_none() {
+        band = 50;
+    } else {
+        band = band_opt.unwrap();
+    }
+
+    if anchors.is_empty() {
+        return ChainInfo::default();
+    }
+
+    return chain_bothsides(&anchors, gap_cost, match_score, band);
+}
+
+pub fn compare_twin_reads(
+    seq1: &TwinRead,
+    seq2: &TwinRead,
+    mini_anchors: Option<&Anchors>,
+    snpmer_anchors: Option<&Anchors>,
+    i: usize,
+    j: usize,
+) -> Option<TwinOverlap> {
+    let mini_chain_info;
+    if let Some(anchors) = mini_anchors {
+        mini_chain_info = find_optimal_chain(&anchors.anchors, 10., 1., Some((anchors.max_mult*5).min(50)));
+    } else {
+        let anchors = find_exact_matches_indexes(&seq1.minimizers, &seq2.minimizers);
+        mini_chain_info = find_optimal_chain(&anchors.0, 10., 1., Some((anchors.1*5).min(50)));
+    }
     let mini_chain = &mini_chain_info.chain;
     if mini_chain_info.score < 15. {
         return None;
@@ -355,7 +332,14 @@ pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize
         .iter()
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>();
-    let split_chain = find_optimal_chain(&splitmers1, &splitmers2, 50., 1., None);
+
+    let split_chain;
+    if let Some(anchors) = snpmer_anchors{
+        split_chain = find_optimal_chain(&anchors.anchors, 50., 1., None);
+    } else {
+        let anchors = find_exact_matches_indexes(&splitmers1, &splitmers2);
+        split_chain = find_optimal_chain(&anchors.0, 50., 1., None);
+    }
 
     let mut shared_snpmer = 0;
     let mut diff_snpmer = 0;
@@ -408,8 +392,6 @@ pub fn compare_twin_reads(seq1: & TwinRead, seq2: & TwinRead, i: usize, j: usize
     return Some(twinol);
 }
 
-
-
 pub fn parse_badread(id: &str) -> Option<(String, String)> {
     let spl = id.split_whitespace().collect::<Vec<&str>>()[1]
         .split(",")
@@ -432,4 +414,138 @@ pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64) -> f64 {
     let theta = alpha / (1. + alpha);
     let id_est = 1. - theta;
     return id_est;
+}
+
+fn unitigs_to_tr(unitig_graph: &unitig::UnitigGraph, args: &Cli) -> FxHashMap<usize, TwinRead> {
+    let mut tr_unitigs = FxHashMap::default();
+    for (&node_id, unitig) in unitig_graph.nodes.iter() {
+        let id = format!("u{}", unitig.read_indices_ori[0].0);
+        let u8_seq = unitig
+            .base_seq
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|x| bits_to_ascii(x.to_bits()) as u8)
+            .collect::<Vec<u8>>();
+        let tr = seeding::get_twin_read(u8_seq, args.kmer_size, args.c, &FxHashSet::default(), id);
+        if let Some(tr) = tr {
+            tr_unitigs.insert(node_id, tr);
+        }
+    }
+    return tr_unitigs;
+}
+
+pub fn map_reads_to_unitigs(
+    unitig_graph: &mut unitig::UnitigGraph,
+    snpmer_info: &[SnpmerInfo],
+    twin_reads: &[TwinRead],
+    args: &Cli,
+) {
+
+    for node in unitig_graph.nodes.values_mut() {
+        node.mapping_boundaries = Some(vec![]);
+    }
+
+    let mut snpmer_set = FxHashSet::default();
+    for snpmer_i in snpmer_info.iter() {
+        let k = snpmer_i.k as usize;
+        let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
+        let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k - 1));
+        snpmer_set.insert(snpmer1);
+        snpmer_set.insert(snpmer2);
+    }
+
+    //Convert unitigs to twinreads
+    let tr_unitigs = unitigs_to_tr(unitig_graph, args);
+
+    let mut mini_index = FxHashMap::default();
+    for (id, tr) in tr_unitigs.iter() {
+        for (i, (pos, mini)) in tr.minimizers.iter().enumerate() {
+            let hit = HitInfo {
+                index: i,
+                contig_id: *id,
+                pos: *pos,
+            };
+            mini_index.entry(*mini).or_insert(vec![]).push(hit);
+        }
+    }
+    let mut splitmers_unitigs = vec![];
+    for (id, tr) in tr_unitigs.iter() {
+        let splitmers = get_splitmers(&tr.snpmers, args.kmer_size as u64);
+        splitmers_unitigs.push((*id, splitmers));
+    }
+    let mut splitmer_index = FxHashMap::default();
+    for (id, splitmers) in splitmers_unitigs.iter() {
+        for (j, (pos, snpmer)) in splitmers.iter().enumerate() {
+            let hit = HitInfo {
+                index: j,
+                contig_id: *id,
+                pos: *pos,
+            };
+            splitmer_index.entry(*snpmer).or_insert(vec![]).push(hit);
+        }
+    }
+
+    for (rid, read) in twin_reads.iter().enumerate() {
+        let mini = &read.minimizers;
+        let mini_anchors = find_exact_matches_with_full_index(mini, &mini_index);
+        let split_anchors =
+            find_exact_matches_with_full_index(&read.snpmers, &splitmer_index);
+        let mut unitig_hits = vec![];
+
+        for (contig_id, anchors) in mini_anchors.iter() {
+            if let Some(twinol) = compare_twin_reads(
+                read,
+                &tr_unitigs[contig_id],
+                Some(anchors),
+                split_anchors.get(contig_id),
+                rid,
+                *contig_id,
+            ){
+
+                if twinol.end2 - twinol.start2 < 500 {
+                    continue;
+                }
+                unitig_hits.push(twinol);
+            }
+
+        }
+        for hit in unitig_hits.iter() {
+            if same_strain(
+                hit.shared_minimizers,
+                hit.diff_snpmers,
+                hit.shared_snpmers,
+                args.c.try_into().unwrap(),
+            ) {
+                unitig_graph
+                    .nodes
+                    .get_mut(&hit.i2)
+                    .unwrap()
+                    .mapping_boundaries
+                    .as_mut()
+                    .unwrap()
+                    .push((hit.start2, hit.end2));
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HitInfo {
+    pub index: usize,
+    pub contig_id: usize,
+    pub pos: usize,
+}
+
+pub struct Anchors{
+    anchors: Vec<Anchor>,
+    max_mult: usize,
+}
+
+fn get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {
+    let mask = !(3 << (k - 1));
+    snpmers
+        .iter()
+        .map(|x| (x.0, x.1 as u64 & mask))
+        .collect::<Vec<(usize, u64)>>()
 }

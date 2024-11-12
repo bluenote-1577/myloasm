@@ -25,10 +25,8 @@
 //SOFTWARE.
 //******************************
 
-use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
-use smallvec::SmallVec;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -223,9 +221,34 @@ pub struct Anchor{
 }
 
 // Enum for marking the state of a node during processing
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub enum Direction {
     Incoming,
     Outgoing
 }
+impl Direction{
+    pub fn reverse(&self) -> Direction{
+        match self{
+            Direction::Incoming => Direction::Outgoing,
+            Direction::Outgoing => Direction::Incoming
+        }
+    }
+}
 
+#[inline]
+pub fn bits_to_ascii(bit_rep: u8) -> u8{
+    match bit_rep{
+        0 => b'A',
+        1 => b'C',
+        2 => b'G',
+        3 => b'T',
+        _ => unreachable!()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct IntermediateStruct{
+    pub overlaps: Vec<TwinOverlap>,
+    pub twin_reads: Vec<TwinRead>,
+    pub snpmer_info: Vec<SnpmerInfo>
+}

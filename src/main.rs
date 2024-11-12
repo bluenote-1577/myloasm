@@ -1,4 +1,5 @@
 use phaller::unitig;
+use phaller::mapping;
 use std::io::BufReader;
 use std::io::BufWriter;
 use bincode;
@@ -30,7 +31,7 @@ fn main() {
         .unwrap();
 
 
-    let fastq_files = args.input_files;
+    let fastq_files = args.input_files.clone();
     let k = args.kmer_size;
     let c = args.c;
     let start = std::time::Instant::now();
@@ -38,12 +39,13 @@ fn main() {
     let mut all_maps = vec![];
     let overlaps;
     let twin_reads; 
+    let snpmer_info;
 
-    if fastq_files[0].contains("overlaps.bin") && fastq_files[1].contains("twin_reads.bin"){
-        overlaps = bincode::deserialize_from(BufReader::new(std::fs::File::open(&fastq_files[0]).unwrap())).unwrap();
-        twin_reads = bincode::deserialize_from(BufReader::new(
-            std::fs::File::open(&fastq_files[1]).unwrap())).unwrap();
-        }
+    if fastq_files[0].contains("overlaps.bin") {
+        overlaps = bincode::deserialize_from(BufReader::new(std::fs::File::open("overlaps.bin").unwrap())).unwrap();
+        twin_reads = bincode::deserialize_from(BufReader::new(std::fs::File::open("twin_reads.bin").unwrap())).unwrap();
+        snpmer_info = bincode::deserialize_from(BufReader::new(std::fs::File::open("snpmer_info.bin").unwrap())).unwrap();
+    }
     else{
         for fastq_file in fastq_files.iter() {
             let test_map = kmer_comp::read_to_split_kmers(fastq_file, k, threads, hpc);
@@ -57,7 +59,7 @@ fn main() {
         }
 
         let start = std::time::Instant::now();
-        let snpmer_info = kmer_comp::get_snpmers(big_kmer_map, k);
+        snpmer_info = kmer_comp::get_snpmers(big_kmer_map, k);
         log::info!("Time elapsed in for parsing snpmers is: {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
@@ -74,7 +76,7 @@ fn main() {
 
         bincode::serialize_into(BufWriter::new(std::fs::File::create("overlaps.bin").unwrap()), &overlaps).unwrap();
         bincode::serialize_into(BufWriter::new(std::fs::File::create("twin_reads.bin").unwrap()), &twin_reads).unwrap();
-
+        bincode::serialize_into(BufWriter::new(std::fs::File::create("snpmer_info.bin").unwrap()), &snpmer_info).unwrap();
     }
 
     let start = std::time::Instant::now();
@@ -98,11 +100,34 @@ fn main() {
     unitig_graph.to_gfa("unitig_graph.gfa", true, &twin_reads);
 
     let start = std::time::Instant::now();
-    unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff);
-    unitig_graph.re_unitig();
+
+    let mut size_graph = unitig_graph.nodes.len();
+    loop{
+        unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff);
+        if unitig_graph.nodes.len() == size_graph{
+            break;
+        }
+        size_graph = unitig_graph.nodes.len();
+    }
+
     unitig_graph.cut_overlap_boundaries();
+    log::info!("Time elapsed for tip removal construction is: {:?}", start.elapsed());
     unitig_graph.to_gfa("tip_unitig_graph.gfa", true, &twin_reads);
-    log::info!("Time elapsed for unitig construction is: {:?}", start.elapsed());
+
+    let start = std::time::Instant::now();
+    unitig_graph.pop_bubbles(50000);
+    unitig_graph.cut_overlap_boundaries();
+    log::info!("Time elapsed for bubble pop construction is: {:?}", start.elapsed());
+    unitig_graph.to_gfa("bubble_unitig_graph.gfa", true, &twin_reads);
+
+    let start = std::time::Instant::now();
+    mapping::map_reads_to_unitigs(&mut unitig_graph, &snpmer_info, &twin_reads, &args);
+    unitig_graph.cut_chimeric_regions();
+    unitig_graph.cut_overlap_boundaries();
+    log::info!("Time elapsed for aligning reads to graph and cutting chimeras: {:?}", start.elapsed());
+    unitig_graph.to_gfa("chimera_unitig_graph.gfa", true, &twin_reads);
+
+
     //graph.remove_bubbles();
     //twin_graph::print_graph_stdout(&graph, "bubbles_removed.tsv");
 

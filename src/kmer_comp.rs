@@ -11,14 +11,14 @@ use fxhash::FxHashSet;
 fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     let mut compressed_seq = vec![];
     let mut last_base = seq[0];
-    let mut count = 1;
+    let mut _count = 1;
     for i in 1..seq.len() {
         if seq[i] == last_base {
-            count += 1;
+            _count += 1;
         } else {
             compressed_seq.push(last_base);
             last_base = seq[i];
-            count = 1;
+            _count = 1;
         }
     }
     return compressed_seq;
@@ -244,35 +244,4 @@ pub fn parse_unitigs_into_table(cuttlefish_file: &str) -> (FxHashMap<u64, u32>, 
 
 
 
-pub fn read_to_unitig_count_vector(
-    fastq_file: &str,
-    kmer_to_unitig_count: &FxHashMap<u64, u32>,
-    unitig_vec: &Vec<Vec<u8>>,
-) -> Vec<TigRead> {
-    let mut reads = vec![];
-    let mut reader = needletail::parse_fastx_file(fastq_file).expect("valid path");
-    while let Some(record) = reader.next() {
-        let rec = record.expect("Error reading record");
-        let seq = rec.seq();
-        let mut kmers = vec![];
-        seeding::fmh_seeds(&seq, &mut kmers, 10, 27);
-        if kmers.len() > 0 {
-            let mut last_count = u32::MAX;
-            let mut unitig_string = vec![];
-            for kmer in kmers {
-                if let Some(unitig_id) = kmer_to_unitig_count.get(&kmer) {
-                    if *unitig_id != last_count {
-                        unitig_string.push(*unitig_id);
-                        last_count = *unitig_id;
-                    }
-                }
-            }
-            reads.push(TigRead{
-                tig_seq: unitig_string,
-                id: String::from_utf8_lossy(rec.id()).to_string(),
-            });
-        }
-    }
-    return reads;
-}
 

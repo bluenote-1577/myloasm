@@ -10,6 +10,20 @@ pub trait GraphNode {
         self.in_edges().iter().chain(self.out_edges().iter())
     }
 
+    fn edges_direction(&self, direction: &Direction) -> &[EdgeIndex] {
+        match direction {
+            Direction::Incoming => self.in_edges(),
+            Direction::Outgoing => self.out_edges(),
+        }
+    }
+
+    fn edges_direction_reverse(&self, direction: &Direction) -> &[EdgeIndex] {
+        match direction {
+            Direction::Incoming => self.out_edges(),
+            Direction::Outgoing => self.in_edges(),
+        }
+    }
+
     fn in_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
     fn out_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
 }

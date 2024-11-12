@@ -426,7 +426,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
                 return;
             }
             let read2 = &twin_reads[*index];
-            let twlap = compare_twin_reads(&read, &read2, *i, *index);
+            let twlap = compare_twin_reads(&read, &read2, None, None, *i, *index);
             if twlap.is_none(){
                 return;
             }
@@ -481,9 +481,9 @@ pub fn remove_contained_reads_twin<'a>(twin_reads: &'a [TwinRead], _k: u64, c: u
     let bufwriter = Mutex::new(BufWriter::new(File::create("histo.txt").unwrap()));
     let bufwriter_dbg = Mutex::new(BufWriter::new(File::create("twin_dbg.txt").unwrap()));
     let contained_reads = Mutex::new(FxHashSet::default());
-    let mut outer_reads = vec![];
+    let outer_reads = Mutex::new(vec![]);
 
-    for i in 0..twin_reads.len() {
+    (0..twin_reads.len()).into_par_iter().for_each(|i| {
         let contained = Mutex::new(false);
         let read1 = &twin_reads[i];
         let mut index_count_map = FxHashMap::default();
@@ -502,17 +502,17 @@ pub fn remove_contained_reads_twin<'a>(twin_reads: &'a [TwinRead], _k: u64, c: u
         let mut top_indices = index_count_map.iter().collect::<Vec<_>>();
         top_indices.sort_by(|a, b| b.1.cmp(a.1));
         let top_indices = top_indices.into_iter().filter(|(_,count)| **count > read1.minimizers.len() as i32 / 20).collect::<Vec<_>>();
-        top_indices.into_par_iter().for_each(|(index, _)| {
+        for (index, _) in top_indices.into_iter() {
             if contained_reads.lock().unwrap().contains(index) ||
             contained_reads.lock().unwrap().contains(&i){
-                return;
+                continue;
             }
             let read2 = &twin_reads[*index];
-            let twin_overlap = compare_twin_reads(&read1, &read2, i, *index);
+            let twin_overlap = compare_twin_reads(&read1, &read2, None, None, i, *index);
             let res1 = parse_badread(&read1.id);
             let res2 = parse_badread(&read2.id);
             if res1.is_none() || res2.is_none() {
-                return;
+                continue;
             }
 
             let (name1, _range1) = res1.unwrap();
@@ -520,7 +520,7 @@ pub fn remove_contained_reads_twin<'a>(twin_reads: &'a [TwinRead], _k: u64, c: u
             let within = if name1 == name2 { true } else { false };
 
             if twin_overlap.is_none() {
-                return;
+                break;
             }
 
             let twin_overlap = twin_overlap.unwrap();
@@ -557,21 +557,20 @@ pub fn remove_contained_reads_twin<'a>(twin_reads: &'a [TwinRead], _k: u64, c: u
             .unwrap();
 
 
-            if ol_len as f64 > 0.9 * (read1.base_length as f64) && same_strain {
+            if ol_len as f64 + (30. * c as f64) > 0.9 * (read1.base_length as f64) && same_strain {
                 log::trace!("{} {} CONTAINED", read1.id, read2.id);
                 let mut cont = contained.lock().unwrap() ;
                 *cont = true;
                 contained_reads.lock().unwrap().insert(i);
-                return;
+                break;
             }
-            
-        });
+        }
 
         if !contained.into_inner().unwrap() {
-            outer_reads.push(i);
+            outer_reads.lock().unwrap().push(i);
         }
-    }
-    return outer_reads;
+    });
+    return outer_reads.into_inner().unwrap();
 }
 
 fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
