@@ -309,6 +309,7 @@ pub fn fmh_seeds_positions(
 
 pub fn get_twin_read(
     string: Vec<u8>,
+    qualities: Option<Vec<u8>>,
     k: usize,
     c: usize,
     snpmer_set: &FxHashSet<u64>,
@@ -383,6 +384,8 @@ pub fn get_twin_read(
         }
     }
 
+    let seq_id = estimate_sequence_identity(qualities.as_ref());
+
     return Some(TwinRead{
         snpmers: no_dup_snpmers_in_read,
         minimizers: minimizers_in_read,
@@ -390,8 +393,24 @@ pub fn get_twin_read(
         k: k as u8,
         base_length: len,
         dna_seq: string.try_into().unwrap(),
+        est_id: seq_id
     });
 
+}
+
+fn estimate_sequence_identity(qualities: Option<&Vec<u8>>) -> Option<f64> {
+    if qualities.is_none() {
+        return None;
+    }
+    let mut sum = 0.0;
+    let mut count = 0;
+    for q in qualities.unwrap() {
+        let q = (*q - 33) as f64;
+        let p = 10.0f64.powf(-q / 10.0);
+        sum += p;
+        count += 1;
+    }
+    Some(100. - (sum / count as f64 * 100.))
 }
 
 pub fn split_kmer_mid(

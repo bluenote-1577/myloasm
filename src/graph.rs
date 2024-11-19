@@ -82,7 +82,7 @@ pub struct BidirectedGraph<N, E> {
     pub edges: Vec<Option<E>>,
 }
 
-impl<N: GraphNode, E: GraphEdge> BidirectedGraph<N, E> {
+impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedGraph<N, E> {
 
     //Checks the connextion if it's valid. Returns None if it's not, e.g. the next node is a branch
     //point that can not be integrated
@@ -126,6 +126,13 @@ impl<N: GraphNode, E: GraphEdge> BidirectedGraph<N, E> {
                         return vec![edge_idx];
                     }
                 }
+                //Circular o --> x
+                //          ^  // 
+                for &edge in node.both_edges() {
+                    let edge = self.edges.get(edge).unwrap().as_ref().unwrap();
+                    log::trace!("{:?}",&edge);
+                }
+                log::trace!("{}, {}, {:?}, {:?}, {:?}", in_deg, out_deg, node.in_edges(), node.out_edges(), previous_node);
                 return vec![];
             }
         } else if in_deg == 1 && out_deg != 1 {
@@ -174,7 +181,9 @@ impl<N: GraphNode, E: GraphEdge> BidirectedGraph<N, E> {
                         let current_node = next_node;
                         let next = self.traverse_inout_nonbranch(current_node, prev_node);
                         if next.len() != 1 {
-                            panic!("Unitig path is not linear");
+                            log::trace!("{} Unitig path is not linear", start_node);
+                            path_both[i] = (current_path, current_edges);
+                            break;
                         }
                         curr_edge = next[0];
                         prev_node = Some(current_node);

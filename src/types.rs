@@ -31,6 +31,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
 use bio_seq::prelude::*;
+use rust_lapper::Lapper;
 
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
@@ -168,14 +169,15 @@ pub struct TigRead {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TwinRead {
     pub minimizers: Vec<(usize, u64)>,
     pub snpmers: Vec<(usize, u64)>,
     pub id: String,
     pub k: u8,
     pub base_length: usize,
-    pub dna_seq: Seq<Dna>
+    pub dna_seq: Seq<Dna>,
+    pub est_id: Option<f64>,
 }
 
 
@@ -221,7 +223,7 @@ pub struct Anchor{
 }
 
 // Enum for marking the state of a node during processing
-#[derive(PartialEq, Eq, Clone, Debug, Hash)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash, Copy)]
 pub enum Direction {
     Incoming,
     Outgoing
@@ -251,4 +253,28 @@ pub struct IntermediateStruct{
     pub overlaps: Vec<TwinOverlap>,
     pub twin_reads: Vec<TwinRead>,
     pub snpmer_info: Vec<SnpmerInfo>
+}
+
+#[derive(Debug, Clone)]
+pub struct MappingInfo {
+    pub median_depth: f64,
+    pub mean_depth: f64,
+    pub mapping_boundaries: Lapper<usize, bool>,
+    pub present: bool,
+    pub length: usize,
+}
+
+pub trait NodeMapping {
+    fn median_depth(&self) -> f64;
+    fn mean_depth(&self) -> f64;
+    fn mapping_boundaries(&self) -> &Lapper<usize, bool>;
+    fn set_mapping_info(&mut self, mapping_info: MappingInfo);
+    fn mapping_info_present(&self) -> bool;
+    fn reference_length(&self) -> usize;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Breakpoints {
+    pub pos: usize,
+    pub cov: usize,
 }

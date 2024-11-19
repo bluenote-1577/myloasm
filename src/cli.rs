@@ -9,7 +9,7 @@ use clap::{Parser, ValueEnum};
 )]
 pub struct Cli {
     /// Input FASTQ files
-    #[arg(required = true)]
+    #[arg(num_args = 1..)]
     pub input_files: Vec<String>,
 
     /// K-mer size (must be odd)
@@ -21,7 +21,7 @@ pub struct Cli {
     pub c: usize,
 
     /// Number of threads to use for processing
-    #[arg(short, long, default_value = "5")]
+    #[arg(short, long, default_value = "7")]
     pub threads: usize,
 
     /// Enable homopolymer compression
@@ -29,7 +29,7 @@ pub struct Cli {
     pub homopolymer_compression: bool,
 
     /// Output directory for results
-    #[arg(short, long, default_value = "assembly_out")]
+    #[arg(short, long, default_value = "output")]
     pub output_dir: String,
 
     /// Verbosity level
@@ -41,8 +41,24 @@ pub struct Cli {
     pub tip_length_cutoff: usize,
 
     /// Number of reads in tips to remove
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 3)]
     pub tip_read_cutoff: usize,
+
+    /// Use snpmers
+    #[arg(long, default_value_t=true)]
+    pub use_snpmers: bool,
+
+    /// Disallow reads with < this accuracy from Q-scores for the overlap step. 
+    #[arg(long, default_value_t=95.)]
+    pub quality_value_cutoff: f64,
+
+    /// Snpmer identity threshold for overlaps
+    #[arg(long, default_value_t=99.9)]
+    pub snpmer_threshold: f64,
+
+    /// Error rate for snpmers for binomial test
+    #[arg(long, default_value_t=0.025)]
+    pub snpmer_error_rate: f64,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
