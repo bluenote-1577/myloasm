@@ -59,6 +59,10 @@ pub struct Cli {
     /// Error rate for snpmers for binomial test
     #[arg(long, default_value_t=0.025)]
     pub snpmer_error_rate: f64,
+
+    /// Bloom filter size in GB
+    #[arg(long, default_value_t=3.)]
+    pub bloom_filter_size: f64,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

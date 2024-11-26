@@ -36,13 +36,18 @@ fn main() {
     let k = args.kmer_size;
     let start = std::time::Instant::now();
     let hpc = false;
-    let mut all_maps = vec![];
     let overlaps;
     let mut twin_reads; 
-    let snpmer_info;
+    let kmer_info;
     let output_dir = Path::new(args.output_dir.as_str());
     if !output_dir.exists(){
         std::fs::create_dir_all(output_dir).unwrap();
+    }
+    else{
+        if !output_dir.is_dir(){
+            log::error!("Output directory is not a directory.");
+            std::process::exit(1);
+        }
     }
 
     if fastq_files.len() == 0{
@@ -52,26 +57,19 @@ fn main() {
         }
         overlaps = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("overlaps.bin")).unwrap())).unwrap();
         twin_reads = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("twin_reads.bin")).unwrap())).unwrap();
-        snpmer_info = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("snpmer_info.bin")).unwrap())).unwrap();
+        kmer_info = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("snpmer_info.bin")).unwrap())).unwrap();
     }
     else{
-        for fastq_file in fastq_files.iter() {
-            let test_map = kmer_comp::read_to_split_kmers(fastq_file, k, threads, hpc);
-            all_maps.push(test_map);
-        }
-        log::info!("Time elapsed in for parsing split-mers is: {:?}", start.elapsed());
-
-        let mut big_kmer_map = std::mem::take(&mut all_maps[0]);
-        for i in 1..all_maps.len() {
-            big_kmer_map.extend(std::mem::take(&mut all_maps[i]));
-        }
+        log::info!("Starting assembly...");
+        let big_kmer_map = kmer_comp::read_to_split_kmers(k, threads, &args);
+        log::info!("Time elapsed in for counting k-mers is: {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
-        snpmer_info = kmer_comp::get_snpmers(&big_kmer_map, k);
+        kmer_info = kmer_comp::get_snpmers(big_kmer_map, k, &args);
         log::info!("Time elapsed in for parsing snpmers is: {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
-        twin_reads = kmer_comp::twin_reads_from_snpmers(&snpmer_info, &fastq_files, &args);
+        twin_reads = kmer_comp::twin_reads_from_snpmers(&kmer_info, &fastq_files, &args);
         log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
 
         // let start = std::time::Instant::now();
@@ -98,84 +96,80 @@ fn main() {
 
         bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("overlaps.bin")).unwrap()), &overlaps).unwrap();
         bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("twin_reads.bin")).unwrap()), &twin_reads).unwrap();
-        bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("snpmer_info.bin")).unwrap()), &snpmer_info).unwrap();
+        bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("snpmer_info.bin")).unwrap()), &kmer_info).unwrap();
     }
     let twin_reads = twin_reads;
     
     let start = std::time::Instant::now();
     let mut graph = twin_graph::read_graph_from_overlaps_twin(&twin_reads, &overlaps, &args);
+    graph.transitive_reduction();
+    twin_graph::print_graph_stdout(&graph, output_dir.join("edges_reduced.tsv"));
+    let mut unitig_graph = unitig::UnitigGraph::from_overlap_graph(&graph, &twin_reads);
     log::info!("Time elapsed for obtaining overlap graphs is: {:?}", start.elapsed());
 
-    let start = std::time::Instant::now();
-    twin_graph::print_graph_stdout(&graph, output_dir.join("edges.tsv"));
-    graph.transitive_reduction();
-    log::info!("Time elapsed for transitive reduction is: {:?}", start.elapsed());
-
-    twin_graph::print_graph_stdout(&graph, output_dir.join("edges_reduced.tsv"));
-
-    let start = std::time::Instant::now();
-    let mut unitig_graph = unitig::UnitigGraph::from_overlap_graph(&graph, &twin_reads);
     if cfg!(debug_assertions) {
         unitig_graph.test_consistent_left_right_edges();
     }
-    unitig_graph.get_sequence_info(&twin_reads, true);
+    unitig_graph.get_sequence_info(&twin_reads, true, false);
     log::info!("Time elapsed for initial unitig construction is: {:?}", start.elapsed());
     unitig_graph.to_gfa(output_dir.join("unitig_graph.gfa"), true, &twin_reads);
 
 
     let start = std::time::Instant::now();
+    let mut iteration = 1;
+    let divider = 3;
+
+    loop{
+        log::info!("Cleaning graph iteration {}", iteration);
+        unitig_graph.resolve_bridged_repeats(&args, 0.75/(divider as f64) * iteration as f64);
+        unitig_graph.get_sequence_info(&twin_reads, true, false);
+        unitig_graph.to_gfa(output_dir.join(format!("{}-resolve_unitig_graph.gfa", iteration)), true, &twin_reads);
+
+        let mut size_graph = unitig_graph.nodes.len();
+        loop{
+            unitig_graph.remove_tips(args.tip_length_cutoff/divider, args.tip_read_cutoff/divider * iteration);
+            unitig_graph.get_sequence_info(&twin_reads, true, false);
+            unitig_graph.to_gfa(output_dir.join(format!("{}-tip_unitig_graph.gfa", iteration)), true, &twin_reads);
+            if unitig_graph.nodes.len() == size_graph{
+                break;
+            }
+            size_graph = unitig_graph.nodes.len();
+        }
+
+        unitig_graph.pop_bubbles(75000/divider * iteration);
+        unitig_graph.get_sequence_info(&twin_reads, true, false);
+        unitig_graph.to_gfa(output_dir.join(format!("{}-bubble_unitig_graph.gfa", iteration)), true, &twin_reads);
+
+        iteration += 1;
+        if iteration == 4{
+            break;
+        }
+    }
 
     let mut size_graph = unitig_graph.nodes.len();
     loop{
         unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff);
+        unitig_graph.get_sequence_info(&twin_reads, true, false);
+        unitig_graph.pop_bubbles(75000);
+        unitig_graph.get_sequence_info(&twin_reads, true, false);
         if unitig_graph.nodes.len() == size_graph{
             break;
         }
         size_graph = unitig_graph.nodes.len();
     }
+    unitig_graph.to_gfa(output_dir.join("pre-final_unitig_graph.gfa"), true, &twin_reads);
 
-    log::info!("Time elapsed for tip removal construction is: {:?}", start.elapsed());
-    unitig_graph.get_sequence_info(&twin_reads, true);
-    unitig_graph.to_gfa(output_dir.join("tip_unitig_graph.gfa"), true, &twin_reads);
+    // Cut Z-edges 
+    unitig_graph.cut_z_edges(&args);
+    unitig_graph.get_sequence_info(&twin_reads, true, true);
+    log::info!("Time elapsed for cleaning graph is {:?}", start.elapsed());
 
+    log::info!("Aligning reads back to graph...");
     let start = std::time::Instant::now();
-    unitig_graph.pop_bubbles(50000);
-    log::info!("Time elapsed for bubble pop construction is: {:?}", start.elapsed());
-    unitig_graph.get_sequence_info(&twin_reads, false);
-    unitig_graph.to_gfa(output_dir.join("bubble_unitig_graph.gfa"), true, &twin_reads);
-
-    let start = std::time::Instant::now();
-    mapping::map_reads_to_unitigs(&mut unitig_graph, &snpmer_info, &twin_reads, &args);
-    unitig_graph.resolve_bridged_repeats(&args);
-    //unitig_graph.cut_chimeric_regions();
-    unitig_graph.get_sequence_info(&twin_reads, true);
-    let mut size_graph = unitig_graph.nodes.len();
-    loop{
-        unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff);
-        if unitig_graph.nodes.len() == size_graph{
-            break;
-        }
-        size_graph = unitig_graph.nodes.len();
-    }
-    unitig_graph.get_sequence_info(&twin_reads, true);
-    unitig_graph.pop_bubbles(50000);
-    unitig_graph.get_sequence_info(&twin_reads, true);
-    log::info!("Time elapsed for aligning reads to graph and cutting chimeras: {:?}", start.elapsed());
-    unitig_graph.to_gfa(output_dir.join("chimera_unitig_graph.gfa"), true, &twin_reads);
-
-
-    //graph.remove_bubbles();
-    //twin_graph::print_graph_stdout(&graph, "bubbles_removed.tsv");
-
-
-//    let outer_reads = graph::remove_contained_reads(&all_reads_cat, &disjoint_set, &used_ids);
-//    log::info!("Finished removing contained reads");
-//    let overlaps = graph::get_overlaps_outer_reads(&all_reads_cat, &disjoint_set, &used_ids, &outer_reads);
-//    let mut graph = graph::read_graph_from_overlaps(all_reads_cat, &overlaps);
-//    graph::print_graph_stdout(&graph, "edges.tsv");
-//
-//    graph.transitive_reduction();
-//    graph::print_graph_stdout(&graph, "edges_reduced.tsv");
+    mapping::map_reads_to_unitigs(&mut unitig_graph, &kmer_info, &twin_reads, &args);
+    log::info!("Time elapsed for aligning reads to graph is {:?}", start.elapsed());
+    unitig_graph.to_gfa(output_dir.join("final_unitig_graph.gfa"), true, &twin_reads);
+    unitig_graph.print_statistics();
 }
 
 

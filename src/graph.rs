@@ -84,6 +84,16 @@ pub struct BidirectedGraph<N, E> {
 
 impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedGraph<N, E> {
 
+    pub fn remove_edges(&mut self, edges: FxHashSet<EdgeIndex>) {
+        for node in self.nodes.values_mut() {
+            node.in_edges_mut().retain(|x| !edges.contains(x));
+            node.out_edges_mut().retain(|x| !edges.contains(x));
+        }
+        for edge_id in edges {
+            self.edges[edge_id] = None;
+        }
+    }
+
     //Checks the connextion if it's valid. Returns None if it's not, e.g. the next node is a branch
     //point that can not be integrated
     fn valid_unitig_connection(

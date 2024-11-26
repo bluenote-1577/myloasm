@@ -1,4 +1,5 @@
 use std::path::Path;
+use fxhash::hash64;
 use crate::cli::Cli;
 use fxhash::FxHashMap;
 use crate::graph::*;
@@ -86,6 +87,7 @@ impl OverlapTwinGraph{
             edge.node1
         }
     }
+
     pub fn transitive_reduction(&mut self) {
         const FUZZ: usize = 10;
 
@@ -111,12 +113,17 @@ impl OverlapTwinGraph{
                 mark.insert(other_node, Mark::InPlay);
             }
 
+            let mut mark_direction_map = FxHashMap::default();
             let longest = sorted_all_edges.last().unwrap().0 + FUZZ;
 
+            // Iterating over the present node's edges
             for &(length, edge_id, _) in sorted_all_edges.iter() {
                 let edge = self.edges[edge_id].as_ref().unwrap();
                 let other_node = self.other_node(*node_id, edge);
                 let outgoing = self.outgoing_edge(other_node, edge_id);
+                let direction_out_of_initial = self.edges[edge_id].as_ref().unwrap().node_edge_direction(node_id);
+
+                // Iterating over the other node's edges
                 for &(length2, edge_id2, outer2) in &self.get_edges_sorted_by_length(other_node) {
                     //outgoing edge for other node, requires incoming
                     if outgoing && outer2{
@@ -139,6 +146,8 @@ impl OverlapTwinGraph{
                                 mark.get(&third_node).map(|m| *m == Mark::InPlay)
                             {
                                 mark.insert(third_node, Mark::Eliminated);
+                                let valid_directions = mark_direction_map.entry(third_node).or_insert(FxHashSet::default());
+                                valid_directions.insert(direction_out_of_initial);
                                 log::trace!("Potential reduction from {} to {}, length1 {}, length2 {}, longets {}, lensum {}, edge_info1 {:?}, edge_info2 {:?}, outgoing_edge {}, direction_out {}", node_id, third_node, length, length2, longest, lensum, &edge, &next_edge, outer2, outgoing);
                             }
                         }
@@ -149,9 +158,14 @@ impl OverlapTwinGraph{
             for &edge_id in node_data.out_edges.iter().chain(node_data.in_edges.iter()){
                 let edge = self.edges[edge_id].as_ref().unwrap();
                 let other_node = self.other_node(*node_id, edge);
+                let direction_out_of_initial = self.edges[edge_id].as_ref().unwrap().node_edge_direction(node_id);
                 if let Some(Mark::Eliminated) = mark.get(&other_node) {
-                    reduce[edge_id] = true;
-                    log::trace!("Reduced from {} to {}. INFO:{:?}", node_id, other_node, &edge);
+                    if let Some(valid_directions) = mark_direction_map.get(&other_node){
+                        if valid_directions.contains(&direction_out_of_initial){
+                            reduce[edge_id] = true;
+                            log::trace!("Reduced from {} to {}. INFO:{:?}", node_id, other_node, &edge);
+                        }
+                    }
                 }
                 mark.insert(other_node, Mark::Vacant);
             }
@@ -441,7 +455,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
             let twlap = twlap.unwrap();
             let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, args.c as u64);
             writeln!(bufwriter.lock().unwrap(),
-                "{} {} fsv: {} leni: {} {}-{} lenj: {} {}-{} shared_mini: {} REVERSE:{}, snp_diff: {} snp_share: {}, intersect: {:?}, snp_both: {:?}, r1 {} r2 {}",
+                "{} {} fsv:{} leni:{} {}-{} lenj:{} {}-{} shared_mini:{} REVERSE:{}, snp_diff:{} snp_share:{}, intersect:{:?}, snp_both:{:?}, r1 {} r2 {}",
                 i,
                 index,
                 identity * 100.,
@@ -474,17 +488,23 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 }
 
 pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead],  args: &Cli) -> Vec<usize>{
+    let start = std::time::Instant::now();
     let inverted_index_hashmap =
         twin_reads
             .iter()
             .enumerate()
-            .filter(|x| x.1.est_id.is_none() || x.1.est_id.unwrap() > args.quality_value_cutoff)
+            .filter(|x| x.1.est_id.is_none() 
+            || x.1.est_id.unwrap() > args.quality_value_cutoff)
             .fold(FxHashMap::default(), |mut acc, (i, x)| {
                 for &y in x.minimizers.iter() {
+                    if hash64(&y.1) > u64::MAX/3 {
+                        continue;
+                    }
                     acc.entry(y.1).or_insert(vec![]).push(i);
                 }
                 acc
             });
+    //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
 
     //open file for writing
     let name = if indices.is_none() { "all-cont.txt" } else { "subset-cont.txt" };
@@ -503,8 +523,12 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
         if read1.est_id.is_some() && read1.est_id.unwrap() < args.quality_value_cutoff {
             return;
         }
+        let start = std::time::Instant::now();
         let mut index_count_map = FxHashMap::default();
         for &y in read1.minimizers.iter() {
+            if hash64(&y.1) > u64::MAX/3 {
+                continue;
+            }
             if let Some(indices) = inverted_index_hashmap.get(&y.1) {
                 for &index in indices {
                     if index == i {
@@ -514,14 +538,19 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
                 }
             }
         }
+        //println!("Querying took: {:?}", start.elapsed());
 
-        //look at top 5 indices and do disjoint_set distance
+        let start = std::time::Instant::now();
         let mut top_indices = index_count_map.iter().collect::<Vec<_>>();
         top_indices.sort_by(|a, b| b.1.cmp(a.1));
         let top_indices = top_indices.into_iter()
-        .filter(|(_,count)| **count > read1.minimizers.len() as i32 / 20)
+        .filter(|(_,count)| **count > read1.minimizers.len() as i32 / 20 && **count > 5)
         .filter(|(index,_)| twin_reads[**index].base_length > read1.base_length)
         .collect::<Vec<_>>();
+        //println!("Sorting took: {:?}", start.elapsed());
+
+
+        let start = std::time::Instant::now();
         for (index, _) in top_indices.into_iter() {
             // if contained_reads.lock().unwrap().contains(index){
             //     continue;
@@ -543,27 +572,30 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
             let len2 = twin_overlap.end2 - twin_overlap.start2;
             let ol_len = len1.max(len2);
 
-            writeln!(
-                bufwriter_dbg.lock().unwrap(),
-                "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}",
-                read1.id.split_ascii_whitespace().next().unwrap(),
-                &i,
-                twin_overlap.start1,
-                twin_overlap.end1,
-                read2.id.split_ascii_whitespace().next().unwrap(),
-                &index,
-                twin_overlap.start2,
-                twin_overlap.end2,
-                twin_overlap.shared_minimizers,
-                twin_overlap.shared_snpmers,
-                twin_overlap.diff_snpmers,
-                identity,
-                ol_len,
-                read1.base_length,
-                read2.base_length
+            // only do this when log is config to trace
+            if log::log_enabled!(log::Level::Trace) {
+                writeln!(
+                    bufwriter_dbg.lock().unwrap(),
+                    "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}",
+                    read1.id.split_ascii_whitespace().next().unwrap(),
+                    &i,
+                    twin_overlap.start1,
+                    twin_overlap.end1,
+                    read2.id.split_ascii_whitespace().next().unwrap(),
+                    &index,
+                    twin_overlap.start2,
+                    twin_overlap.end2,
+                    twin_overlap.shared_minimizers,
+                    twin_overlap.shared_snpmers,
+                    twin_overlap.diff_snpmers,
+                    identity,
+                    ol_len,
+                    read1.base_length,
+                    read2.base_length
 
-            )
-            .unwrap();
+                )
+                .unwrap();
+            }
 
 
             //Can't be reflexive.
@@ -575,6 +607,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
                 break;
             }
         }
+        //println!("Comparing took: {:?}", start.elapsed());
 
         if !contained.into_inner().unwrap() {
             outer_reads.lock().unwrap().push(i);
@@ -583,7 +616,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
     return outer_reads.into_inner().unwrap();
 }
 
-fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
+pub fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
     // n: number of trials
     // k: number of successes
     // p: probability of success

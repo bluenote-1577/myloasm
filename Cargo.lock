@@ -230,6 +230,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cbloom"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0dae93c94b6b0538bc02c6844855d31bd362804da80c3cc4b455a00b9851caff"
+
+[[package]]
 name = "cc"
 version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -921,6 +927,7 @@ dependencies = [
  "assert_cmd",
  "bincode",
  "bio-seq",
+ "cbloom",
  "clap",
  "csv",
  "dashmap",
@@ -930,6 +937,7 @@ dependencies = [
  "log",
  "needletail",
  "predicates 1.0.8",
+ "rand",
  "rayon",
  "rust-htslib",
  "rust-lapper",

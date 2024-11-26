@@ -1,7 +1,6 @@
 use dashmap::DashMap;
-use crate::cbloom;
+use cbloom::Filter;
 use crate::cli::Cli;
-use crate::twin_graph;
 use std::path::Path;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
@@ -16,7 +15,6 @@ use fishers_exact::fishers_exact;
 use fxhash::FxHashSet;
 use crate::mapping::*;
 use std::io::{BufWriter, Write};
-use std::io::BufReader;
 
 
 fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
@@ -46,66 +44,58 @@ pub fn read_to_split_kmers(
     let map = Arc::new(DashMap::new());
 
     log::info!("Populating bloom filter of size {} GB and counting kmers.", args.bloom_filter_size);
-    let filter = Arc::new(cbloom::Filter::with_size_and_hashers(bf_size as usize, 3));
+    let filter = Arc::new(Filter::with_size_and_hashers(bf_size as usize, 10));
 
-    if bf_size > 0.{
-        for fastq_file in args.input_files.iter(){
-            let (mut tx, rx) = spmc::channel();
-            let file = fastq_file.to_owned();
-            thread::spawn(move || {
-                let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
-                let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
-                while let Some(record) = reader.next() {
-                    let rec = record.expect("Error reading record");
-                    let seq;
-                    if homopolymer_comp {
-                        seq = homopolymer_compression(rec.seq().to_vec());
-                    } else {
-                        seq = rec.seq().to_vec();
-                    }
-                    tx.send(seq).unwrap();
+    for fastq_file in args.input_files.iter(){
+        let (mut tx, rx) = spmc::channel();
+        let file = fastq_file.to_owned();
+        thread::spawn(move || {
+            let mut reader = needletail::parse_fastx_file(file).expect("valid path");
+            while let Some(record) = reader.next() {
+                let rec = record.expect("Error reading record");
+
+                let seq;
+                if homopolymer_comp {
+                    seq = homopolymer_compression(rec.seq().to_vec());
+                } else {
+                    seq = rec.seq().to_vec();
                 }
-            });
+                tx.send(seq).unwrap();
+            }
+        });
 
-            let mut handles = Vec::new();
-            for _ in 0..threads {
-                let filter = Arc::clone(&filter);
-                let map = Arc::clone(&map);
-                let rx = rx.clone();
-                let mut myhashmap = FxHashSet::default();
-                handles.push(thread::spawn(move || {
-                    loop{
-                        match rx.recv() {
-                            Ok(msg) => {
-                                let split_kmer_info = seeding::split_kmer_mid(msg, k);
-                                for kmer_i in split_kmer_info.iter() {
-                                    if filter.maybe_insert(kmer_i.split_kmer) {
-                                        myhashmap.insert((kmer_i.split_kmer, kmer_i.mid_base));
-                                    }
-                                    //Batching might help with repetitive k-mers
-                                    if myhashmap.len() > 125_000{
-                                        for key in myhashmap.into_iter(){
-                                            map.insert(key, [0,0]);
-                                        }
-                                        myhashmap = FxHashSet::default();
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let filter = Arc::clone(&filter);
+            let map = Arc::clone(&map);
+            let rx = rx.clone();
+            handles.push(thread::spawn(move || {
+                loop{
+                    match rx.recv() {
+                        Ok(msg) => {
+                            let split_kmer_info = seeding::split_kmer_mid(msg, k);
+                            for kmer_i in split_kmer_info.iter() {
+                                if !filter.maybe_contains(kmer_i.split_kmer) {
+                                    filter.insert(kmer_i.split_kmer);   
+                                }
+                                else{
+                                    if !map.contains_key(&(kmer_i.split_kmer, kmer_i.mid_base)){
+                                        map.insert((kmer_i.split_kmer, kmer_i.mid_base), [0,0]);
                                     }
                                 }
-                            }
-                            Err(_) => {
-                                for key in myhashmap.into_iter(){
-                                    map.insert(key, [0,0]);
-                                }
-                                // When sender is dropped, recv will return an Err, and we can break the loop
-                                break;
                             }
                         }
+                        Err(_) => {
+                            // When sender is dropped, recv will return an Err, and we can break the loop
+                            break;
+                        }
                     }
-                }));
-            }
+                }
+            }));
+        }
 
-            for handle in handles {
-                handle.join().unwrap();
-            }
+        for handle in handles {
+            handle.join().unwrap();
         }
     }
 
@@ -117,8 +107,7 @@ pub fn read_to_split_kmers(
         let (mut tx, rx) = spmc::channel();
         let file = fastq_file.to_owned();
         thread::spawn(move || {
-            let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
-            let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
+            let mut reader = needletail::parse_fastx_file(file).expect("valid path");
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
                 let seq;
@@ -141,17 +130,7 @@ pub fn read_to_split_kmers(
                         Ok(msg) => {
                             let split_kmer_info = seeding::split_kmer_mid(msg, k);
                             for kmer_i in split_kmer_info.iter() {
-                                if bf_size > 0.{
-                                    if let Some(mut counts) = map.get_mut(&(kmer_i.split_kmer, kmer_i.mid_base)){
-                                        if kmer_i.canonical{
-                                            counts[0] += 1;
-                                        }
-                                        else{
-                                            counts[1] += 1;
-                                        }
-                                    }   
-                                }
-                                else{
+                                if map.contains_key(&(kmer_i.split_kmer, kmer_i.mid_base)){
                                     let mut counts = map.entry((kmer_i.split_kmer, kmer_i.mid_base)).or_insert([0,0]);
                                     if kmer_i.canonical{
                                         counts[0] += 1;
@@ -159,7 +138,7 @@ pub fn read_to_split_kmers(
                                     else{
                                         counts[1] += 1;
                                     }
-                                }
+                                }   
                             }
                         }
                         Err(_) => {
@@ -175,21 +154,15 @@ pub fn read_to_split_kmers(
         }
     }
     
-    let map_size_raw = map.len();
-    map.retain(|_, v| v[0] > 0 && v[1] > 0);
-    let map_size_retain = map.len();
-    log::info!("Removed {} kmers with counts < 1 in both strands.", map_size_raw - map_size_retain);
-    if map_size_retain < map_size_raw / 1000 {
-        log::warn!("Less than 0.1% of kmers have counts > 1 in both strands. This may indicate a problem with the input data or very low coverage.");
-    }
+    map.retain(|_, v| v[0] + v[1] > 1);
 
     return Arc::try_unwrap(map).unwrap();
 }
 
-pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String], args: &Cli) -> Vec<TwinRead>{
+pub fn twin_reads_from_snpmers(snpmer_vec: &Vec<SnpmerInfo>, fastq_files: &[String], args: &Cli) -> Vec<TwinRead>{
 
     let mut snpmer_set = FxHashSet::default();
-    for snpmer_i in kmer_info.snpmer_info.iter(){
+    for snpmer_i in snpmer_vec.iter(){
         let k = snpmer_i.k as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k-1) );
         let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k-1) );
@@ -198,6 +171,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String
     }
 
     let snpmer_set = Arc::new(snpmer_set);
+
     let twin_read_vec = Arc::new(Mutex::new(vec![]));
 
     let files_owned = fastq_files.iter().map(|x| x.to_string()).collect::<Vec<String>>();
@@ -264,22 +238,10 @@ pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String
 
     let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
     twin_reads.sort_by(|a,b| a.id.cmp(&b.id));
-    let solid = &kmer_info.solid_kmers;
-    for tr in twin_reads.iter_mut(){
-        let mut new_mini = vec![];
-        for mini in tr.minimizers.iter(){
-            if solid.contains(&mini.1){
-                new_mini.push(*mini);
-            }
-        }
-        tr.minimizers = new_mini;
-    }
 
-    if log::log_enabled!(log::Level::Trace) {
-        for twin_read in twin_reads.iter(){
-            let decoded_snpmers = twin_read.snpmers.iter().map(|x| (x.0, decode_kmer(x.1, twin_read.k))).collect::<Vec<_>>();
-            log::trace!("{} {:?}", twin_read.id, decoded_snpmers);
-        }
+    for twin_read in twin_reads.iter(){
+        let decoded_snpmers = twin_read.snpmers.iter().map(|x| (x.0, decode_kmer(x.1, twin_read.k))).collect::<Vec<_>>();
+        log::trace!("{} {:?}", twin_read.id, decoded_snpmers);
     }
 
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
@@ -288,35 +250,19 @@ pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String
     return twin_reads;
 }
 
-pub fn get_snpmers(big_kmer_map: DashMap<(u64, u8), [u32;2]>, k: usize, args: &Cli) -> KmerGlobalInfo{
-
+pub fn get_snpmers(big_kmer_map: &DashMap<(u64, u8), [u32;2]>, k: usize) -> Vec<SnpmerInfo>{
 
     log::info!("Finding snpmers...");
     let mut new_map = FxHashMap::default();
-    let mut kmer_counts = vec![];
-    let mut solid_kmers = FxHashSet::default();
-
     for pair in big_kmer_map.iter(){
-        let counts = pair.value();
-        kmer_counts.push(counts[0] + counts[1]);
-    }
-    kmer_counts.sort_unstable();
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - kmer_counts.len() / 50000];
-    log::debug!("High frequency threshold: {}", high_freq_thresh);
-
-    for pair in big_kmer_map.into_iter(){
-        let kmer = pair.0;
-        let counts = pair.1;
+        let kmer = *pair.key();
+        let counts = *pair.value();
         let count = counts[0] + counts[1];
         if count > 2{
             let v = new_map.entry(kmer.0).or_insert(vec![]);
             v.push((counts, kmer.1));
-            if count < high_freq_thresh{
-                solid_kmers.insert(kmer.0 | ((kmer.1 as u64) << (k-1)));
-            }
         }
     }
-
 
     let mut potential_snps = 0;
     let mut snpmers = vec![];
@@ -326,25 +272,19 @@ pub fn get_snpmers(big_kmer_map: DashMap<(u64, u8), [u32;2]>, k: usize, args: &C
 
             //Errors are differentiated because they will have > 2 alleles
             //and the smallest alleles will have a low count. 
-            if vec.len() > 1{
-                let n = vec[0].0[0] + vec[0].0[1];
-                let k = vec[1].0[0] + vec[1].0[1];
-                let right_p_val_thresh1 = twin_graph::binomial_test(n as u64 ,k as u64,0.025);
-                let right_p_val_thresh2 = twin_graph::binomial_test(n as u64 ,k as u64,0.050);
-                let cond1 = right_p_val_thresh1 > 0.05;
-                let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
-                if cond1 || cond2 {
-                    log::trace!("NOT SNPMER BINOMIAL c:{:?} c:{:?}",  vec[0].0, vec[1].0);
+            if vec.len() > 2{
+                if (vec[0].0[0] + vec[0].0[1]) / 100 > vec[2].0[0] + vec[2].0[1]{
+                    log::trace!("NOT SNPMER ERROR c:{:?} c:{:?} c:{:?}",  vec[0].0, vec[1].0, vec[2].0);
                     continue;
                 }
             }
 
             //Add pseudocount... especially when all reads are 
             //already in forward strand (happens when debugging or manipulation via samtools)
-            let a = vec[0].0[0];
-            let b = vec[1].0[0];
-            let c = vec[0].0[1];
-            let d = vec[1].0[1];
+            let a = vec[0].0[0] + 1;
+            let b = vec[1].0[0] + 1;
+            let c = vec[0].0[1] + 1;
+            let d = vec[1].0[1] + 1;
             let contingency_table = [
                 a.max(c), b.max(d),
                 c.min(a), d.min(b)
@@ -371,8 +311,8 @@ pub fn get_snpmers(big_kmer_map: DashMap<(u64, u8), [u32;2]>, k: usize, args: &C
                 };
                 snpmers.push(snpmer);
 
-                let snpmer1 = *kmer as u64 | ((vec[0].1 as u64) << (k-1));
-                let snpmer2 = *kmer as u64 | ((vec[1].1 as u64) << (k-1));
+                let snpmer1 = *kmer as u64 | ((vec[0].1 as u64) << k);
+                let snpmer2 = *kmer as u64 | ((vec[1].1 as u64) << k);
                 log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer(snpmer1, k as u8), vec[0].0, decode_kmer(snpmer2, k as u8), vec[1].0, p_value, odds);
                 potential_snps += 1;
 
@@ -384,11 +324,7 @@ pub fn get_snpmers(big_kmer_map: DashMap<(u64, u8), [u32;2]>, k: usize, args: &C
     }
 
     log::info!("Number of snpmers: {}. ", potential_snps);
-    return KmerGlobalInfo{
-        snpmer_info: snpmers,
-        solid_kmers: solid_kmers,
-        high_freq_thresh: high_freq_thresh as f64,
-    };
+    return snpmers;
 }
 
 pub fn parse_unitigs_into_table(cuttlefish_file: &str) -> (FxHashMap<u64, u32>, Vec<Vec<u8>>) {
@@ -606,16 +542,13 @@ pub fn split_outer_reads(mut twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinRea
             let twin_read = std::mem::take(twin_read);
 
             let breakpoints = mapping::cov_mapping_breakpoints(map_info);
-
-            if log::log_enabled!(log::Level::Trace) {
-                let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
-                for depth in depths{
-                    let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
-                    for breakpoint in breakpoints.iter(){
-                        string.push_str(format!("--{}--", breakpoint.pos).as_str());
-                    }
-                    writeln!(writer, "{}", &string).unwrap();
+            let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
+            for depth in depths{
+                let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
+                for breakpoint in breakpoints.iter(){
+                    string.push_str(format!("--{}--", breakpoint.pos).as_str());
                 }
+                writeln!(writer, "{}", &string).unwrap();
             }
             if breakpoints.len() == 0{
                 new_outer_indices.push(new_twin_reads.len());

@@ -461,10 +461,12 @@ pub fn split_kmer_mid(
 
         let split_f = rolling_kmer_f_marker & split_mask;
         let split_r = rolling_kmer_r_marker & split_mask;
-        //        rolling_kmer_r &= max_mask;
-        //        KmerEnc::print_string(rolling_kmer_f, k);
-        //        KmerEnc::print_string(rolling_kmer_r, k);
-        //
+
+        //Palindromes can mess things up because the middle base
+        //is automatically a SNPmer. 
+        if split_f == split_r{
+            continue;
+        }
 
         let canonical_marker = split_f < split_r;
         let canonical_kmer_marker; 

@@ -157,7 +157,7 @@ pub struct TigdexOverlap {
 pub struct ChainInfo {
     pub chain: Vec<Anchor>,
     pub reverse: bool,
-    pub score: f64,
+    pub score: i32,
 }
 
 pub type EdgeIndex = usize;
@@ -181,12 +181,19 @@ pub struct TwinRead {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
 pub struct SplitKmerInfo {
     pub split_kmer: Kmer64,
     pub mid_base: u8,
     pub canonical: bool,
     pub k: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct KmerGlobalInfo {
+    pub snpmer_info: Vec<SnpmerInfo>,
+    pub solid_kmers: FxHashSet<Kmer64>,
+    pub high_freq_thresh: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -215,11 +222,10 @@ pub struct TwinOverlap{
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Anchor{
-    pub i: usize,
-    pub j: usize,
-    pub pos1: usize,
-    pub pos2: usize,
-    pub score: f64
+    pub i: u32,
+    pub j: u32,
+    pub pos1: u32,
+    pub pos2: u32,
 }
 
 // Enum for marking the state of a node during processing
