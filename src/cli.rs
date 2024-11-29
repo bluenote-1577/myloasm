@@ -49,7 +49,7 @@ pub struct Cli {
     pub use_snpmers: bool,
 
     /// Disallow reads with < this accuracy from Q-scores for the overlap step. 
-    #[arg(long, default_value_t=95.)]
+    #[arg(long, default_value_t=90.)]
     pub quality_value_cutoff: f64,
 
     /// Snpmer identity threshold for overlaps

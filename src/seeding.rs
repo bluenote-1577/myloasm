@@ -472,14 +472,14 @@ pub fn split_kmer_mid(
         let canonical_kmer_marker; 
         let mid_base; 
         if canonical_marker {
-            canonical_kmer_marker = split_f;
+            canonical_kmer_marker = rolling_kmer_f_marker;
             mid_base = (rolling_kmer_f_marker & split_mask_extract) >> (k-1) as u64;
         } else {
-            canonical_kmer_marker = split_r;
+            canonical_kmer_marker = rolling_kmer_r_marker;
             mid_base = (rolling_kmer_r_marker & split_mask_extract) >> (k-1) as u64;
         };
         let split_kmer_info = SplitKmerInfo{
-            split_kmer: canonical_kmer_marker,
+            full_kmer: canonical_kmer_marker,
             mid_base : mid_base as u8,
             canonical: canonical_marker,
             k: k as u8

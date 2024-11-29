@@ -1,5 +1,7 @@
 use std::arch::x86_64::*;
 use crate::types::*;
+use rust_lapper::Interval;
+use fxhash::FxHashSet;
 
 #[target_feature(enable = "avx2")]
 pub unsafe fn dp_anchors_simd(
@@ -8,9 +10,9 @@ pub unsafe fn dp_anchors_simd(
     gap_cost: i32,
     match_score: i32,
     band: usize,
-) -> (i32, Vec<Anchor>) {
+) -> Vec<(i32, Vec<Anchor>)> {
     if matches.is_empty() {
-        return (0, Vec::new());
+        return vec![(0, Vec::new())];
     }
     let mut dp = vec![0i32; matches.len()];
     let mut prev = vec![None; matches.len()];
@@ -167,13 +169,49 @@ pub unsafe fn dp_anchors_simd(
     }
     
     // Reconstruct the chain
-    let mut chain = Vec::new();
-    let mut i = Some(max_index);
-    while let Some(idx) = i {
-        chain.push(matches[idx].clone());
-        i = prev[idx];
+    let mut chains = Vec::new();
+    let mut used_anchors = FxHashSet::default();
+    let mut reference_ranges : Vec<Interval<u32,bool>> = Vec::new();
+    let mut best_indices_ordered = (0..matches.len())
+        .map(|i| (dp[i], i))
+        .collect::<Vec<_>>();
+    best_indices_ordered.sort_unstable_by_key(|&(score, _)| -score);
+    assert!(dp[max_index] == best_indices_ordered[0].0);
+
+    for (score, best_index) in best_indices_ordered{
+        if used_anchors.contains(&best_index) {
+            continue;
+        }
+        if score < max_score * 3 / 4 {
+            break;
+        }
+
+        let mut chain = Vec::new();
+        let mut i = Some(best_index);
+        while let Some(idx) = i {
+            used_anchors.insert(idx);
+            chain.push(matches[idx].clone());
+            i = prev[idx];
+        }
+
+        if chain.len() < 2 {
+            break;
+        }
+
+        chain.reverse();
+
+        let l = chain.first().unwrap().pos2;
+        let r = chain.last().unwrap().pos2;
+        let interval = Interval{start: l.min(r), stop: l.max(r), val: true};
+        if reference_ranges.iter().any(|x| {
+            let intersect = x.intersect(&interval);
+            intersect as f64 / (interval.stop - interval.start) as f64 > 0.25
+        }) {
+            continue;
+        }
+        chains.push((score, chain));
+        reference_ranges.push(interval);
     }
     
-    chain.reverse();
-    (max_score, chain)
+    return chains
 }

@@ -8,6 +8,7 @@ pub mod unitig;
 pub mod cli;
 pub mod constants;
 pub mod cbloom;
+pub mod consensus;
 
 #[cfg(target_arch = "x86_64")]
 pub mod avx2_seeding;

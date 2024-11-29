@@ -297,3 +297,4 @@ pub fn orientation_list<E: GraphEdge>(node_indices: &[NodeIndex], edges: &[E]) -
     }
     return orientations
 }
+

@@ -25,6 +25,7 @@
 //SOFTWARE.
 //******************************
 
+use smallvec::SmallVec;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -37,6 +38,8 @@ pub type Kmer64 = u64;
 pub type Kmer32 = u32;
 pub type KmerHash64 = u64;
 pub type KmerHash32 = u32;
+pub type Snpmer64 = u64;
+pub type Splitmer64 = u64;
 
 pub const BYTE_TO_SEQ: [u8; 256] = [
     0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -169,6 +172,8 @@ pub struct TigRead {
     pub id: String,
 }
 
+//TODO: we restructure minimizers and snpmmer positions to another vector
+//and change to u32 to save space
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TwinRead {
     pub minimizers: Vec<(usize, u64)>,
@@ -183,7 +188,7 @@ pub struct TwinRead {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
 pub struct SplitKmerInfo {
-    pub split_kmer: Kmer64,
+    pub full_kmer: Kmer64,
     pub mid_base: u8,
     pub canonical: bool,
     pub k: u8,
@@ -196,11 +201,11 @@ pub struct KmerGlobalInfo {
     pub high_freq_thresh: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Ord, PartialOrd, Hash)]
 pub struct SnpmerInfo {
     pub split_kmer: u64,
-    pub mid_bases: Vec<u8>,
-    pub counts: Vec<u32>,
+    pub mid_bases: SmallVec<[u8;2]>,
+    pub counts: SmallVec<[u32;2]>,
     pub k: u8,
 }
 
@@ -218,6 +223,12 @@ pub struct TwinOverlap{
     pub diff_snpmers: usize,
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
+pub struct CountsAndBases{
+    pub counts: SmallVec<[[u32;2];4]>,
+    pub bases: SmallVec<[u8; 4]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -254,33 +265,30 @@ pub fn bits_to_ascii(bit_rep: u8) -> u8{
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-pub struct IntermediateStruct{
-    pub overlaps: Vec<TwinOverlap>,
-    pub twin_reads: Vec<TwinRead>,
-    pub snpmer_info: Vec<SnpmerInfo>
-}
 
 #[derive(Debug, Clone)]
 pub struct MappingInfo {
     pub median_depth: f64,
     pub mean_depth: f64,
-    pub mapping_boundaries: Lapper<usize, bool>,
+    pub mapping_boundaries: Lapper<u32, bool>,
     pub present: bool,
     pub length: usize,
+    pub mapped_indices: Vec<usize>
 }
 
 pub trait NodeMapping {
     fn median_depth(&self) -> f64;
     fn mean_depth(&self) -> f64;
-    fn mapping_boundaries(&self) -> &Lapper<usize, bool>;
+    fn mapping_boundaries(&self) -> &Lapper<u32, bool>;
     fn set_mapping_info(&mut self, mapping_info: MappingInfo);
     fn mapping_info_present(&self) -> bool;
     fn reference_length(&self) -> usize;
+    fn mapped_indices(&self) -> &Vec<usize>;
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Breakpoints {
-    pub pos: usize,
+    pub pos1: usize,
+    pub pos2: usize,
     pub cov: usize,
 }
