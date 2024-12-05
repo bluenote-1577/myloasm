@@ -1,6 +1,7 @@
 use crate::types::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
+use std::collections::HashSet;
 
 //create new alias kmer = u64
 pub type Kmer64 = u64;
@@ -369,11 +370,11 @@ pub fn get_twin_read(
         };
         
         if snpmer_set.contains(&canonical_kmer_marker){
-            snpmers_in_read.push((i, canonical_kmer_marker));
+            snpmers_in_read.push((i + 1 - k, canonical_kmer_marker));
             *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
         }
         else if mm_hash64(canonical_kmer_marker) < threshold {
-            minimizers_in_read.push((i, canonical_kmer_marker));
+            minimizers_in_read.push((i + 1 - k, canonical_kmer_marker));
         }
     }
 

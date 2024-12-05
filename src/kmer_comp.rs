@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use std::collections::HashSet;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cbloom;
@@ -40,7 +41,7 @@ pub fn read_to_split_kmers(
     k: usize,
     threads: usize,
     args: &Cli,
-) -> DashMap<u64,[u32;2], MMBuildHasher>{
+) -> Vec<(u64,[u32;2])>{
 
     let homopolymer_comp = args.homopolymer_compression;
     let bf_size = args.bloom_filter_size * 1_000_000_000.;
@@ -111,6 +112,7 @@ pub fn read_to_split_kmers(
     }
 
     drop(filter);
+    map.shrink_to_fit();
 
     log::info!("Bloom filter populated. Counting kmers.");
     //Round 2, actually count
@@ -184,19 +186,20 @@ pub fn read_to_split_kmers(
     }
     
     let map_size_raw = map.len();
-    map.retain(|_, v| v[0] > 0 && v[1] > 0);
-    let map_size_retain = map.len();
-    log::info!("Removed {} kmers with counts < 1 in both strands.", map_size_raw - map_size_retain);
+    let map = Arc::try_unwrap(map).unwrap();
+    let new_map = map.into_iter().filter(|(_, v)| v[0] > 0 && v[1] > 0 && v[0] + v[1] > 2).collect::<Vec<(u64,[u32;2])>>();
+    let map_size_retain = new_map.len();
+    log::info!("Removed {} kmers with counts < 1 in both strands and <= 3 multiplicity.", map_size_raw - map_size_retain);
     if map_size_retain < map_size_raw / 1000 {
-        log::warn!("Less than 0.1% of kmers have counts > 1 in both strands. This may indicate a problem with the input data or very low coverage.");
+        log::warn!("Less than 0.1% of kmers have counts > 1 in both strands and > 2 multiplicity. This may indicate a problem with the input data or very low coverage.");
     }
 
-    return Arc::try_unwrap(map).unwrap();
+    return new_map;
 }
 
-pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String], args: &Cli) -> Vec<TwinRead>{
+pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, fastq_files: &[String], args: &Cli) -> Vec<TwinRead>{
 
-    let mut snpmer_set = FxHashSet::default();
+    let mut snpmer_set = HashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter(){
         let k = snpmer_i.k as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k-1) );
@@ -210,6 +213,8 @@ pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String
 
     let files_owned = fastq_files.iter().map(|x| x.to_string()).collect::<Vec<String>>();
     let hpc = args.homopolymer_compression;
+    let solid_kmers_take = std::mem::take(&mut kmer_info.solid_kmers);
+    let arc_solid = Arc::new(solid_kmers_take);
 
     for fastq_file in files_owned{
         let (mut tx, rx) = spmc::channel();
@@ -242,18 +247,39 @@ pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String
         for _ in 0..args.threads{
             let rx = rx.clone();
             let set = Arc::clone(&snpmer_set);
+            let solid = Arc::clone(&arc_solid);
             let twrv = Arc::clone(&twin_read_vec);
             handles.push(thread::spawn(move || {
                 loop{
                     match rx.recv() {
                         Ok(msg) => {
                             let seq = msg.0;
+                            let seqlen = seq.len();
                             let qualities = msg.1;
                             let id = msg.2;
-                            let twin_read = seeding::get_twin_read(seq, qualities, k, c, set.as_ref(), id);
+                            let mut twin_read = seeding::get_twin_read(seq, qualities, k, c, set.as_ref(), id);
                             if twin_read.is_some(){
+                                let mut solid_minis = vec![];
+                                let mut solid_snpmers = vec![];
+                                for mini in twin_read.as_mut().unwrap().minimizers.iter(){
+                                    if solid.contains(&mini.1){
+                                        solid_minis.push(*mini);
+                                    }
+                                }
+                                //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff. 
+                                if solid_minis.len() < seqlen / c / 20{
+                                    continue;
+                                }
+                                for snpmer in twin_read.as_mut().unwrap().snpmers.iter(){
+                                    if solid.contains(&snpmer.1){
+                                        solid_snpmers.push(*snpmer);
+                                    }
+                                }
+                                let mut twin_read = twin_read.unwrap();
+                                twin_read.minimizers = solid_minis;
+                                twin_read.snpmers = solid_snpmers;
                                 let mut vec = twrv.lock().unwrap();
-                                vec.push(twin_read.unwrap());
+                                vec.push(twin_read);
                             }
                         }
                         Err(_) => {
@@ -270,18 +296,9 @@ pub fn twin_reads_from_snpmers(kmer_info: &KmerGlobalInfo, fastq_files: &[String
         }
     }
 
+    kmer_info.solid_kmers = Arc::try_unwrap(arc_solid).unwrap();
     let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
     twin_reads.sort_by(|a,b| a.id.cmp(&b.id));
-    let solid = &kmer_info.solid_kmers;
-    for tr in twin_reads.iter_mut(){
-        let mut new_mini = vec![];
-        for mini in tr.minimizers.iter(){
-            if solid.contains(&mini.1){
-                new_mini.push(*mini);
-            }
-        }
-        tr.minimizers = new_mini;
-    }
 
     if log::log_enabled!(log::Level::Trace) {
         for twin_read in twin_reads.iter(){
@@ -305,37 +322,39 @@ pub fn split_kmer(kmer: u64, k: usize) -> (u64, u8){
     return (masked_kmer, mid_base as u8);
 }
 
-pub fn get_snpmers(big_kmer_map: DashMap<Kmer64, [u32;2], MMBuildHasher>, k: usize, _args: &Cli) -> KmerGlobalInfo{
+pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, _args: &Cli) -> KmerGlobalInfo{
 
+    log::info!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
     log::info!("Finding snpmers...");
     let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
-    let mut solid_kmers = FxHashSet::default();
+    let mut solid_kmers = HashSet::default();
 
     for pair in big_kmer_map.iter(){
-        let counts = pair.value();
+        let counts = pair.1;
         kmer_counts.push(counts[0] + counts[1]);
     }
-    kmer_counts.sort_unstable();
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - kmer_counts.len() / 50000];
-    log::debug!("High frequency threshold: {}", high_freq_thresh);
+
+    kmer_counts.par_sort_unstable();
+    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 50000) - 1].max(100);
+    log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
     for pair in big_kmer_map.into_iter(){
         let kmer = pair.0;
         let (split_kmer, mid_base) = split_kmer(kmer, k);
         let counts = pair.1;
-        let count = counts[0] + counts[1];
-        if count > 2{
-            let v = new_map_counts_bases.entry(split_kmer).or_insert(CountsAndBases{counts: SmallVec::new(), bases: SmallVec::new()});
-            v.counts.push(counts);
-            v.bases.push(mid_base);
+        if counts[0] > 0 && counts[1] > 0{
+            let count = counts[0] + counts[1];
             if count < high_freq_thresh{
                 solid_kmers.insert(kmer);
+                let v = new_map_counts_bases.entry(split_kmer).or_insert(CountsAndBases{counts: SmallVec::new(), bases: SmallVec::new()});
+                v.counts.push(counts);
+                v.bases.push(mid_base);
+
             }
         }
     }
-
 
     let potential_snps = Mutex::new(0);
     let snpmers = Mutex::new(vec![]);
@@ -349,8 +368,8 @@ pub fn get_snpmers(big_kmer_map: DashMap<Kmer64, [u32;2], MMBuildHasher>, k: usi
             //and the smallest alleles will have a low count. 
             let n = counts[0][0] + counts[0][1];
             let succ = counts[1][0] + counts[1][1];
-            let right_p_val_thresh1 = twin_graph::binomial_test(n as u64 , succ as u64,0.025);
-            let right_p_val_thresh2 = twin_graph::binomial_test(n as u64 , succ as u64,0.050);
+            let right_p_val_thresh1 = twin_graph::binomial_test(n as u64, succ as u64, 0.025);
+            let right_p_val_thresh2 = twin_graph::binomial_test(n as u64, succ as u64, 0.050);
             let cond1 = right_p_val_thresh1 > 0.05;
             let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
             if cond1 || cond2 {
@@ -439,18 +458,19 @@ fn split_read(twin_read: TwinRead, mut break_points: Vec<Breakpoints>) -> Vec<Tw
     let mut new_reads = vec![];
     break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
     let mut last_break = 0;
+    let k = twin_read.k as usize;
     for (i,break_point) in break_points.iter().enumerate(){
         let bp_start = break_point.pos1;
         let bp_end = break_point.pos2;
         if bp_start - last_break > 1000{
             let mut new_read = TwinRead::default();
-            new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-            new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
+            new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
+            new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.id = format!("{}+split{}", &twin_read.id, i);
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
             new_read.k = twin_read.k;
-            new_read.base_length = bp_start - last_break;
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
+            new_read.base_length = new_read.dna_seq.len();
             new_reads.push(new_read);
         }
         last_break = bp_end;
@@ -458,22 +478,21 @@ fn split_read(twin_read: TwinRead, mut break_points: Vec<Breakpoints>) -> Vec<Tw
     return new_reads;
 }
 
-pub fn split_outer_reads(mut twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, args: &Cli)
+pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, args: &Cli)
 -> (Vec<TwinRead>, Vec<usize>){
     let tr_map_info_dict = tr_map_info.into_iter().map(|x| (x.tr_index, x)).collect::<FxHashMap<usize, TwinReadMapping>>();
-    let mut new_twin_reads = vec![];
-    let mut new_outer_indices = vec![];
+    let new_twin_reads_bools = Mutex::new(vec![]);
     let cov_file = Path::new(args.output_dir.as_str()).join("read_coverages.txt");
-    let mut writer = BufWriter::new(std::fs::File::create(cov_file).unwrap());
-    for (i, twin_read) in twin_reads.iter_mut().enumerate(){
+    let writer = Mutex::new(BufWriter::new(std::fs::File::create(cov_file).unwrap()));
+    twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
         if tr_map_info_dict.contains_key(&i){
-            let map_info = tr_map_info_dict.get(&i).unwrap();
-            let twin_read = std::mem::take(twin_read);
 
+            let map_info = tr_map_info_dict.get(&i).unwrap();
             let breakpoints = mapping::cov_mapping_breakpoints(map_info);
 
             if log::log_enabled!(log::Level::Trace) {
                 let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
+                let writer = &mut writer.lock().unwrap();
                 for depth in depths{
                     let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
                     for breakpoint in breakpoints.iter(){
@@ -483,21 +502,23 @@ pub fn split_outer_reads(mut twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinRea
                 }
             }
             if breakpoints.len() == 0{
-                new_outer_indices.push(new_twin_reads.len());
-                new_twin_reads.push(twin_read);
-                continue;
+                new_twin_reads_bools.lock().unwrap().push((twin_read, true));
             }
             else{
                 let splitted_reads = split_read(twin_read, breakpoints);
                 for new_read in splitted_reads{
-                    new_outer_indices.push(new_twin_reads.len());
-                    new_twin_reads.push(new_read);
+                    new_twin_reads_bools.lock().unwrap().push((new_read, true));
                 }
             }
         }
         else{
-            new_twin_reads.push(std::mem::take(twin_read));
+            new_twin_reads_bools.lock().unwrap().push((twin_read, false));
         }
-    }
+    });
+
+    let mut ntr_bools = new_twin_reads_bools.into_inner().unwrap();
+    ntr_bools.sort_by(|a,b| a.0.id.cmp(&b.0.id));
+    let new_outer_indices = ntr_bools.iter().enumerate().filter(|x| x.1.1).map(|x| x.0).collect::<Vec<usize>>();
+    let new_twin_reads = ntr_bools.into_iter().map(|x| x.0).collect::<Vec<TwinRead>>();
     return (new_twin_reads, new_outer_indices);
 }

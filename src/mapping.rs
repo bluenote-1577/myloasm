@@ -1,6 +1,7 @@
 use crate::cli::Cli;
 use crate::seeding;
 use crate::twin_graph::same_strain;
+use std::collections::HashSet;
 use crate::types::*;
 use crate::unitig;
 use crate::unitig::NodeSequence;
@@ -269,15 +270,52 @@ pub fn dp_anchors(
         }
     }
 
-    let mut chain = Vec::new();
-    let mut i = Some(max_index);
-    while let Some(idx) = i {
-        chain.push(matches[idx].clone());
-        i = prev[idx];
-    }
+    // Reconstruct the chain
+    let mut chains = Vec::new();
+    let mut used_anchors = FxHashSet::default();
+    let mut reference_ranges : Vec<Interval<u32,bool>> = Vec::new();
+    let mut best_indices_ordered = (0..matches.len())
+        .map(|i| (dp[i], i))
+        .collect::<Vec<_>>();
+    best_indices_ordered.sort_unstable_by_key(|&(score, _)| -score);
+    assert!(dp[max_index] == best_indices_ordered[0].0);
 
-    chain.reverse();
-    vec![(max_score, chain)]
+    for (score, best_index) in best_indices_ordered{
+        if used_anchors.contains(&best_index) {
+            continue;
+        }
+        if score < max_score * 3 / 4 {
+            break;
+        }
+
+        let mut chain = Vec::new();
+        let mut i = Some(best_index);
+        while let Some(idx) = i {
+            used_anchors.insert(idx);
+            chain.push(matches[idx].clone());
+            i = prev[idx];
+        }
+
+        if chain.len() < 2 {
+            break;
+        }
+
+        chain.reverse();
+
+        let l = chain.first().unwrap().pos2;
+        let r = chain.last().unwrap().pos2;
+        let interval = Interval{start: l.min(r), stop: l.max(r), val: true};
+        if reference_ranges.iter().any(|x| {
+            let intersect = x.intersect(&interval);
+            intersect as f64 / (interval.stop - interval.start) as f64 > 0.25
+        }) {
+            continue;
+        }
+        chains.push((score, chain));
+        reference_ranges.push(interval);
+    }
+    
+    return chains
 }
 
 fn find_optimal_chain(
@@ -384,6 +422,7 @@ pub fn compare_twin_reads(
     snpmer_anchors: Option<&Anchors>,
     i: usize,
     j: usize,
+    compare_snpmers: bool
 ) -> Vec<TwinOverlap> {
     let mini_chain_infos;
     if let Some(anchors) = mini_anchors {
@@ -398,113 +437,123 @@ pub fn compare_twin_reads(
         mini_chain_infos = find_optimal_chain(&anchors.0, 10, 1, Some((anchors.1 * 10).min(50)));
     }
     let mut twin_overlaps = vec![];
+    let k = seq1.k as usize;
     for mini_chain_info in mini_chain_infos{
         let mini_chain = &mini_chain_info.chain;
-        if mini_chain_info.score < 15 {
+        if mini_chain_info.score < 50 {
             continue;
         }
 
-        let l1 = seq1.minimizers[mini_chain[0].i as usize].0;
-        let r1 = seq1.minimizers[mini_chain[mini_chain.len() - 1].i as usize].0;
-        let l2 = seq2.minimizers[mini_chain[0].j as usize].0;
-        let r2 = seq2.minimizers[mini_chain[mini_chain.len() - 1].j as usize].0;
-        let start1 = l1.min(r1);
-        let end1 = l1.max(r1);
-        let start2 = l2.min(r2);
-        let end2 = l2.max(r2);
+        let mut shared_snpmer = usize::MAX;
+        let mut diff_snpmer = usize::MAX;
 
-        let k = seq1.k as u64;
-        let mask = !(3 << (k - 1));
-        
-        let mut splitmers1 = vec![];
-        let mut ind_redirect1 = vec![];
+        let mut intersect_split = 0;
+        let mut intersection_snp = 0;
 
-        for (i, (pos, snpmer)) in seq1.snpmers.iter().enumerate() {
-            if *pos >= start1 && *pos <= end1 {
-                ind_redirect1.push(i);
-                splitmers1.push((*pos, *snpmer & mask));
+        if compare_snpmers{
+            shared_snpmer = 0;
+            diff_snpmer = 0;
+
+            let l1 = seq1.minimizers[mini_chain[0].i as usize].0;
+            let r1 = seq1.minimizers[mini_chain[mini_chain.len() - 1].i as usize].0;
+            let l2 = seq2.minimizers[mini_chain[0].j as usize].0;
+            let r2 = seq2.minimizers[mini_chain[mini_chain.len() - 1].j as usize].0;
+            let start1 = l1.min(r1);
+            let end1 = l1.max(r1) + k - 1;
+            let start2 = l2.min(r2);
+            let end2 = l2.max(r2) + k - 1;
+
+            let mask = !(3 << (k - 1));
+            
+            let mut splitmers1 = vec![];
+            let mut ind_redirect1 = vec![];
+
+            for (i, (pos, snpmer)) in seq1.snpmers.iter().enumerate() {
+                if *pos >= start1 && *pos <= end1 {
+                    ind_redirect1.push(i);
+                    splitmers1.push((*pos, *snpmer & mask));
+                }
             }
-        }
 
-        let mut splitmers2 = vec![];
-        let mut ind_redirect2 = vec![];
+            let mut splitmers2 = vec![];
+            let mut ind_redirect2 = vec![];
 
-        for (i, (pos, snpmer)) in seq2.snpmers.iter().enumerate() {
-            if *pos >= start2 && *pos <= end2 {
-                ind_redirect2.push(i);
-                splitmers2.push((*pos, *snpmer & mask));
+            for (i, (pos, snpmer)) in seq2.snpmers.iter().enumerate() {
+                if *pos >= start2 && *pos <= end2 {
+                    ind_redirect2.push(i);
+                    splitmers2.push((*pos, *snpmer & mask));
+                }
             }
-        }
-        
-        let split_chain_opt;
-        if let Some(anchors) = snpmer_anchors {
-            split_chain_opt = find_optimal_chain(&anchors.anchors, 50, 1, Some((anchors.max_mult * 10).min(50))).into_iter().max_by_key(|x| x.score);
-        } else {
-            let anchors = find_exact_matches_indexes(&splitmers1, &splitmers2);
-            let chains = find_optimal_chain(&anchors.0, 50, 1, Some((anchors.1 * 10).min(50)));
-            split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
-        }
+            
+            let split_chain_opt;
+            if let Some(anchors) = snpmer_anchors {
+                split_chain_opt = find_optimal_chain(&anchors.anchors, 50, 1, Some((anchors.max_mult * 10).min(50))).into_iter().max_by_key(|x| x.score);
+            } else {
+                let anchors = find_exact_matches_indexes(&splitmers1, &splitmers2);
+                let chains = find_optimal_chain(&anchors.0, 50, 1, Some((anchors.1 * 10).min(50)));
+                split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
+            }
 
-        let mut shared_snpmer = 0;
-        let mut diff_snpmer = 0;
-        //If mini chain goes opposite from split chain, probably split chain
-        //is not reliable, so set shared and diff = 0. 
-        if let Some(split_chain) = split_chain_opt.as_ref(){
-            if split_chain.reverse == mini_chain_info.reverse || split_chain.chain.len() == 1 {
-                for anchor in split_chain.chain.iter() {
-                    let i = anchor.i;
-                    let i = ind_redirect1[i as usize];
-                    let j = anchor.j;
-                    let j = ind_redirect2[j as usize];
-                    if seq1.snpmers[i as usize].1 == seq2.snpmers[j as usize].1 {
-                        shared_snpmer += 1;
-                    } else {
-                        diff_snpmer += 1;
+
+            //If mini chain goes opposite from split chain, probably split chain
+            //is not reliable, so set shared and diff = 0. 
+            if let Some(split_chain) = split_chain_opt.as_ref(){
+                if split_chain.reverse == mini_chain_info.reverse || split_chain.chain.len() == 1 {
+                    for anchor in split_chain.chain.iter() {
+                        let i = anchor.i;
+                        let i = ind_redirect1[i as usize];
+                        let j = anchor.j;
+                        let j = ind_redirect2[j as usize];
+                        if seq1.snpmers[i as usize].1 == seq2.snpmers[j as usize].1 {
+                            shared_snpmer += 1;
+                        } else {
+                            diff_snpmer += 1;
+                        }
                     }
                 }
             }
-        }
 
-        //Only if log level is trace
-        if log::log_enabled!(log::Level::Trace) {
-            if diff_snpmer < 10 && shared_snpmer > 100{
-                let mut positions_read1_snpmer_diff = vec![];
-                let mut positions_read2_snpmer_diff = vec![];
+            //Only if log level is trace
+            if log::log_enabled!(log::Level::Trace) {
+                if diff_snpmer < 10 && shared_snpmer > 100{
+                    let mut positions_read1_snpmer_diff = vec![];
+                    let mut positions_read2_snpmer_diff = vec![];
 
-                let mut kmers_read1_diff = vec![];
-                let mut kmers_read2_diff = vec![];
+                    let mut kmers_read1_diff = vec![];
+                    let mut kmers_read2_diff = vec![];
 
-                for anchor in split_chain_opt.unwrap().chain.iter() {
-                    let i = anchor.i;
-                    let j = anchor.j;
-                    if seq1.snpmers[i as usize].1 != seq2.snpmers[j as usize].1 {
-                        positions_read1_snpmer_diff.push(seq1.snpmers[i as usize].0);
-                        positions_read2_snpmer_diff.push(seq2.snpmers[j as usize].0);
+                    for anchor in split_chain_opt.unwrap().chain.iter() {
+                        let i = anchor.i;
+                        let j = anchor.j;
+                        if seq1.snpmers[i as usize].1 != seq2.snpmers[j as usize].1 {
+                            positions_read1_snpmer_diff.push(seq1.snpmers[i as usize].0);
+                            positions_read2_snpmer_diff.push(seq2.snpmers[j as usize].0);
 
-                        let kmer1 = decode_kmer(seq1.snpmers[i as usize].1, seq1.k as u8);
-                        let kmer2 = decode_kmer(seq2.snpmers[j as usize].1, seq2.k as u8);
+                            let kmer1 = decode_kmer(seq1.snpmers[i as usize].1, seq1.k as u8);
+                            let kmer2 = decode_kmer(seq2.snpmers[j as usize].1, seq2.k as u8);
 
-                        kmers_read1_diff.push(kmer1);
-                        kmers_read2_diff.push(kmer2);
+                            kmers_read1_diff.push(kmer1);
+                            kmers_read2_diff.push(kmer2);
+                        }
                     }
+                    log::trace!("{}--{:?} {}--{:?}, snp_diff:{} snp_shared:{}, kmers1:{:?}, kmers2:{:?}", &seq1.id, positions_read1_snpmer_diff, &seq2.id, positions_read2_snpmer_diff, diff_snpmer, shared_snpmer, kmers_read1_diff, kmers_read2_diff);
                 }
-                log::trace!("{}--{:?} {}--{:?}, snp_diff:{} snp_shared:{}, kmers1:{:?}, kmers2:{:?}", &seq1.id, positions_read1_snpmer_diff, &seq2.id, positions_read2_snpmer_diff, diff_snpmer, shared_snpmer, kmers_read1_diff, kmers_read2_diff);
             }
-        }
 
-        let intersect_split = splitmers1
-            .iter()
-            .map(|x| x.1)
-            .collect::<FxHashSet<_>>()
-            .intersection(&splitmers2.iter().map(|x| x.1).collect::<FxHashSet<_>>())
-            .count();
-        let intersection_snp = seq1
-            .snpmers
-            .iter()
-            .map(|x| x.1)
-            .collect::<FxHashSet<_>>()
-            .intersection(&seq2.snpmers.iter().map(|x| x.1).collect::<FxHashSet<_>>())
-            .count();
+            intersect_split = splitmers1
+                .iter()
+                .map(|x| x.1)
+                .collect::<FxHashSet<_>>()
+                .intersection(&splitmers2.iter().map(|x| x.1).collect::<FxHashSet<_>>())
+                .count();
+            intersection_snp = seq1
+                .snpmers
+                .iter()
+                .map(|x| x.1)
+                .collect::<FxHashSet<_>>()
+                .intersection(&seq2.snpmers.iter().map(|x| x.1).collect::<FxHashSet<_>>())
+                .count();
+        }
 
         let l1 = seq1.minimizers[mini_chain[0].i as usize].0;
         let r1 = seq1.minimizers[mini_chain[mini_chain.len() - 1].i as usize].0;
@@ -561,7 +610,7 @@ pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64) -> f64 {
 fn unitigs_to_tr(
     unitig_graph: &unitig::UnitigGraph,
     snpmer_set: &FxHashSet<u64>,
-    solid_kmers: &FxHashSet<u64>,
+    solid_kmers: &HashSet<u64>,
     args: &Cli,
 ) -> FxHashMap<usize, TwinRead> {
     let mut tr_unitigs = FxHashMap::default();
@@ -575,12 +624,19 @@ fn unitigs_to_tr(
         let tr = seeding::get_twin_read(u8_seq, None, args.kmer_size, args.c, &snpmer_set, id);
         if let Some(mut tr) = tr {
             let mut solid_minis = vec![];
+            let mut solid_snpmers = vec![];
             for (pos,mini) in tr.minimizers.iter_mut(){
                 if solid_kmers.contains(mini){
                     solid_minis.push((*pos,*mini));
                 }
             }
+            for (pos, snpmer) in tr.snpmers.iter_mut(){
+                if snpmer_set.contains(snpmer){
+                    solid_snpmers.push((*pos,*snpmer));
+                }
+            }
             tr.minimizers = solid_minis;
+            tr.snpmers = solid_snpmers;
             tr_unitigs.insert(node_id, tr);
         }
     }
@@ -662,12 +718,20 @@ pub fn map_reads_to_outer_reads<'a>(
 
     let mini_index = get_minimizer_index_ref(&tr_outer);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
+    let counter = Mutex::new(0);
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mini = &read.minimizers;
+        //let start = std::time::Instant::now();
         let mini_anchors = find_exact_matches_with_full_index(mini, &mini_index);
+        //let anchor_finding_time = start.elapsed().as_micros();
         let mut unitig_hits = vec![];
+        *counter.lock().unwrap() += 1;
+        if *counter.lock().unwrap() % 1000 == 0 {
+            log::info!("Processed {} reads / {} ...", *counter.lock().unwrap(), twin_reads.len());
+        }
 
+        //let start = std::time::Instant::now();
         for (contig_id, anchors) in mini_anchors.iter() {
             if anchors.anchors.len() < 10 {
                 continue;
@@ -679,6 +743,7 @@ pub fn map_reads_to_outer_reads<'a>(
                 None,
                 rid,
                 *contig_id,
+                false
             ) {
                 if twin_ol.end2 - twin_ol.start2 < 500 {
                     continue;
@@ -686,13 +751,17 @@ pub fn map_reads_to_outer_reads<'a>(
                 unitig_hits.push(twin_ol);
             }
         }
+        //let overlap_time = start.elapsed().as_micros();
         for hit in unitig_hits.iter() {
             let mut map = mapping_boundaries_map.lock().unwrap();
             let vec = map.entry(hit.i2).or_insert(vec![]);
             //TODO test
             vec.push((hit.start2 + 50, hit.end2 - 50));
         }
+        //println!("Anchor finding time: {}us", anchor_finding_time);
+        //println!("Overlap time: {}us", overlap_time);
     });
+
 
     for (contig_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
         let index_of_outer_in_all = outer_read_indices[contig_id];
@@ -768,6 +837,7 @@ pub fn map_reads_to_unitigs(
                 None,
                 rid,
                 *contig_id,
+                true
             ) {
                 if twinol.end2 - twinol.start2 < 500 {
                     continue;

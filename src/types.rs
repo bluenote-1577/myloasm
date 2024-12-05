@@ -197,7 +197,7 @@ pub struct SplitKmerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct KmerGlobalInfo {
     pub snpmer_info: Vec<SnpmerInfo>,
-    pub solid_kmers: FxHashSet<Kmer64>,
+    pub solid_kmers: HashSet<Kmer64>,
     pub high_freq_thresh: f64,
 }
 
@@ -227,7 +227,7 @@ pub struct TwinOverlap{
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
 pub struct CountsAndBases{
-    pub counts: SmallVec<[[u32;2];4]>,
+    pub counts: SmallVec<[[u32;2];2]>,
     pub bases: SmallVec<[u8; 4]>,
 }
 

@@ -1015,6 +1015,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "myloasm"
+version = "0.0.1"
+dependencies = [
+ "assert_cmd",
+ "bincode",
+ "bio-seq",
+ "cbloom",
+ "clap",
+ "csv",
+ "dashmap",
+ "disjoint",
+ "fishers_exact",
+ "fxhash",
+ "log",
+ "minimap2",
+ "needletail 0.5.1",
+ "predicates 1.0.8",
+ "rand",
+ "rayon",
+ "rust-htslib",
+ "rust-lapper",
+ "serde",
+ "serial_test",
+ "simple_logger",
+ "smallvec",
+ "spmc",
+ "statrs",
+ "tikv-jemallocator",
+]
+
+[[package]]
 name = "nalgebra"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1186,37 +1217,6 @@ name = "percent-encoding"
 version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
-
-[[package]]
-name = "phaller"
-version = "0.0.1"
-dependencies = [
- "assert_cmd",
- "bincode",
- "bio-seq",
- "cbloom",
- "clap",
- "csv",
- "dashmap",
- "disjoint",
- "fishers_exact",
- "fxhash",
- "log",
- "minimap2",
- "needletail 0.5.1",
- "predicates 1.0.8",
- "rand",
- "rayon",
- "rust-htslib",
- "rust-lapper",
- "serde",
- "serial_test",
- "simple_logger",
- "smallvec",
- "spmc",
- "statrs",
- "tikv-jemallocator",
-]
 
 [[package]]
 name = "pin-project-lite"

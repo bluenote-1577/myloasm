@@ -6,12 +6,20 @@ use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
 use rayon::prelude::*;
 use std::sync::Mutex;
-use std::sync::RwLock;
 use crate::types::*;
 use fxhash::FxHashSet;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use crate::mapping::*;
+
+pub struct OverlapConfig{
+    pub hang1 : usize,
+    pub hang2 : usize,
+    pub forward1 : bool,
+    pub forward2 : bool,
+    pub overlap1_len : usize,
+    pub overlap2_len : usize,
+}
 
 #[derive(Debug, Clone, PartialEq, Default, Hash, Eq)]
 pub struct ReadData {
@@ -270,14 +278,7 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &Vec<TwinRead>, overlaps: &V
         let read2 = &all_reads_cat[j];
 
         //check if end-to-end overlap
-        let mut forward1 = false;
-        let mut forward2 = false;
-        let mut r1_r2 = true;
-        let mut ol = false;
-
-        let mut hang1 = 0;
-        let mut hang2 = 0;
-
+        
         let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, args.c as u64);
         let same_strain = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
 
@@ -285,110 +286,133 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &Vec<TwinRead>, overlaps: &V
             continue;
         }
 
+        let aln_len1 = twlap.end1 - twlap.start1;
+        let aln_len2 = twlap.end2 - twlap.start2;
         let overlap_hang_length = 750;
+        if aln_len1.max(aln_len2) < 1000 {
+            continue;
+        }
+
+        let mut overlap_possibilites_out = vec![];
+        let mut overlap_possibilites_in = vec![];
 
         if twlap.chain_reverse {
             if twlap.start1 < overlap_hang_length && twlap.start2 < overlap_hang_length {
-                hang1 = twlap.start1;
-                hang2 = twlap.start2;
-                forward1 = false;
-                forward2 = true;
-                r1_r2 = true;
-                ol = true;
+                let ol_config = OverlapConfig {
+                    hang1: twlap.start1,
+                    hang2: twlap.start2,
+                    forward1: false,
+                    forward2: true,
+                    overlap1_len: aln_len1,
+                    overlap2_len: aln_len2,
+                };
+                overlap_possibilites_in.push(ol_config);
             } 
             else if twlap.end1 + overlap_hang_length > read1.base_length && twlap.end2 + overlap_hang_length > read2.base_length 
             {
-                hang1 = read1.base_length - twlap.end1;
-                hang2 = read2.base_length - twlap.end2;
-                forward1 = true;
-                forward2 = false;
-                r1_r2 = true;
-                ol = true;
+                let ol_config = OverlapConfig {
+                    hang1: read1.base_length - twlap.end1 - 1,
+                    hang2: read2.base_length - twlap.end2 - 1,
+                    forward1: true,
+                    forward2: false,
+                    overlap1_len: aln_len1,
+                    overlap2_len: aln_len2,
+                };
+                overlap_possibilites_out.push(ol_config);
             }
         } else {
             if twlap.start1 < overlap_hang_length && twlap.end2 + overlap_hang_length > read2.base_length {
-                hang1 = twlap.start1;
-                hang2 = read2.base_length - twlap.end2;
-                forward1 = true;
-                forward2 = true;
-                r1_r2 = false;
-                ol = true;
+                let ol_config = OverlapConfig {
+                    hang1: twlap.start1,
+                    hang2: read2.base_length - twlap.end2 - 1,
+                    forward1: false,
+                    forward2: false,
+                    overlap1_len: aln_len1,
+                    overlap2_len: aln_len2,
+                };
+                overlap_possibilites_in.push(ol_config);
             } 
             else if twlap.end1 + overlap_hang_length > read1.base_length  && twlap.start2 < overlap_hang_length {
-                hang1 = read1.base_length - twlap.end1;
-                hang2 = twlap.start2;
-                forward1 = true;
-                forward2 = true;
-                r1_r2 = true;
-                ol = true;
+                let ol_config = OverlapConfig {
+                    hang1: read1.base_length - twlap.end1 - 1,
+                    hang2: twlap.start2,
+                    forward1: true,
+                    forward2: true,
+                    overlap1_len: aln_len1,
+                    overlap2_len: aln_len2,
+                };
+                overlap_possibilites_out.push(ol_config);
             }
         }
 
-        let aln_len1 = twlap.end1 - twlap.start1 + 1;
-        let aln_len2 = twlap.end2 - twlap.start2 + 1;
-        if ol && aln_len1.max(aln_len2) > 1000 {
-            writeln!(bufwriter,
-                "READ EDGE: {}:{} {}:{} ID: {} SNP_SHARE:{}, SNP_DIFF:{} OL_INFO:{} {}-{} {} {}-{}, REVERSE: {}",
-                &read1.id,
-                i,
-                &read2.id,
-                j,
-                identity * 100.,
-                twlap.shared_snpmers,
-                twlap.diff_snpmers,
-                read1.base_length,
-                twlap.start1,
-                twlap.end1,
-                read2.base_length,
-                twlap.start2,
-                twlap.end2,
-                twlap.chain_reverse
-            ).unwrap();
+        // Only allow one overlap per pair of reads for now. 
+        //    o
+        //   | |
+        //    x
+        // Can have two edges, x y + + and y x + +. Add at most 1 in edge and one out edge. 
 
-            let start = if r1_r2 { i } else { j };
-            let end = if r1_r2 { j } else { i };
-            let new_read_overlap = ReadOverlapEdgeTwin {
-                node1: start,
-                node2: end,
-                hang1: hang1,
-                hang2: hang2,
-                overlap1_len: aln_len1,
-                overlap2_len: aln_len2,
-                forward1,
-                forward2,
-                overlap_len_bases: aln_len1.max(aln_len2).min(read1.base_length.min(read2.base_length)),
-                shared_minimizers: twlap.shared_minimizers,
-                diff_snpmers: twlap.diff_snpmers,
-                shared_snpmers: twlap.shared_snpmers
-            };
+        let best_overlap_forward = overlap_possibilites_out.iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) - (x.hang1 + x.hang2));
+        let best_overlap_backward = overlap_possibilites_in.iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) - (x.hang1 + x.hang2));
 
-            edges.push(Some(new_read_overlap));
-            let ind = edges.len() - 1;
-            {
-                let rd1 = nodes.entry(i).or_insert(ReadData::default());
-                rd1.index = i;
-                if r1_r2 && forward1 {
-                    rd1.out_edges.push(ind)
-                } else if !r1_r2 && !forward2 {
-                    rd1.out_edges.push(ind)
-                } else {
-                    rd1.in_edges.push(ind)
+        for best_overlap in [best_overlap_forward, best_overlap_backward]{
+            if let Some(best_overlap) = best_overlap {
+                writeln!(bufwriter,
+                    "READ EDGE: {}:{} {}:{} ID: {} SNP_SHARE:{}, SNP_DIFF:{} OL_INFO:{} {}-{} {} {}-{}, REVERSE: {}",
+                    &read1.id,
+                    i,
+                    &read2.id,
+                    j,
+                    identity * 100.,
+                    twlap.shared_snpmers,
+                    twlap.diff_snpmers,
+                    read1.base_length,
+                    twlap.start1,
+                    twlap.end1,
+                    read2.base_length,
+                    twlap.start2,
+                    twlap.end2,
+                    twlap.chain_reverse
+                ).unwrap();
+
+                let new_read_overlap = ReadOverlapEdgeTwin {
+                    node1: i,
+                    node2: j,
+                    hang1: best_overlap.hang1,
+                    hang2: best_overlap.hang2,
+                    overlap1_len: best_overlap.overlap1_len,
+                    overlap2_len: best_overlap.overlap2_len,
+                    forward1: best_overlap.forward1,
+                    forward2: best_overlap.forward2,
+                    overlap_len_bases: best_overlap.overlap1_len.max(best_overlap.overlap2_len),
+                    shared_minimizers: twlap.shared_minimizers,
+                    diff_snpmers: twlap.diff_snpmers,
+                    shared_snpmers: twlap.shared_snpmers
+                };
+
+                edges.push(Some(new_read_overlap));
+                let ind = edges.len() - 1;
+                {
+                    let rd1 = nodes.entry(i).or_insert(ReadData::default());
+                    rd1.index = i;
+                    if best_overlap.forward1 {
+                        rd1.out_edges.push(ind)
+                    } else {
+                        rd1.in_edges.push(ind)
+                    }
+                    rd1.base_length = read1.base_length;
+                    rd1.read_id = read1.id.clone();
                 }
-                rd1.base_length = read1.base_length;
-                rd1.read_id = read1.id.clone();
-            }
-            {
-                let rd2 = nodes.entry(j).or_insert(ReadData::default());
-                rd2.index = j;
-                if r1_r2 && forward2 {
-                    rd2.in_edges.push(ind)
-                } else if !r1_r2 && !forward1 {
-                    rd2.in_edges.push(ind)
-                } else {
-                    rd2.out_edges.push(ind)
+                {
+                    let rd2 = nodes.entry(j).or_insert(ReadData::default());
+                    rd2.index = j;
+                    if best_overlap.forward2 {
+                        rd2.in_edges.push(ind)
+                    } else {
+                        rd2.out_edges.push(ind)
+                    }
+                    rd2.base_length = read2.base_length;
+                    rd2.read_id = read2.id.clone();
                 }
-                rd2.base_length = read2.base_length;
-                rd2.read_id = read2.id.clone();
             }
         }
     }
@@ -465,7 +489,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
         top_indices.sort_by(|a, b| b.1.cmp(&a.1));
 
         for &(index, _) in top_indices.iter(){
-            let sorted_readpair = if i < index { (i, index) } else { (index, i) };
+            let _sorted_readpair = if i < index { (i, index) } else { (index, i) };
 
             //Only compare once. I think we get slightly different results if we
             //compare in both directinos, but this forces consistency. 
@@ -474,7 +498,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
             }
 
             let read2 = &twin_reads[index];
-            let twlaps = compare_twin_reads(&read, &read2, None, None, i, index);
+            let twlaps = compare_twin_reads(&read, &read2, None, None, i, index, true);
             for twlap in twlaps{
                 let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, args.c as u64);
                 writeln!(bufwriter.lock().unwrap(),
@@ -512,6 +536,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
 pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead],  args: &Cli) -> Vec<usize>{
     //let start = std::time::Instant::now();
+    let downsample_factor = (50 / args.c).max(1) as u64;
     let inverted_index_hashmap =
         twin_reads
             .iter()
@@ -520,10 +545,10 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
             || x.1.est_id.unwrap() > args.quality_value_cutoff)
             .fold(FxHashMap::default(), |mut acc, (i, x)| {
                 for &y in x.minimizers.iter() {
-                    if hash64(&y.1) > u64::MAX/3 {
+                    if hash64(&y.1) > u64::MAX / downsample_factor {
                         continue;
                     }
-                    acc.entry(y.1).or_insert(vec![]).push(i);
+                    acc.entry(y.1).or_insert(FxHashSet::default()).insert(i);
                 }
                 acc
             });
@@ -546,10 +571,12 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
         if read1.est_id.is_some() && read1.est_id.unwrap() < args.quality_value_cutoff {
             return;
         }
-        //let start = std::time::Instant::now();
+        let start = std::time::Instant::now();
         let mut index_count_map = FxHashMap::default();
+        let mut index_range_map = FxHashMap::default();
         for &y in read1.minimizers.iter() {
-            if hash64(&y.1) > u64::MAX/3 {
+            //Downsample to 100 compression factor
+            if hash64(&y.1) > u64::MAX / downsample_factor{
                 continue;
             }
             if let Some(indices) = inverted_index_hashmap.get(&y.1) {
@@ -558,73 +585,123 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
                         continue;
                     }
                     *index_count_map.entry(index).or_insert(0) += 1;
+                    let range = index_range_map.entry(index).or_insert([u32::MAX,0]);
+                    if (y.0 as u32) < range[0]{
+                        range[0] = y.0 as u32;
+                    }
+                    if y.0 as u32 > range[1]{
+                        range[1] = y.0 as u32;
+                    }
                 }
             }
         }
-        //println!("Querying took: {:?}", start.elapsed());
 
-        //let start = std::time::Instant::now();
+        let inverted_indexing_time = start.elapsed();
+        let start = std::time::Instant::now();
         let mut top_indices = index_count_map.iter().collect::<Vec<_>>();
-        top_indices.sort_by(|a, b| b.1.cmp(a.1));
-        let top_indices = top_indices.into_iter()
-        .filter(|(_,count)| **count > read1.minimizers.len() as i32 / 20 && **count > 5)
-        .filter(|(index,_)| twin_reads[**index].base_length > read1.base_length)
-        .collect::<Vec<_>>();
-        //println!("Sorting took: {:?}", start.elapsed());
 
+        top_indices.retain(|(index,_)| twin_reads[**index].base_length > read1.base_length);
+        top_indices.retain(|(_,count)| **count > read1.minimizers.len() as u32 / 10 && **count > 5);
+        top_indices.retain(|(index,_)| {
+            let range = index_range_map.get(&index).unwrap();
+            range[1] > range[0] && (range[1] - range[0]) as f64 + (60. * args.c as f64) > read1.base_length as f64 * 0.80
+        });
 
-        //let start = std::time::Instant::now();
-        for (index, _) in top_indices.into_iter() {
+        top_indices.sort_by(|a, b| {
+            let lr_a = index_range_map.get(&a.0).unwrap();
+            let length_a;
+            if lr_a[0] > lr_a[1]{
+                length_a = 0;
+            }
+            else{
+                length_a = lr_a[1] - lr_a[0];
+            }
+            let lr_b = index_range_map.get(&b.0).unwrap();
+            let length_b;
+            if lr_b[0] > lr_b[1]{
+                length_b = 0;
+            }
+            else{
+                length_b = lr_b[1] - lr_b[0];
+            }
+
+            (length_b * b.1).cmp(&(length_a * a.1))
+        });
+
+        let sorting_filtering_time = start.elapsed();
+
+        let start = std::time::Instant::now();
+        let num_tries = 50;
+        let mut num_fails = 0;
+        let mut max_ol = 0;
+        for (index, order_count) in top_indices.into_iter() {
             if contained{
                 break;
             }
             let read2 = &twin_reads[*index];
-            let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, *index);
-            for twin_overlap in twin_overlaps{
-                let shared_minimizers = twin_overlap.shared_minimizers;
-                let diff_snpmers = twin_overlap.diff_snpmers;
+            let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, *index, true);
+            if twin_overlaps.is_empty(){
+                continue;
+            }
+            let twin_overlap = twin_overlaps.first().unwrap();
+            let shared_minimizers = twin_overlap.shared_minimizers;
+            let diff_snpmers = twin_overlap.diff_snpmers;
 
-                let identity = id_est(shared_minimizers, diff_snpmers, args.c as u64);
-                let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
+            let identity = id_est(shared_minimizers, diff_snpmers, args.c as u64);
+            let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
 
-                let len1 = twin_overlap.end1 - twin_overlap.start1;
-                let len2 = twin_overlap.end2 - twin_overlap.start2;
-                let ol_len = len1.max(len2);
-
-                // only do this when log is config to trace
-                if log::log_enabled!(log::Level::Trace) {
-                    writeln!(
-                        bufwriter_dbg.lock().unwrap(),
-                        "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}",
-                        read1.id.split_ascii_whitespace().next().unwrap(),
-                        &i,
-                        twin_overlap.start1,
-                        twin_overlap.end1,
-                        read2.id.split_ascii_whitespace().next().unwrap(),
-                        &index,
-                        twin_overlap.start2,
-                        twin_overlap.end2,
-                        twin_overlap.shared_minimizers,
-                        twin_overlap.shared_snpmers,
-                        twin_overlap.diff_snpmers,
-                        identity,
-                        ol_len,
-                        read1.base_length,
-                        read2.base_length
-
-                    )
-                    .unwrap();
-                }
-
-
-                //Can't be reflexive.
-                if ol_len as f64 + (30. * args.c as f64) > 0.95 * (read1.base_length as f64) && same_strain && read1.base_length < read2.base_length {
-                    writeln!(bufwriter_dbg.lock().unwrap(), "{} {} CONTAINED", read1.id, read2.id).unwrap();
-                    contained = true;
-                    contained_reads.lock().unwrap().insert(i);
+            let len1 = twin_overlap.end1 - twin_overlap.start1;
+            let len2 = twin_overlap.end2 - twin_overlap.start2;
+            let ol_len = len1;
+            
+            if ol_len > max_ol{
+                max_ol = ol_len;
+                num_fails = 0;
+            }
+            else{
+                num_fails += 1;
+                if num_fails > num_tries{
+                    contained = false;
                     break;
                 }
             }
+
+            // only do this when log is config to trace
+            if log::log_enabled!(log::Level::Trace) {
+                writeln!(
+                    bufwriter_dbg.lock().unwrap(),
+                    "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}, order_count: {}",
+                    read1.id.split_ascii_whitespace().next().unwrap(),
+                    &i,
+                    twin_overlap.start1,
+                    twin_overlap.end1,
+                    read2.id.split_ascii_whitespace().next().unwrap(),
+                    &index,
+                    twin_overlap.start2,
+                    twin_overlap.end2,
+                    twin_overlap.shared_minimizers,
+                    twin_overlap.shared_snpmers,
+                    twin_overlap.diff_snpmers,
+                    identity,
+                    len1.max(len2),
+                    read1.base_length,
+                    read2.base_length,
+                    order_count
+
+                )
+                .unwrap();
+            }
+
+
+            //Can't be reflexive.
+            if ol_len as f64 + (30. * args.c as f64) > 0.95 * (read1.base_length as f64) && same_strain && read1.base_length < read2.base_length {
+                let comparing_time = start.elapsed();
+                writeln!(bufwriter_dbg.lock().unwrap(), "{} {} CONTAINED. Times {} {} {}", read1.id, read2.id, inverted_indexing_time.as_micros(), sorting_filtering_time.as_micros(), comparing_time.as_micros()).unwrap();
+                contained = true;
+                contained_reads.lock().unwrap().insert(i);
+                break;
+            }
+            
         }
         //println!("Comparing took: {:?}", start.elapsed());
 

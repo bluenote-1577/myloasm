@@ -1,18 +1,18 @@
 use bincode::de::read;
-use phaller::unitig;
-use phaller::consensus;
+use myloasm::unitig;
+use myloasm::consensus;
 use std::path::Path;
-use phaller::mapping;
+use myloasm::mapping;
 use std::io::BufReader;
 use std::io::BufWriter;
 use bincode;
 use clap::Parser;
-use phaller::cli;
-use phaller::kmer_comp;
-use phaller::twin_graph;
+use myloasm::cli;
+use myloasm::kmer_comp;
+use myloasm::twin_graph;
 
 fn main() {
-    let args = cli::Cli::parse();
+    let mut args = cli::Cli::parse();
 
     // Initialize logger with CLI-specified level
     simple_logger::SimpleLogger::new()
@@ -39,9 +39,15 @@ fn main() {
     let start = std::time::Instant::now();
     let overlaps;
     let mut twin_reads; 
-    let kmer_info;
+    let mut kmer_info;
     let output_dir = Path::new(args.output_dir.as_str());
     let temp_dir = output_dir.join("temp");
+
+    if args.hifi{
+        args.snpmer_error_rate = 0.001;
+        args.snpmer_threshold = 100.;
+    }
+
     if !output_dir.exists(){
         std::fs::create_dir_all(output_dir).unwrap();
         std::fs::create_dir_all(output_dir.join("temp")).unwrap();
@@ -63,28 +69,46 @@ fn main() {
         }
     }
 
-    if fastq_files.len() == 0{
+    let empty_input = fastq_files.len() == 0;
+
+    if empty_input {
         if !output_dir.join("twin_reads.bin").exists(){
             log::error!("No input files provided. See --help for usage.");
             std::process::exit(1);
         }
-        twin_reads = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("twin_reads.bin")).unwrap())).unwrap();
+    }
+
+    log::info!("Starting assembly...");
+
+    if empty_input && output_dir.join("snpmer_info.bin").exists(){
         kmer_info = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("snpmer_info.bin")).unwrap())).unwrap();
-        overlaps = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("overlaps.bin")).unwrap())).unwrap();
+        log::info!("Loaded snpmer info from file.");
     }
     else{
-        log::info!("Starting assembly...");
         let big_kmer_map = kmer_comp::read_to_split_kmers(k, threads, &args);
         log::info!("Time elapsed in for counting k-mers is: {:?}", start.elapsed());
 
         let start = std::time::Instant::now();
         kmer_info = kmer_comp::get_snpmers(big_kmer_map, k, &args);
         log::info!("Time elapsed in for parsing snpmers is: {:?}", start.elapsed());
+        bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("snpmer_info.bin")).unwrap()), &kmer_info).unwrap();
+    }
 
+    if empty_input && output_dir.join("twin_reads.bin").exists(){
+        twin_reads = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("twin_reads.bin")).unwrap())).unwrap();
+        log::info!("Loaded twin reads from file.");
+    }
+    else{
         let start = std::time::Instant::now();
-        twin_reads = kmer_comp::twin_reads_from_snpmers(&kmer_info, &fastq_files, &args);
+        twin_reads = kmer_comp::twin_reads_from_snpmers(&mut kmer_info, &fastq_files, &args);
         log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
-        
+        bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("twin_reads.bin")).unwrap()), &twin_reads).unwrap();
+    }
+
+    if empty_input && output_dir.join("overlaps.bin").exists(){    
+        overlaps = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("overlaps.bin")).unwrap())).unwrap();
+    }
+    else{
         log::info!("Removing contained reads...");
         let start = std::time::Instant::now();
         let mut outer_read_indices = twin_graph::remove_contained_reads_twin(None, &twin_reads, &args);
@@ -98,19 +122,15 @@ fn main() {
         twin_reads = tup.0;
         outer_read_indices = tup.1;
         outer_read_indices = twin_graph::remove_contained_reads_twin(Some(outer_read_indices), &twin_reads, &args);
-        log::info!("Gained {} reads after splitting chimeras and mapping to outer reads in {:?}", twin_reads.len() - num_reads, start.elapsed());
+        log::info!("Gained {} reads after splitting chimeras and mapping to outer reads in {:?}", twin_reads.len() as i64 - num_reads as i64, start.elapsed());
 
         let start = std::time::Instant::now();
         overlaps = twin_graph::get_overlaps_outer_reads_twin(&twin_reads, &outer_read_indices, &args);
         log::info!("Time elapsed for getting overlaps is: {:?}", start.elapsed());
-        
-        bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("twin_reads.bin")).unwrap()), &twin_reads).unwrap();
-        bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("snpmer_info.bin")).unwrap()), &kmer_info).unwrap();
         bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("overlaps.bin")).unwrap()), &overlaps).unwrap();
     }
-
+        
     let twin_reads = twin_reads;
-    
     let start = std::time::Instant::now();
     let mut graph = twin_graph::read_graph_from_overlaps_twin(&twin_reads, &overlaps, &args);
     graph.transitive_reduction();
@@ -123,7 +143,7 @@ fn main() {
     }
     unitig_graph.get_sequence_info(&twin_reads, true, false);
     log::info!("Time elapsed for initial unitig construction is: {:?}", start.elapsed());
-    unitig_graph.to_gfa(output_dir.join("unitig_graph.gfa"), true, &twin_reads);
+    unitig_graph.to_gfa(output_dir.join("unitig_graph.gfa"), true, &twin_reads, &args);
 
 
     let start = std::time::Instant::now();
@@ -138,7 +158,7 @@ fn main() {
             let read_cutoff = (args.tip_read_cutoff as f32 / divider as f32 * iteration as f32).round() as usize;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff);
             unitig_graph.get_sequence_info(&twin_reads, true, false);
-            unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-tip_unitig_graph.gfa", iteration)), true, &twin_reads);
+            unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-tip_unitig_graph.gfa", iteration)), true, &twin_reads, &args);
             if unitig_graph.nodes.len() == size_graph{
                 break;
             }
@@ -147,11 +167,11 @@ fn main() {
 
         unitig_graph.resolve_bridged_repeats(&args, 0.75/(divider as f64) * iteration as f64);
         unitig_graph.get_sequence_info(&twin_reads, true, false);
-        unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-resolve_unitig_graph.gfa", iteration)), true, &twin_reads);
+        unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-resolve_unitig_graph.gfa", iteration)), true, &twin_reads, &args);
 
         unitig_graph.pop_bubbles(75000/divider * iteration);
         unitig_graph.get_sequence_info(&twin_reads, true, false);
-        unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-bubble_unitig_graph.gfa", iteration)), true, &twin_reads);
+        unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-bubble_unitig_graph.gfa", iteration)), true, &twin_reads, &args);
 
         iteration += 1;
         if iteration == 4{
@@ -170,7 +190,7 @@ fn main() {
         }
         size_graph = unitig_graph.nodes.len();
     }
-    unitig_graph.to_gfa(output_dir.join("temp").join("pre-final_unitig_graph.gfa"), true, &twin_reads);
+    unitig_graph.to_gfa(output_dir.join("temp").join("pre-final_unitig_graph.gfa"), true, &twin_reads, &args);
 
     let mut size_graph = unitig_graph.nodes.len();
     loop{
@@ -194,9 +214,12 @@ fn main() {
     let start = std::time::Instant::now();
     mapping::map_reads_to_unitigs(&mut unitig_graph, &kmer_info, &twin_reads, &args);
     log::info!("Time elapsed for aligning reads to graph is {:?}", start.elapsed());
+    unitig_graph.to_gfa(output_dir.join("final_contig_graph.gfa"), true, &twin_reads, &args);
 
+    let start = std::time::Instant::now();
+    log::info!("Running minimap2...");
     consensus::outer_consensus(&unitig_graph, &twin_reads, &args);
-    unitig_graph.to_gfa(output_dir.join("final_contig_graph.gfa"), true, &twin_reads);
+    log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
     unitig_graph.print_statistics();
 }
 

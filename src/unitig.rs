@@ -11,6 +11,7 @@ use rust_lapper::Lapper;
 use std::io::BufWriter;
 use std::io::Write;
 use std::collections::VecDeque;
+use std::panic;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UnitigNode {
@@ -504,7 +505,7 @@ impl UnitigGraph {
     }
 
     // Convert to GFA format
-    pub fn to_gfa<T>(&mut self, filename: T, output_readgroups: bool, reads: &[TwinRead])
+    pub fn to_gfa<T>(&mut self, filename: T, output_readgroups: bool, reads: &[TwinRead], args: &Cli)
     where
         T: AsRef<std::path::Path>,
     {
@@ -517,7 +518,7 @@ impl UnitigGraph {
 
         // Segments
         for (_id, unitig) in self.nodes.iter_mut() {
-            if unitig.read_indices_ori.len() < 3
+            if unitig.read_indices_ori.len() < args.min_reads_contig
                 && unitig.in_edges().len() + unitig.out_edges().len() == 0
             {
                 log::debug!(
@@ -1130,15 +1131,60 @@ impl UnitigGraph {
                 let ori = indori.1;
                 let mut range;
                 if node.read_indices_ori.len() == 1 {
-                    range = (carryover, reads[ind].base_length - right_cut);
+                    let end;
+                    if right_cut > reads[ind].base_length {
+                        end = 0;
+                        log::trace!("Right cut too long: {:?}, BL: {}, RC: {}", node.read_names, reads[ind].base_length, right_cut);
+                    }
+                    else{
+                        end = reads[ind].base_length - right_cut;
+                    }
+                    range = (carryover, end);
                 } else if i == 0 {
-                    range = (carryover, reads[ind].base_length - internal_ol_len[0] - overhangs[0]);
-                    hang_ind += 1;
+                    if internal_ol_len[0] + overhangs[0] > reads[ind].base_length {
+                        dbg!(reads[ind].base_length);
+                        dbg!(internal_ol_len[0]);
+                        dbg!(overhangs[0]);
+                        dbg!(&node.internal_overlaps[0]);
+                        panic!("Internal overlap too long");
+                    }
+                    let t_end = reads[ind].base_length as i64 + 1 - internal_ol_len[0] as i64 - overhangs[0] as i64 - overhangs[1] as i64;
+                    let end;
+                    if t_end > 0{
+                       end = t_end as usize; 
+                    }
+                    else{
+                        end = 0;
+                    }
+                    range = (carryover, end);
+                    hang_ind += 2;
                 } else if i == node.read_indices_ori.len() - 1 {
-                    range = (carryover, reads[ind].base_length - right_cut);
-                    hang_ind += 1;
+                    if right_cut > reads[ind].base_length {
+                        dbg!(reads[ind].base_length);
+                        dbg!(right_cut);
+                        log::info!("Right cut too long: {:?}", node.read_names);
+                    }
+                    range = (carryover, reads[ind].base_length - right_cut.min(reads[ind].base_length));
+                    hang_ind += 2;
                 } else {
-                    range = (carryover, reads[ind].base_length - internal_ol_len[hang_ind+1] - overhangs[hang_ind+1]);
+                    if internal_ol_len[hang_ind] + overhangs[hang_ind+1] > reads[ind].base_length {
+                        // dbg!(reads[ind].base_length);
+                        // dbg!(internal_ol_len[hang_ind+1]);
+                        // dbg!(overhangs[hang_ind+1]);
+                        // dbg!(&node.read_indices_ori.len());
+                        // dbg!(&node.internal_overlaps.len());
+                        // dbg!(&node.internal_overlaps[i-1]);
+                        // dbg!(&node.internal_overlaps[i]);
+                    }
+                    let t_end = reads[ind].base_length as i64 + 1 - internal_ol_len[hang_ind] as i64 - overhangs[hang_ind] as i64 - overhangs[hang_ind+1] as i64;
+                    let end;
+                    if t_end > 0{
+                       end = t_end as usize; 
+                    }
+                    else{
+                        end = 0;
+                    }
+                    range = (carryover, end);
                     hang_ind += 2;
                 }
                 if range.0 >= range.1 {
@@ -1693,16 +1739,23 @@ impl UnitigGraph {
             }
         }
 
-        let largest_contig = self.nodes.iter().max_by_key(|(_, node)| node.length()).unwrap();
-        let largest_contig_size = largest_contig.1.length();
-        let num_contigs = self.nodes.len();
-        log::info!("-------------- Assembly statistics --------------");
-        log::info!("N50: {}", n50_size);
-        log::info!("Largest contig has size: {}", largest_contig_size);
-        log::info!("Number of contigs: {}", num_contigs);
-        log::info!("Total bases within assembly is {}", n50 * 2);
-        log::info!("-------------------------------------------------");
+        let largest_contig = self.nodes.iter().max_by_key(|(_, node)| node.length());
+        if let Some(largest_contig) = largest_contig {
 
+            let largest_contig_size = largest_contig.1.length();
+            let num_contigs = self.nodes.len();
+            log::info!("-------------- Assembly statistics --------------");
+            log::info!("N50: {}", n50_size);
+            log::info!("Largest contig has size: {}", largest_contig_size);
+            log::info!("Number of contigs: {}", num_contigs);
+            log::info!("Total bases within assembly is {}", n50 * 2);
+            log::info!("-------------------------------------------------");
+
+        } else {
+            log::info!("No contigs");
+            return;
+        }
+        
     }
 }
 

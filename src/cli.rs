@@ -2,8 +2,8 @@ use clap::{Parser, ValueEnum};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "phaller",
-    about = "A tool for analyzing genomic sequences and building overlap graphs",
+    name = "myloasm",
+    about = "myloasm - strain-resolved metagenomic long-read assembly with noisy sequences.",
     version,
     author
 )]
@@ -61,8 +61,16 @@ pub struct Cli {
     pub snpmer_error_rate: f64,
 
     /// Bloom filter size in GB
-    #[arg(long, default_value_t=3.)]
+    #[arg(short, long, default_value_t=3.)]
     pub bloom_filter_size: f64,
+
+    /// Minimum number of reads in output contigs
+    #[arg(long, default_value_t = 2)]
+    pub min_reads_contig: usize,
+
+    /// HiFi Mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
+    #[arg(long)]
+    pub hifi: bool
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
