@@ -8,7 +8,6 @@ use crate::cli::*;
 use minimap2::Aligner;
 use rust_htslib::bam::{Header, HeaderView};
 use rust_htslib::bam::header::HeaderRecord;
-use rust_htslib::bam::record::Aux;
 use rust_htslib::bam::Writer;
 use bio_seq::prelude::*;
 use std::fs::File;
@@ -77,10 +76,10 @@ pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &
                 write!(writer, "{}\n", std::str::from_utf8(&read_seq_u8).unwrap()).unwrap();
             }
             let read_name_u8 = read_name.as_bytes();
-            let records = aligner_with_index.map_to_sam(&read_seq_u8, None, Some(read_name_u8), &header_view, None, None).unwrap();
-            for record in records.into_iter(){
-                bam_writer_lock.lock().unwrap().write(&record).unwrap();
-            }
+            let records = aligner_with_index.map(&read_seq_u8, true, false, None, None, Some(&read_name_u8));
+            //let records = aligner_with_index.map_to_sam(&read_seq_u8, None, Some(read_name_u8), &header_view, None, None).unwrap();
+            //TODO implement consensus
+            return;
         });
     });
 }

@@ -1,7 +1,6 @@
 use crate::types::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
-use std::collections::HashSet;
 
 //create new alias kmer = u64
 pub type Kmer64 = u64;
@@ -417,16 +416,16 @@ fn estimate_sequence_identity(qualities: Option<&Vec<u8>>) -> Option<f64> {
 pub fn split_kmer_mid(
     string: Vec<u8>,
     k: usize
-) -> Vec<SplitKmerInfo>{
-    let mut split_kmers = vec![];
+) -> Vec<u64>{
     type MarkerBits = u64;
     if string.len() < k {
         return vec![];
     }
+    let mut split_kmers = Vec::with_capacity(string.len() - k + 3);
 
     let marker_k = k;
-    if marker_k % 2 != 1{
-        panic!("k must be odd");
+    if marker_k % 2 != 1 || k > 31{
+        panic!("k must be odd and <= 31");
     }
     let mut rolling_kmer_f_marker: MarkerBits = 0;
     let mut rolling_kmer_r_marker: MarkerBits = 0;
@@ -471,21 +470,16 @@ pub fn split_kmer_mid(
 
         let canonical_marker = split_f < split_r;
         let canonical_kmer_marker; 
-        let mid_base; 
+        //let mid_base; 
         if canonical_marker {
             canonical_kmer_marker = rolling_kmer_f_marker;
-            mid_base = (rolling_kmer_f_marker & split_mask_extract) >> (k-1) as u64;
+            //mid_base = (rolling_kmer_f_marker & split_mask_extract) >> (k-1) as u64;
         } else {
             canonical_kmer_marker = rolling_kmer_r_marker;
-            mid_base = (rolling_kmer_r_marker & split_mask_extract) >> (k-1) as u64;
+            //mid_base = (rolling_kmer_r_marker & split_mask_extract) >> (k-1) as u64;
         };
-        let split_kmer_info = SplitKmerInfo{
-            full_kmer: canonical_kmer_marker,
-            mid_base : mid_base as u8,
-            canonical: canonical_marker,
-            k: k as u8
-        };
-        split_kmers.push(split_kmer_info);
+        let final_marked_kmer = canonical_kmer_marker | ((canonical_marker as u64) << (63));
+        split_kmers.push(final_marked_kmer);
     }
 
     return split_kmers;

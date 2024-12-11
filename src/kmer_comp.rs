@@ -1,5 +1,6 @@
 use dashmap::DashMap;
 use std::collections::HashSet;
+use memory_stats::memory_stats;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cbloom;
@@ -37,165 +38,197 @@ fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     return compressed_seq;
 }
 
-pub fn read_to_split_kmers(
-    k: usize,
-    threads: usize,
-    args: &Cli,
-) -> Vec<(u64,[u32;2])>{
+// pub fn read_to_split_kmers(
+//     k: usize,
+//     threads: usize,
+//     args: &Cli,
+// ) -> Vec<(u64,[u32;2])>{
 
-    let homopolymer_comp = args.homopolymer_compression;
-    let bf_size = args.bloom_filter_size * 1_000_000_000.;
-    let map = Arc::new(DashMap::with_hasher(MMBuildHasher::default()));
+//     let homopolymer_comp = args.homopolymer_compression;
+//     let bf_size = args.bloom_filter_size * 1_000_000_000.;
+//     let map = Arc::new(DashMap::with_hasher(MMBuildHasher::default()));
 
-    log::info!("Populating bloom filter of size {} GB and counting kmers.", args.bloom_filter_size);
-    let filter = Arc::new(cbloom::Filter::with_size_and_hashers(bf_size as usize, 3));
+//     log::info!("Populating bloom filter of size {} GB and counting kmers.", args.bloom_filter_size);
+//     let filter = Arc::new(cbloom::Filter::with_size_and_hashers(bf_size as usize, 3));
 
-    if bf_size > 0.{
-        for fastq_file in args.input_files.iter(){
-            let (mut tx, rx) = spmc::channel();
-            let file = fastq_file.to_owned();
-            thread::spawn(move || {
-                let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
-                let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
-                while let Some(record) = reader.next() {
-                    let rec = record.expect("Error reading record");
-                    let seq;
-                    if homopolymer_comp {
-                        seq = homopolymer_compression(rec.seq().to_vec());
-                    } else {
-                        seq = rec.seq().to_vec();
-                    }
-                    tx.send(seq).unwrap();
-                }
-            });
+//     if bf_size > 0.{
+//         let counter = Arc::new(Mutex::new(0));
+//         for fastq_file in args.input_files.iter(){
+//             let (mut tx, rx) = spmc::channel();
+//             let file = fastq_file.to_owned();
+//             thread::spawn(move || {
+//                 let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
+//                 let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
+//                 while let Some(record) = reader.next() {
+//                     let rec = record.expect("Error reading record");
+//                     let seq;
+//                     if homopolymer_comp {
+//                         seq = homopolymer_compression(rec.seq().to_vec());
+//                     } else {
+//                         seq = rec.seq().to_vec();
+//                     }
+//                     tx.send(seq).unwrap();
+//                 }
+//             });
 
-            let mut handles = Vec::new();
-            for _ in 0..threads {
-                let filter = Arc::clone(&filter);
-                let map = Arc::clone(&map);
-                let rx = rx.clone();
-                let mut myhashmap = FxHashSet::default();
-                handles.push(thread::spawn(move || {
-                    loop{
-                        match rx.recv() {
-                            Ok(msg) => {
-                                let split_kmer_info = seeding::split_kmer_mid(msg, k);
-                                for kmer_i in split_kmer_info.iter() {
-                                    if filter.maybe_insert(kmer_i.full_kmer) {
-                                        myhashmap.insert(kmer_i.full_kmer);
-                                    }
-                                    //Batching might help with repetitive k-mers
-                                    if myhashmap.len() > 300_000{
-                                        for key in myhashmap.into_iter(){
-                                            map.insert(key, [0,0]);
-                                        }
-                                        myhashmap = FxHashSet::default();
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                for key in myhashmap.into_iter(){
-                                    map.insert(key, [0,0]);
-                                }
-                                // When sender is dropped, recv will return an Err, and we can break the loop
-                                break;
-                            }
-                        }
-                    }
-                }));
-            }
+//             let mut handles = Vec::new();
+//             for _ in 0..threads {
+//                 let filter = Arc::clone(&filter);
+//                 let map = Arc::clone(&map);
+//                 let rx = rx.clone();
+//                 let mut myhashmap = FxHashSet::default();
+//                 let clone_counter = Arc::clone(&counter);
+//                 handles.push(thread::spawn(move || {
+//                     loop{
+//                         match rx.recv() {
+//                             Ok(msg) => {
+//                                 let split_kmer_info = seeding::split_kmer_mid(msg, k);
+//                                 {
+//                                     let mut counter = clone_counter.lock().unwrap();
+//                                     *counter += 1;
+//                                     if *counter % 10000 == 0{
+//                                         log::info!("Processed {} reads.", counter);
+//                                     }
+//                                 }
+//                                 for kmer_i in split_kmer_info.iter() {
+//                                     if filter.maybe_insert(kmer_i.full_kmer) {
+//                                         myhashmap.insert(kmer_i.full_kmer);
+//                                     }
+//                                     //Batching might help with repetitive k-mers
+//                                     if myhashmap.len() > 300_000{
+//                                         for key in myhashmap.into_iter(){
+//                                             map.insert(key, [0,0]);
+//                                         }
+//                                         myhashmap = FxHashSet::default();
+//                                     }
+//                                 }
+//                             }
+//                             Err(_) => {
+//                                 for key in myhashmap.into_iter(){
+//                                     map.insert(key, [0,0]);
+//                                 }
+//                                 // When sender is dropped, recv will return an Err, and we can break the loop
+//                                 break;
+//                             }
+//                         }
+//                     }
+//                 }));
+//             }
 
-            for handle in handles {
-                handle.join().unwrap();
-            }
-        }
-    }
+//             for handle in handles {
+//                 handle.join().unwrap();
+//             }
+//         }
+//     }
 
-    drop(filter);
-    map.shrink_to_fit();
+//     log::debug!("Hashmap capacity: {}", map.capacity());
+//     log::debug!("Hashmap len: {}", map.len());
+//     log::debug!("Memory usage: {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
 
-    log::info!("Bloom filter populated. Counting kmers.");
-    //Round 2, actually count
-    for fastq_file in args.input_files.iter(){
-        let (mut tx, rx) = spmc::channel();
-        let file = fastq_file.to_owned();
-        thread::spawn(move || {
-            let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
-            let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
-            while let Some(record) = reader.next() {
-                let rec = record.expect("Error reading record");
-                let seq;
-                if homopolymer_comp {
-                    seq = homopolymer_compression(rec.seq().to_vec());
-                } else {
-                    seq = rec.seq().to_vec();
-                }
-                tx.send(seq).unwrap();
-            }
-        });
+//     drop(filter);
+//     map.shrink_to_fit();
+//     log::debug!("Shrunk Hashmap capacity: {}", map.capacity());
+//     log::debug!("Shrunk Hashmap len: {}", map.len());
+//     log::debug!("Memory usage: {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
 
-        let mut handles = Vec::new();
-        for _ in 0..threads {
-            let rx = rx.clone();
-            let map = Arc::clone(&map);
-            handles.push(thread::spawn(move || {
-                loop{
-                    match rx.recv() {
-                        Ok(msg) => {
-                            //Querying the hash table takes > 50x longer than splitting the kmer
-                            let _start = std::time::Instant::now();
-                            let split_kmer_info = seeding::split_kmer_mid(msg, k);
-                            //println!("Split kmer time: {:?}", start.elapsed());
-                            let _start = std::time::Instant::now();
-                            if bf_size > 0.{
-                                for kmer_i in split_kmer_info.iter() {
-                                    if let Some(mut counts) = map.get_mut(&kmer_i.full_kmer){
-                                        if kmer_i.canonical{
-                                            counts[0] += 1;
-                                        }
-                                        else{
-                                            counts[1] += 1;
-                                        }
-                                    }   
-                                }
-                            }
-                            else{
-                                for kmer_i in split_kmer_info.iter(){
-                                    let mut counts = map.entry(kmer_i.full_kmer).or_insert([0,0]);
-                                    if kmer_i.canonical{
-                                        counts[0] += 1;
-                                    }
-                                    else{
-                                        counts[1] += 1;
-                                    }
-                                }
-                            }
-                            //println!("Populating table time: {:?}", start.elapsed());
-                        }
-                        Err(_) => {
-                            // When sender is dropped, recv will return an Err, and we can break the loop
-                            break;
-                        }
-                    }
-                }
-            }));
-        }
-        for handle in handles {
-            handle.join().unwrap();
-        }
-    }
+//     log::info!("Bloom filter populated. Counting kmers.");
+//     let counter = Arc::new(Mutex::new(0));
+//     //Round 2, actually count
+//     for fastq_file in args.input_files.iter(){
+//         let (mut tx, rx) = spmc::channel();
+//         let file = fastq_file.to_owned();
+//         thread::spawn(move || {
+//             let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
+//             let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
+//             while let Some(record) = reader.next() {
+//                 let rec = record.expect("Error reading record");
+//                 let seq;
+//                 if homopolymer_comp {
+//                     seq = homopolymer_compression(rec.seq().to_vec());
+//                 } else {
+//                     seq = rec.seq().to_vec();
+//                 }
+//                 tx.send(seq).unwrap();
+//             }
+//         });
+
+//         let mut handles = Vec::new();
+//         for _ in 0..threads {
+//             let clone_counter = Arc::clone(&counter);
+//             let rx = rx.clone();
+//             let map = Arc::clone(&map);
+//             handles.push(thread::spawn(move || {
+//                 loop{
+//                     match rx.recv() {
+//                         Ok(msg) => {
+//                             //Querying the hash table takes > 50x longer than splitting the kmer
+//                             let _start = std::time::Instant::now();
+//                             let split_kmer_info = seeding::split_kmer_mid(msg, k);
+//                             {
+//                                 let mut counter = clone_counter.lock().unwrap();
+//                                 *counter += 1;
+//                                 if *counter % 10000 == 0{
+//                                     log::info!("Processed {} reads.", counter);
+//                                 }
+//                             }
+//                             //println!("Split kmer time: {:?}", start.elapsed());
+//                             let _start = std::time::Instant::now();
+//                             if bf_size > 0.{
+//                                 for kmer_i in split_kmer_info.iter() {
+//                                     if let Some(mut counts) = map.get_mut(&kmer_i.full_kmer){
+//                                         if kmer_i.canonical{
+//                                             counts[0] += 1;
+//                                         }
+//                                         else{
+//                                             counts[1] += 1;
+//                                         }
+//                                     }   
+//                                 }
+//                             }
+//                             else{
+//                                 for kmer_i in split_kmer_info.iter(){
+//                                     let mut counts = map.entry(kmer_i.full_kmer).or_insert([0,0]);
+//                                     if kmer_i.canonical{
+//                                         counts[0] += 1;
+//                                     }
+//                                     else{
+//                                         counts[1] += 1;
+//                                     }
+//                                 }
+//                             }
+//                             //println!("Populating table time: {:?}", start.elapsed());
+//                         }
+//                         Err(_) => {
+//                             // When sender is dropped, recv will return an Err, and we can break the loop
+//                             break;
+//                         }
+//                     }
+//                 }
+//             }));
+//         }
+//         for handle in handles {
+//             handle.join().unwrap();
+//         }
+//     }
+
+//     log::debug!("Final Hashmap capacity: {}", map.capacity());
+//     log::debug!("Final Hashmap len: {}", map.len());
+//     log::debug!("Final Hash Memory usage: {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
     
-    let map_size_raw = map.len();
-    let map = Arc::try_unwrap(map).unwrap();
-    let new_map = map.into_iter().filter(|(_, v)| v[0] > 0 && v[1] > 0 && v[0] + v[1] > 2).collect::<Vec<(u64,[u32;2])>>();
-    let map_size_retain = new_map.len();
-    log::info!("Removed {} kmers with counts < 1 in both strands and <= 3 multiplicity.", map_size_raw - map_size_retain);
-    if map_size_retain < map_size_raw / 1000 {
-        log::warn!("Less than 0.1% of kmers have counts > 1 in both strands and > 2 multiplicity. This may indicate a problem with the input data or very low coverage.");
-    }
+//     let map_size_raw = map.len();
+//     let map = Arc::try_unwrap(map).unwrap();
+//     let new_map = map.into_iter().filter(|(_, v)| v[0] > 0 && v[1] > 0 && v[0] + v[1] > 2).collect::<Vec<(u64,[u32;2])>>();
+//     let map_size_retain = new_map.len();
+//     log::info!("Removed {} kmers with counts < 1 in both strands and <= 3 multiplicity.", map_size_raw - map_size_retain);
+//     if map_size_retain < map_size_raw / 1000 {
+//         log::warn!("Less than 0.1% of kmers have counts > 1 in both strands and > 2 multiplicity. This may indicate a problem with the input data or very low coverage.");
+//     }
+//     log::debug!("Final Hashmap capacity after vectorization: {}", new_map.capacity());
+//     log::debug!("Final Hashmap len after vectorization: {}", new_map.len());
+//     log::debug!("Final Hash Memory usage after vectorization : {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
 
-    return new_map;
-}
+//     return new_map;
+// }
 
 pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, fastq_files: &[String], args: &Cli) -> Vec<TwinRead>{
 
@@ -309,6 +342,10 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, fastq_files: &[St
 
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
     log::info!("Number of valid reads - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
+    let snpmer_densities = twin_reads.iter().map(|x| x.snpmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
+    let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
+    log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
+
 
     return twin_reads;
 }
@@ -336,10 +373,15 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, _args: &Cli) 
     }
 
     kmer_counts.par_sort_unstable();
+    if kmer_counts.len() == 0{
+        log::error!("No k-mers found. Exiting.");
+        std::process::exit(1);
+    }
     let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 50000) - 1].max(100);
     log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
+    //Should be able to parallelize this, TODO
     for pair in big_kmer_map.into_iter(){
         let kmer = pair.0;
         let (split_kmer, mid_base) = split_kmer(kmer, k);
@@ -425,6 +467,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, _args: &Cli) 
     let mut snpmers = snpmers.into_inner().unwrap();
     snpmers.sort();
     log::info!("Number of snpmers: {}. ", potential_snps.into_inner().unwrap());
+    log::info!("Number of solid k-mers: {}.", solid_kmers.len());
     return KmerGlobalInfo{
         snpmer_info: snpmers,
         solid_kmers: solid_kmers,
@@ -433,7 +476,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, _args: &Cli) 
 }
 
 pub fn parse_unitigs_into_table(cuttlefish_file: &str) -> (FxHashMap<u64, u32>, Vec<Vec<u8>>) {
-    let mut kmer_to_unitig_count: FxHashMap<u64, u32> = fxhash::FxHashMap::default();
+    let mut kmer_to_unitig_count: FxHashMap<u64, u32> = FxHashMap::default();
     let mut reader = needletail::parse_fastx_file(cuttlefish_file).expect("valid path");
     let mut count = 0;
     let mut unitig_vec = vec![];
@@ -500,6 +543,14 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                     }
                     writeln!(writer, "{}", &string).unwrap();
                 }
+            }
+            else{
+                let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
+                for breakpoint in breakpoints.iter(){
+                    read_id_and_breakpoint_string.push_str(format!("{}-{},", breakpoint.pos1, breakpoint.pos2).as_str());
+                }
+                let writer = &mut writer.lock().unwrap();
+                writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
             }
             if breakpoints.len() == 0{
                 new_twin_reads_bools.lock().unwrap().push((twin_read, true));

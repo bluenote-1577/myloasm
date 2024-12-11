@@ -186,14 +186,6 @@ pub struct TwinRead {
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
-pub struct SplitKmerInfo {
-    pub full_kmer: Kmer64,
-    pub mid_base: u8,
-    pub canonical: bool,
-    pub k: u8,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct KmerGlobalInfo {
     pub snpmer_info: Vec<SnpmerInfo>,
@@ -270,20 +262,29 @@ pub fn bits_to_ascii(bit_rep: u8) -> u8{
 pub struct MappingInfo {
     pub median_depth: f64,
     pub mean_depth: f64,
-    pub mapping_boundaries: Lapper<u32, bool>,
+    pub mapping_boundaries: Lapper<u32, SmallTwinOl>,
     pub present: bool,
     pub length: usize,
-    pub mapped_indices: Vec<usize>
 }
 
 pub trait NodeMapping {
     fn median_depth(&self) -> f64;
     fn mean_depth(&self) -> f64;
-    fn mapping_boundaries(&self) -> &Lapper<u32, bool>;
+    fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl>;
     fn set_mapping_info(&mut self, mapping_info: MappingInfo);
     fn mapping_info_present(&self) -> bool;
     fn reference_length(&self) -> usize;
-    fn mapped_indices(&self) -> &Vec<usize>;
+    fn mapped_indices(&self) -> Vec<usize>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct SmallTwinOl{
+    pub query_id: u32,
+    pub chain_reverse: bool,
+    pub query_range: (u32, u32),
+    pub shared_minimizers: u32,
+    pub shared_snpmers: u32,
+    pub diff_snpmers: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -291,4 +292,10 @@ pub struct Breakpoints {
     pub pos1: usize,
     pub pos2: usize,
     pub cov: usize,
+}
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct GetSequenceInfoConfig{
+    pub blunted: bool,
+    pub dna_seq_info: bool,
+    pub best_overlap_chunk: bool,
 }

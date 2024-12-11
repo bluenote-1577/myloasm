@@ -537,6 +537,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead],  args: &Cli) -> Vec<usize>{
     //let start = std::time::Instant::now();
     let downsample_factor = (50 / args.c).max(1) as u64;
+    log::info!("Building inverted index hashmap for all reads...");
     let inverted_index_hashmap =
         twin_reads
             .iter()
@@ -556,7 +557,8 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
 
     //open file for writing
     let name = if indices.is_none() { "all-cont.txt" } else { "subset-cont.txt" };
-    let bufwriter_dbg = Mutex::new(BufWriter::new(File::create(name).unwrap()));
+    let output_path = Path::new(args.output_dir.as_str()).join(name);
+    let bufwriter_dbg = Mutex::new(BufWriter::new(File::create(output_path).unwrap()));
     let contained_reads = Mutex::new(FxHashSet::default());
     let outer_reads = Mutex::new(vec![]);
 
@@ -565,6 +567,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
     } else {
         (0..twin_reads.len()).into_iter().collect::<Vec<_>>()
     };
+    log::info!("Removing contained reads...");
     range.into_par_iter().for_each(|i| {
         let mut contained = false;
         let read1 = &twin_reads[i];
@@ -667,7 +670,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
             }
 
             // only do this when log is config to trace
-            if log::log_enabled!(log::Level::Trace) {
+            if log::log_enabled!(log::Level::Debug) {
                 writeln!(
                     bufwriter_dbg.lock().unwrap(),
                     "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}, order_count: {}",
@@ -709,6 +712,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
             outer_reads.lock().unwrap().push(i);
         }
     });
+    log::info!("{} reads are contained", contained_reads.lock().unwrap().len());
     return outer_reads.into_inner().unwrap();
 }
 
