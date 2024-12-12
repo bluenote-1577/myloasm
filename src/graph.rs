@@ -227,7 +227,7 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
         // Implementation that works for both graph types
     }
 
-    pub fn remove_nodes(&mut self, nodes_to_remove: &[NodeIndex]) {
+    pub fn remove_nodes(&mut self, nodes_to_remove: &[NodeIndex], keep_as_output: bool) {
         let mut touched_nodes = FxHashSet::default();
         let remove_set = FxHashSet::from_iter(nodes_to_remove.iter());
         for &node_idx in nodes_to_remove {

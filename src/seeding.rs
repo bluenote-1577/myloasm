@@ -393,7 +393,8 @@ pub fn get_twin_read(
         k: k as u8,
         base_length: len,
         dna_seq: string.try_into().unwrap(),
-        est_id: seq_id
+        est_id: seq_id,
+        depth: None,
     });
 
 }
@@ -436,7 +437,7 @@ pub fn split_kmer_mid(
     let marker_mask = MarkerBits::MAX >> (std::mem::size_of::<MarkerBits>() * 8 - 2 * marker_k);
     let marker_rev_mask = !(3 << (2 * marker_k - 2));
     let split_mask = !(3 << (k-1));
-    let split_mask_extract = !split_mask;
+    let _split_mask_extract = !split_mask;
     let len = string.len();
 
     for i in 0..marker_k - 1 {

@@ -1,5 +1,4 @@
 use minimap2;
-use std::mem::size_of_val;
 use std::sync::Mutex;
 use rayon::prelude::*;
 use crate::types::*;

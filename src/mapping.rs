@@ -649,13 +649,13 @@ pub struct TwinReadMapping {
 }
 
 impl NodeMapping for TwinReadMapping {
-    fn median_depth(&self) -> f64 {
+    fn median_mapping_depth(&self) -> f64 {
         self.mapping_info.median_depth
     }
     fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
         &self.mapping_info.mapping_boundaries
     }
-    fn mean_depth(&self) -> f64 {
+    fn mean_mapping_depth(&self) -> f64 {
         self.mapping_info.mean_depth
     }
     fn set_mapping_info(&mut self, mapping_info: MappingInfo) {
@@ -900,13 +900,13 @@ pub fn map_reads_to_unitigs(
         let map_info = MappingInfo {
             mapping_boundaries: lapper,
             mean_depth: mean_depth,
+            //TODO
             median_depth: mean_depth,
             present: true,
             length: unitig_length,
         };
         let mut_node = unitig_graph.nodes.get_mut(&contig_id).unwrap();
         mut_node.set_mapping_info(map_info);
-        mut_node.approx_depth = Some(mean_depth);
     }
 }
 

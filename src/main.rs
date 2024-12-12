@@ -1,6 +1,5 @@
 use myloasm::seq_parse;
 use myloasm::unitig;
-use myloasm::consensus;
 use std::path::Path;
 use myloasm::mapping;
 use myloasm::types;
@@ -98,12 +97,12 @@ fn main() {
         kmer_info = kmer_comp::get_snpmers(big_kmer_map, k, &args);
         log::info!("Time elapsed in for parsing snpmers is: {:?}", start.elapsed());
         bincode::serialize_into(BufWriter::new(std::fs::File::create(output_dir.join("snpmer_info.bin")).unwrap()), &kmer_info).unwrap();
-        let start = std::time::Instant::now();
     }
 
     if empty_input && output_dir.join("overlaps.bin").exists() && output_dir.join("twin_reads.bin").exists(){    
         overlaps = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("overlaps.bin")).unwrap())).unwrap();
         twin_reads = bincode::deserialize_from(BufReader::new(std::fs::File::open(output_dir.join("twin_reads.bin")).unwrap())).unwrap();
+        log::info!("Loaded overlaps and twin reads from file.");
     }
     else{
         twin_reads = kmer_comp::twin_reads_from_snpmers(&mut kmer_info, &fastq_files, &args);
@@ -171,7 +170,7 @@ fn main() {
             let tip_length_cutoff = args.tip_length_cutoff;
             //let read_cutoff = (args.tip_read_cutoff as f32 / divider as f32 * iteration as f32).round() as usize;
             let read_cutoff = args.tip_read_cutoff;
-            unitig_graph.remove_tips(tip_length_cutoff, read_cutoff);
+            unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
             unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-tip_unitig_graph.gfa", iteration)), true, false, &twin_reads, &args);
             if unitig_graph.nodes.len() == size_graph{
@@ -201,7 +200,7 @@ fn main() {
 
     let mut size_graph = unitig_graph.nodes.len();
     loop{
-        unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff);
+        unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.pop_bubbles(75000);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
@@ -213,18 +212,22 @@ fn main() {
     unitig_graph.to_gfa(output_dir.join("temp").join("pre-final_unitig_graph.gfa"), true, false, &twin_reads, &args);
 
     let mut size_graph = unitig_graph.nodes.len();
+    let mut counter = 0;
+
+    // Cut Z-edges this time and cut large tips, (but keep them)
     loop{
-        // Cut Z-edges 
         unitig_graph.cut_z_edges(&args);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff);
+        unitig_graph.remove_tips(args.tip_length_cutoff * 5, args.tip_read_cutoff, true);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.pop_bubbles(75000);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.resolve_bridged_repeats(&args, 0.75, output_dir.join("temp").join(format!("f{}-resolve_unitig_graph.txt", counter)));
         if unitig_graph.nodes.len() == size_graph{
             break;
         }
         size_graph = unitig_graph.nodes.len();
+        counter += 1;
     }
 
     get_seq_config.dna_seq_info = true;
@@ -241,11 +244,10 @@ fn main() {
     unitig_graph.to_gfa(output_dir.join("final_contig_graph.gfa"), true, true, &twin_reads, &args);
     unitig_graph.to_gfa(output_dir.join("final_contig_graph_noseq.gfa"), true, false, &twin_reads, &args);
 
-    let start = std::time::Instant::now();
-    log::info!("Running minimap2...");
-    return;
-    consensus::outer_consensus(&unitig_graph, &twin_reads, &args);
-    log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
+    //let start = std::time::Instant::now();
+    //log::info!("Running minimap2...");
+    //consensus::outer_consensus(&unitig_graph, &twin_reads, &args);
+    //log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
     unitig_graph.print_statistics();
 }
 

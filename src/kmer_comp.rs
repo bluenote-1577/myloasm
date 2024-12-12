@@ -1,9 +1,6 @@
-use dashmap::DashMap;
 use std::collections::HashSet;
-use memory_stats::memory_stats;
 use smallvec::SmallVec;
 use smallvec::smallvec;
-use crate::cbloom;
 use crate::cli::Cli;
 use crate::twin_graph;
 use std::path::Path;
@@ -16,10 +13,8 @@ use std::thread;
 use crate::types::*;
 use crate::seeding;
 use fishers_exact::fishers_exact;
-use fxhash::FxHashSet;
 use crate::mapping::*;
 use std::io::{BufWriter, Write};
-use std::io::BufReader;
 
 
 fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
@@ -497,7 +492,7 @@ pub fn parse_unitigs_into_table(cuttlefish_file: &str) -> (FxHashMap<u64, u32>, 
 }
 
 
-fn split_read(twin_read: TwinRead, mut break_points: Vec<Breakpoints>) -> Vec<TwinRead>{
+fn split_read(twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>) -> Vec<TwinRead>{
     let mut new_reads = vec![];
     break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
     let mut last_break = 0;
@@ -507,6 +502,22 @@ fn split_read(twin_read: TwinRead, mut break_points: Vec<Breakpoints>) -> Vec<Tw
         let bp_end = break_point.pos2;
         if bp_start - last_break > 1000{
             let mut new_read = TwinRead::default();
+
+            //Get depth for split read
+            let mut depth = 0.;
+            let intervals = mapping_info.mapping_boundaries().find(last_break as u32, bp_start as u32);
+            for interval in intervals{
+                if interval.start >= last_break as u32 && interval.stop < bp_start as u32{
+                    depth += (interval.stop - interval.start) as f64;
+                }
+            }
+            if bp_start - last_break == 0{
+                continue;
+            }
+            depth /= (bp_start - last_break) as f64;
+            new_read.depth = Some(depth);
+
+            //Repopulate minimizers and snpmers
             new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.id = format!("{}+split{}", &twin_read.id, i);
@@ -523,15 +534,15 @@ fn split_read(twin_read: TwinRead, mut break_points: Vec<Breakpoints>) -> Vec<Tw
 
 pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, args: &Cli)
 -> (Vec<TwinRead>, Vec<usize>){
-    let tr_map_info_dict = tr_map_info.into_iter().map(|x| (x.tr_index, x)).collect::<FxHashMap<usize, TwinReadMapping>>();
+    let tr_map_info_dict = tr_map_info.iter().map(|x| (x.tr_index, x)).collect::<FxHashMap<usize, &TwinReadMapping>>();
     let new_twin_reads_bools = Mutex::new(vec![]);
     let cov_file = Path::new(args.output_dir.as_str()).join("read_coverages.txt");
     let writer = Mutex::new(BufWriter::new(std::fs::File::create(cov_file).unwrap()));
-    twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
+    twin_reads.into_par_iter().enumerate().for_each(|(i, mut twin_read)| {
         if tr_map_info_dict.contains_key(&i){
 
             let map_info = tr_map_info_dict.get(&i).unwrap();
-            let breakpoints = mapping::cov_mapping_breakpoints(map_info);
+            let breakpoints = mapping::cov_mapping_breakpoints(*map_info);
 
             if log::log_enabled!(log::Level::Trace) {
                 let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
@@ -553,10 +564,16 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
             }
             if breakpoints.len() == 0{
+                let mut depth = 0;
+                for interval in map_info.mapping_boundaries().intervals.iter(){
+                    depth += interval.stop - interval.start;
+                }
+                depth /= twin_read.base_length as u32;
+                twin_read.depth = Some(depth as f64);
                 new_twin_reads_bools.lock().unwrap().push((twin_read, true));
             }
             else{
-                let splitted_reads = split_read(twin_read, breakpoints);
+                let splitted_reads = split_read(twin_read, map_info, breakpoints);
                 for new_read in splitted_reads{
                     new_twin_reads_bools.lock().unwrap().push((new_read, true));
                 }

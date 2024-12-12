@@ -183,6 +183,7 @@ pub struct TwinRead {
     pub base_length: usize,
     pub dna_seq: Seq<Dna>,
     pub est_id: Option<f64>,
+    pub depth: Option<f64>,
 }
 
 
@@ -268,8 +269,8 @@ pub struct MappingInfo {
 }
 
 pub trait NodeMapping {
-    fn median_depth(&self) -> f64;
-    fn mean_depth(&self) -> f64;
+    fn median_mapping_depth(&self) -> f64;
+    fn mean_mapping_depth(&self) -> f64;
     fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl>;
     fn set_mapping_info(&mut self, mapping_info: MappingInfo);
     fn mapping_info_present(&self) -> bool;
