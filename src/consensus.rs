@@ -40,6 +40,7 @@ pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &
     let fasta_writer = Mutex::new(BufWriter::new(File::create(fasta_out).unwrap()));
     let contig_vec = final_graph.nodes.values().collect::<Vec<&UnitigNode>>();
     let bam_output = Path::new(args.output_dir.as_str()).join("map.bam");
+
     let ids_and_lens_contigs = contig_vec.iter()
     .map(|contig| (format!("u{}", contig.node_id), contig.base_seq().len() as u32))
     .collect::<Vec<(String, u32)>>();

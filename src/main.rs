@@ -12,6 +12,7 @@ use myloasm::kmer_comp;
 use myloasm::twin_graph;
 
 fn main() {
+    let total_start_time = std::time::Instant::now();
     let mut args = cli::Cli::parse();
 
     // Initialize logger with CLI-specified level
@@ -46,6 +47,10 @@ fn main() {
     if args.hifi{
         args.snpmer_error_rate = 0.001;
         args.snpmer_threshold = 100.;
+    }
+    if args.r941{
+        args.snpmer_error_rate = 0.05;
+        args.contain_subsample_rate = 20;
     }
 
     if !output_dir.exists(){
@@ -180,8 +185,7 @@ fn main() {
         }
 
         // Pop bubbles
-        //let bubble_length_cutoff = 75000/divider * iteration;
-        let bubble_length_cutoff = 50000;
+        let bubble_length_cutoff = args.max_bubble_threshold/2; 
         unitig_graph.pop_bubbles(bubble_length_cutoff);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.to_gfa(output_dir.join("temp").join(format!("{}-bubble_unitig_graph.gfa", iteration)), true, false, &twin_reads, &args);
@@ -202,7 +206,7 @@ fn main() {
     loop{
         unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.pop_bubbles(75000);
+        unitig_graph.pop_bubbles(args.max_bubble_threshold/2);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if unitig_graph.nodes.len() == size_graph{
             break;
@@ -214,13 +218,13 @@ fn main() {
     let mut size_graph = unitig_graph.nodes.len();
     let mut counter = 0;
 
-    // Cut Z-edges this time and cut large tips, (but keep them)
+    // Cut Z-edges this time and cut large tips (but keep them) and remove large bubbles
     loop{
         unitig_graph.cut_z_edges(&args);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.remove_tips(args.tip_length_cutoff * 5, args.tip_read_cutoff, true);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.pop_bubbles(75000);
+        unitig_graph.pop_bubbles(args.max_bubble_threshold);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.resolve_bridged_repeats(&args, 0.75, output_dir.join("temp").join(format!("f{}-resolve_unitig_graph.txt", counter)));
         if unitig_graph.nodes.len() == size_graph{
@@ -243,12 +247,14 @@ fn main() {
     log::info!("Time elapsed for aligning reads to graph is {:?}", start.elapsed());
     unitig_graph.to_gfa(output_dir.join("final_contig_graph.gfa"), true, true, &twin_reads, &args);
     unitig_graph.to_gfa(output_dir.join("final_contig_graph_noseq.gfa"), true, false, &twin_reads, &args);
+    unitig_graph.to_fasta(output_dir.join("final_contigs.fa"), &args);
 
     //let start = std::time::Instant::now();
     //log::info!("Running minimap2...");
     //consensus::outer_consensus(&unitig_graph, &twin_reads, &args);
     //log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
     unitig_graph.print_statistics();
+    log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
 }
 
 

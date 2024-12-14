@@ -228,6 +228,7 @@ fn second_iteration(
                 }
             }
         }
+        log::debug!("Finished sending all reads.");
         for tx in txs1{
             drop(tx);
         }

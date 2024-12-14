@@ -21,11 +21,11 @@ pub struct Cli {
     pub c: usize,
 
     /// Number of threads to use for processing
-    #[arg(short, long, default_value = "7")]
+    #[arg(short, long, default_value = "10")]
     pub threads: usize,
 
     /// Enable homopolymer compression
-    #[arg(long)]
+    #[arg(long, hide=true)]
     pub homopolymer_compression: bool,
 
     /// Output directory for results
@@ -37,28 +37,35 @@ pub struct Cli {
     pub log_level: LogLevel,
 
     /// Length of tip to remove
-    #[arg(long, default_value_t = 20000)]
+    #[arg(long, default_value_t = 20000, help_heading = "Graph Parameters")]
     pub tip_length_cutoff: usize,
 
     /// Number of reads in tips to remove
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 3, help_heading = "Graph Parameters")]
     pub tip_read_cutoff: usize,
 
-    /// Use snpmers
-    #[arg(long, default_value_t=true)]
-    pub use_snpmers: bool,
+    /// Do not use snpmers; standard overlap assembly
+    #[arg(long, default_value_t=false, help_heading = "Overlap Parameters")]
+    pub no_snpmers: bool,
 
     /// Disallow reads with < this accuracy from Q-scores for the overlap step. 
     #[arg(long, default_value_t=90.)]
     pub quality_value_cutoff: f64,
 
     /// Snpmer identity threshold for overlaps
-    #[arg(long, default_value_t=99.9)]
+    #[arg(long, default_value_t=99.9, help_heading = "Overlap Parameters")]
     pub snpmer_threshold: f64,
 
     /// Error rate for snpmers for binomial test
-    #[arg(long, default_value_t=0.025)]
+    #[arg(long, default_value_t=0.025, help_heading = "Overlap Parameters")]
     pub snpmer_error_rate: f64,
+
+    #[arg(long, default_value_t=20, help_heading = "Overlap Parameters")]
+    pub contain_subsample_rate: usize,
+
+    /// Error rate for snpmers for binomial test
+    #[arg(long, default_value_t=100000, help_heading = "Graph Parameters")]
+    pub max_bubble_threshold: usize,
 
     /// Bloom filter size in GB
     #[arg(short, long, default_value_t=3.)]
@@ -68,9 +75,13 @@ pub struct Cli {
     #[arg(long, default_value_t = 2)]
     pub min_reads_contig: usize,
 
-    /// HiFi Mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
-    #[arg(long)]
-    pub hifi: bool
+    /// HiFi mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
+    #[arg(long, help_heading = "Preset Parameters", hide=true)]
+    pub hifi: bool,
+
+    /// R9 (old nanopore) mode (--snpmer-error-rate 0.05)
+    #[arg(long, help_heading = "Preset Parameters", hide=true)]
+    pub r941: bool
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

@@ -536,7 +536,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
 pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead],  args: &Cli) -> Vec<usize>{
     //let start = std::time::Instant::now();
-    let downsample_factor = (25 / args.c).max(1) as u64;
+    let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
     log::info!("Building inverted index hashmap for all reads...");
     let inverted_index_hashmap =
         twin_reads
@@ -632,6 +632,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
         });
 
         let sorting_filtering_time = start.elapsed();
+        writeln!(bufwriter_dbg.lock().unwrap(), "CONTAIN: {} NUMBER OF HITS {}", &read1.id, top_indices.len()).unwrap();
 
         let start = std::time::Instant::now();
         let num_tries = 50;

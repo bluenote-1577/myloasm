@@ -354,10 +354,9 @@ pub fn split_kmer(kmer: u64, k: usize) -> (u64, u8){
     return (masked_kmer, mid_base as u8);
 }
 
-pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, _args: &Cli) -> KmerGlobalInfo{
+pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -> KmerGlobalInfo{
 
     log::info!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
-    log::info!("Finding snpmers...");
     let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
     let mut solid_kmers = HashSet::default();
@@ -393,6 +392,16 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, _args: &Cli) 
         }
     }
 
+    if args.no_snpmers{
+        log::info!("Skipping snpmer detection.");
+        return KmerGlobalInfo{
+            snpmer_info: vec![],
+            solid_kmers: solid_kmers,
+            high_freq_thresh: high_freq_thresh as f64,
+        };
+    }
+
+    log::info!("Finding snpmers...");
     let potential_snps = Mutex::new(0);
     let snpmers = Mutex::new(vec![]);
     new_map_counts_bases.into_par_iter().for_each(|(split_kmer, c_and_b)|{

@@ -1,9 +1,9 @@
 use crate::cli::Cli;
+use bio_seq::prelude::*;
 use crate::graph::*;
 use crate::mapping;
 use crate::twin_graph::*;
 use crate::types::*;
-use bio_seq::prelude::*;
 use fishers_exact::fishers_exact;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -505,6 +505,45 @@ impl UnitigGraph {
         unitig_graph
     }
 
+    pub fn to_fasta<T>(&self, filename: T, args: &Cli) 
+    where 
+        T: AsRef<std::path::Path>,
+    {
+        let mut bufwriter = BufWriter::new(std::fs::File::create(filename).unwrap());
+        for (_id, unitig) in self.nodes.iter() {
+            if unitig.read_indices_ori.len() < args.min_reads_contig
+                && unitig.in_edges().len() + unitig.out_edges().len() == 0
+                {
+                    log::trace!(
+                        "Unitig {} is disconnected with < 3 reads",
+                        unitig.read_indices_ori[0].0
+                    );
+                    continue;
+                }
+            let mut base_seq = unitig.base_seq();
+            let empty_seq = dna!("A").to_owned();
+            if base_seq.len() == 0 {
+                base_seq = &empty_seq;
+            }
+            let mut name = ">u".to_string() + &unitig.read_indices_ori[0].0.to_string();
+            let depth = if unitig.mapping_info_present() {
+                unitig.mean_mapping_depth()
+            } else {
+                unitig.mean_read_depth.unwrap_or(0.01)
+            };
+            name += &format!(
+                " len:{} depth:{:.1}",
+                unitig.length(),
+                depth
+            );
+            if base_seq.len() == 1{
+                name += " EMPTY";
+            }
+            writeln!(bufwriter, "{}", name).unwrap();
+            writeln!(bufwriter, "{}", base_seq).unwrap();
+        }
+    }
+
     // Convert to GFA format
     pub fn to_gfa<T>(&mut self, filename: T, output_readgroups: bool, output_sequences: bool, reads: &[TwinRead], args: &Cli)
     where
@@ -838,13 +877,12 @@ impl UnitigGraph {
         let mut seen_vertices = FxHashSet::default();
         seen_vertices.insert(n_id);
         let mut stack = vec![(n_id, right_direction)];
-        let mut distances : FxHashMap<NodeIndex, usize> = FxHashMap::default();
+        let mut depth_length: FxHashMap<NodeIndex, f64> = FxHashMap::default();
+        let mut distances: FxHashMap<NodeIndex, usize> = FxHashMap::default();
         let mut num_outstanding = 0;
         let mut post_visit_edgecount = FxHashMap::default();
         let mut traceback = FxHashMap::default();
         traceback.insert(n_id, None);
-        let mut supports = FxHashMap::default();
-        supports.insert(n_id, self.nodes[&n_id].read_indices_ori.len());
 
         log::trace!(
             "Starting node bubble {} ({})",
@@ -854,6 +892,11 @@ impl UnitigGraph {
 
         while !stack.is_empty() {
             let v = stack.pop().unwrap();
+            let prev_score = if depth_length.contains_key(&v.0) {
+                depth_length[&v.0]
+            } else {
+                0.
+            };
             let prev_dist = if distances.contains_key(&v.0) {
                 distances[&v.0]
             } else {
@@ -863,6 +906,7 @@ impl UnitigGraph {
                 let edge = self.edges[*edge_ind].as_ref().unwrap();
                 let other_node_ind = edge.other_node(v.0);
                 let other_node = &self.nodes[&other_node_ind];
+                let num_reads = other_node.read_indices_ori.len() as f64;
                 seen_vertices.insert(other_node_ind);
                 let other_node_leftdir = edge.node_edge_direction(&other_node_ind);
                 // This is a problem for circular contigs... 
@@ -883,18 +927,21 @@ impl UnitigGraph {
                     post_visit_edgecount.insert(other_node_ind, other_node_inc_dir.len() as i64);
                     num_outstanding += 1;
                     distances.insert(other_node_ind, prev_dist + other_node.length());
-                    supports.insert(other_node_ind, other_node.read_indices_ori.len());
                     traceback.insert(other_node_ind, Some(v.0));
+                    depth_length.insert(
+                        other_node_ind,
+                        prev_score + other_node.mean_read_depth.unwrap() * num_reads,
+                    );
                 } else {
                     if prev_dist + other_node.length() < distances[&other_node_ind] {
                         distances.insert(other_node_ind, prev_dist + other_node.length());
                     }
-                    if supports[&v.0] + other_node.read_indices_ori.len()
-                        > supports[&other_node_ind]
+                    if prev_score + other_node.mean_read_depth.unwrap() * num_reads
+                        > depth_length[&other_node_ind]
                     {
-                        supports.insert(
+                        depth_length.insert(
                             other_node_ind,
-                            supports[&v.0] + other_node.read_indices_ori.len(),
+                            prev_score + other_node.mean_read_depth.unwrap() * num_reads,
                         );
                         traceback.insert(other_node_ind, Some(v.0));
                     }
