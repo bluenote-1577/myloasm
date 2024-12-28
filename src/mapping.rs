@@ -1,4 +1,8 @@
 use crate::cli::Cli;
+use crate::constants::MAX_GAP_CHAINING;
+use std::io::Write;
+use std::io::BufWriter;
+use std::path::Path;
 use crate::seeding;
 use crate::twin_graph::same_strain;
 use std::collections::HashSet;
@@ -12,8 +16,19 @@ use rayon::prelude::*;
 use rust_lapper::Interval;
 use rust_lapper::Lapper;
 use std::sync::Mutex;
+use crate::map_processing::*;
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HitInfo {
+    pub index: u32,
+    pub contig_id: u32,
+    pub pos: u32,
+}
 
+pub struct Anchors {
+    anchors: Vec<Anchor>,
+    max_mult: usize,
+}
 
 fn _edit_distance(v1: &[u32], v2: &[u32]) -> usize {
     let len1 = v1.len();
@@ -250,9 +265,16 @@ pub fn dp_anchors(
                     continue;
                 }
             }
-            let gap_penalty =
-                (start1 as i32 - (end1) as i32).abs() - (start2 as i32 - (end2) as i32).abs();
-            let score = dp[j] + match_score - gap_cost * (gap_penalty.abs());
+            let gap_penalty_signed =
+                (start1 as i32 - (end1) as i32).abs() 
+                - (start2 as i32 - (end2) as i32).abs();
+            let gap_penalty = gap_penalty_signed.abs();
+
+            if gap_penalty > MAX_GAP_CHAINING as i32 {
+                continue;
+            }
+
+            let score = dp[j] + match_score - gap_cost * gap_penalty;
             if score > dp[i] {
                 dp[i] = score;
                 prev[i] = Some(j);
@@ -340,7 +362,7 @@ fn find_optimal_chain(
 
     #[cfg(any(target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx2") {
+        if is_x86_feature_detected!("avx2") && false {
             use crate::avx2_chaining::dp_anchors_simd;
             unsafe{
                 let vals = dp_anchors_simd(matches, false, gap_cost, match_score, band);
@@ -361,7 +383,7 @@ fn find_optimal_chain(
     let mut scores_and_chains_r = vec![];
     #[cfg(any(target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx2") {
+        if is_x86_feature_detected!("avx2") && false{
             use crate::avx2_chaining::dp_anchors_simd;
             unsafe{
                 let vals = dp_anchors_simd(matches, true, gap_cost, match_score, band);
@@ -439,7 +461,7 @@ pub fn compare_twin_reads(
     let mut twin_overlaps = vec![];
     let k = seq1.k as usize;
     for mini_chain_info in mini_chain_infos{
-        let mini_chain = &mini_chain_info.chain;
+        let mini_chain = mini_chain_info.chain;
         if mini_chain_info.score < 50 {
             continue;
         }
@@ -494,7 +516,6 @@ pub fn compare_twin_reads(
                 split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
             }
 
-
             //If mini chain goes opposite from split chain, probably split chain
             //is not reliable, so set shared and diff = 0. 
             if let Some(split_chain) = split_chain_opt.as_ref(){
@@ -514,7 +535,7 @@ pub fn compare_twin_reads(
             }
 
             //Only if log level is trace
-            if log::log_enabled!(log::Level::Trace) {
+            if log::log_enabled!(log::Level::Trace) && false{
                 if diff_snpmer < 10 && shared_snpmer > 100{
                     let mut positions_read1_snpmer_diff = vec![];
                     let mut positions_read2_snpmer_diff = vec![];
@@ -576,6 +597,8 @@ pub fn compare_twin_reads(
             snpmers_in_both: (seq1.snpmers.len(), seq2.snpmers.len()),
             chain_reverse: mini_chain_info.reverse,
             intersect: (intersect_split, intersection_snp),
+            chain: mini_chain,
+            chain_score: mini_chain_info.score,
         };
         twin_overlaps.push(twinol);
     }
@@ -643,34 +666,7 @@ fn unitigs_to_tr(
     return tr_unitigs;
 }
 
-pub struct TwinReadMapping {
-    pub tr_index: usize,
-    pub mapping_info: MappingInfo,
-}
 
-impl NodeMapping for TwinReadMapping {
-    fn median_mapping_depth(&self) -> f64 {
-        self.mapping_info.median_depth
-    }
-    fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
-        &self.mapping_info.mapping_boundaries
-    }
-    fn mean_mapping_depth(&self) -> f64 {
-        self.mapping_info.mean_depth
-    }
-    fn set_mapping_info(&mut self, mapping_info: MappingInfo) {
-        self.mapping_info = mapping_info;
-    }
-    fn mapping_info_present(&self) -> bool {
-        self.mapping_info.present
-    }
-    fn reference_length(&self) -> usize {
-        self.mapping_info.length
-    }
-    fn mapped_indices(&self) -> Vec<usize> {
-        self.mapping_boundaries().iter().map(|x| x.val.query_id as usize).collect()
-    }
-}
 
 fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
@@ -707,7 +703,7 @@ fn get_minimizer_index_ref(
 pub fn map_reads_to_outer_reads<'a>(
     outer_read_indices: &[usize],
     twin_reads: &'a [TwinRead],
-    _args: &Cli,
+    args: &Cli,
 ) -> Vec<TwinReadMapping> {
     let mut ret = vec![];
     let tr_outer = outer_read_indices
@@ -718,6 +714,7 @@ pub fn map_reads_to_outer_reads<'a>(
 
     let mini_index = get_minimizer_index_ref(&tr_outer);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
+    let kmer_count_map = Mutex::new(FxHashMap::default());
     let counter = Mutex::new(0);
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
@@ -743,7 +740,7 @@ pub fn map_reads_to_outer_reads<'a>(
                 None,
                 rid,
                 *contig_id as usize,
-                false
+                true
             ) {
                 if twin_ol.end2 - twin_ol.start2 < 500 {
                     continue;
@@ -753,24 +750,52 @@ pub fn map_reads_to_outer_reads<'a>(
         }
         //let overlap_time = start.elapsed().as_micros();
         for hit in unitig_hits.iter() {
-            let mut map = mapping_boundaries_map.lock().unwrap();
-            let vec = map.entry(hit.i2).or_insert(vec![]);
-            //TODO test
-            let small_twin_ol = SmallTwinOl{
-                query_id: rid as u32,
-                query_range: (hit.start1 as u32, hit.end1 as u32),
-                shared_minimizers: hit.shared_minimizers as u32,
-                diff_snpmers: hit.diff_snpmers as u32,
-                shared_snpmers: hit.shared_snpmers as u32,
-                chain_reverse: hit.chain_reverse,
-            };
-            vec.push((hit.start2 + 50, hit.end2 - 50, small_twin_ol));
+            {
+                let max_overlap = check_maximal_overlap(
+                    hit.start1 as usize,
+                    hit.end1 as usize,
+                    hit.start2 as usize,
+                    hit.end2 as usize,
+                    read.base_length,
+                    tr_outer[&hit.i2].base_length,
+                    hit.chain_reverse,
+                );
+                let strain_specific = same_strain(
+                    hit.shared_minimizers,
+                    hit.diff_snpmers,
+                    hit.shared_snpmers,
+                    args.c as u64,
+                    args.snpmer_threshold,
+                    args.snpmer_error_rate
+                );
+                let mut map = mapping_boundaries_map.lock().unwrap();
+                let vec = map.entry(hit.i2).or_insert(vec![]);
+                let small_twin_ol = SmallTwinOl{
+                    query_id: rid as u32,
+                    query_range: (hit.start1 as u32, hit.end1 as u32),
+                    shared_minimizers: hit.shared_minimizers as u32,
+                    diff_snpmers: hit.diff_snpmers as u32,
+                    shared_snpmers: hit.shared_snpmers as u32,
+                    chain_reverse: hit.chain_reverse,
+                };
+                vec.push((hit.start2 + 50, hit.end2 - 50, small_twin_ol, max_overlap && strain_specific));
+            }
+            {
+                let mut kmer_map = kmer_count_map.lock().unwrap();
+                let index_of_outer_in_all = outer_read_indices[hit.i2];
+                let outer_read_minimizers_len = twin_reads[index_of_outer_in_all].minimizers.len();
+                let vec = kmer_map.entry(hit.i2).or_insert(vec![0; outer_read_minimizers_len]);
+                for anchor in hit.chain.iter() {
+                    let reference_hit_kmer = anchor.j;
+                    vec[reference_hit_kmer as usize] += 1;
+                }
+            }
         }
         //println!("Anchor finding time: {}us", anchor_finding_time);
         //println!("Overlap time: {}us", overlap_time);
     });
 
-
+    let kmer_count_map = kmer_count_map.into_inner().unwrap();
     for (contig_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
         let index_of_outer_in_all = outer_read_indices[contig_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
@@ -780,6 +805,17 @@ pub fn map_reads_to_outer_reads<'a>(
             map_vec.push(map_len);
         }
 
+        let strain_specific_max_intervals = boundaries
+            .iter()
+            .filter(|x| x.3)
+            .map(|x| Interval {
+                start: x.0 as u32,
+                stop: x.1 as u32,
+                val: true,
+            })
+            .collect::<Vec<Interval<u32,bool>>>();
+
+
         let intervals = boundaries
             .into_iter()
             .map(|x| Interval {
@@ -788,19 +824,26 @@ pub fn map_reads_to_outer_reads<'a>(
                 val: x.2,
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
-        let lapper = Lapper::new(intervals);
 
-        let mean_depth = map_vec.iter().sum::<usize>() as f64 / outer_read_length as f64;
+        
+        let lapper = Lapper::new(intervals);
+        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, 100, 0, outer_read_length).unwrap();
+        //let mean_depth = map_vec.iter().sum::<usize>() as f64 / outer_read_length as f64;
+
+        let kmer_counts =  kmer_count_map.get(&contig_id).unwrap();
+
         let map_info = MappingInfo {
+            minimum_depth: min_depth,
+            median_depth: median_depth,
             mapping_boundaries: lapper,
-            mean_depth: mean_depth,
-            median_depth: mean_depth,
             present: true,
             length: outer_read_length,
         };
+
         let twinread_mapping = TwinReadMapping {
             tr_index: outer_read_indices[contig_id],
             mapping_info: map_info,
+            lapper_strain_max: Lapper::new(strain_specific_max_intervals),
         };
         ret.push(twinread_mapping);
     }
@@ -814,6 +857,8 @@ pub fn map_reads_to_unitigs(
     twin_reads: &[TwinRead],
     args: &Cli,
 ) {
+    let mapping_file = Path::new(args.output_dir.as_str()).join("map_to_unitigs.txt");
+    let mapping_file = Mutex::new(BufWriter::new(std::fs::File::create(mapping_file).unwrap()));
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
         let k = snpmer_i.k as usize;
@@ -827,6 +872,11 @@ pub fn map_reads_to_unitigs(
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, args);
     let mini_index = get_minimizer_index(&tr_unitigs);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
+    let mut kmer_count_map = vec![];
+    for i in 0..unitig_graph.nodes.len(){
+        let num_minimizers = tr_unitigs[&i].minimizers.len();
+        kmer_count_map.push(Mutex::new(vec![(0,0); num_minimizers]));
+    }
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mini = &read.minimizers;
@@ -846,23 +896,53 @@ pub fn map_reads_to_unitigs(
                 *contig_id as usize,
                 true
             ) {
-                if twinol.end2 - twinol.start2 < 500 {
+                if twinol.end2 - twinol.start2 < 1000 {
                     continue;
                 }
                 unitig_hits.push(twinol);
+                //Only take top hit for now, TODO
+                //break;
             }
         }
         let ss_hits = unitig_hits.into_iter().filter(|x| same_strain(
-            x.shared_minimizers,
-            x.diff_snpmers,
-            x.shared_snpmers,
-            args.c.try_into().unwrap(),
-            args.snpmer_threshold,
-            args.snpmer_error_rate
-        )).collect::<Vec<_>>();
+                x.shared_minimizers,
+                x.diff_snpmers,
+                x.shared_snpmers,
+                args.c.try_into().unwrap(),
+                args.snpmer_threshold,
+                args.snpmer_error_rate
+            )).collect::<Vec<_>>();
 
-        let best_hit = ss_hits.into_iter().max_by_key(|x| x.shared_minimizers + x.shared_snpmers);
-        if let Some(hit) = best_hit{
+        let mut retained_hits = vec![];
+
+        for hit in ss_hits{
+            let read_length = twin_reads[hit.i1].base_length;
+            let unitig_length = tr_unitigs[&hit.i2].base_length;
+
+            let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse);
+
+            write!(
+                mapping_file.lock().unwrap(),
+                "{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\tretained:{}\treverse:{}\n",
+                twin_reads[hit.i1].id,
+                hit.start1,
+                hit.end1,
+                tr_unitigs[&hit.i2].id,
+                hit.start2,
+                hit.end2,
+                hit.shared_minimizers,
+                hit.diff_snpmers,
+                hit.shared_snpmers,
+                retained,
+                hit.chain_reverse
+            ).unwrap();
+
+            if retained{
+                retained_hits.push(hit);
+            }
+        }
+
+        for hit in retained_hits {
             let mut map = mapping_boundaries_map.lock().unwrap();
             let vec = map.entry(hit.i2).or_insert(vec![]);
             let small_twin_ol = SmallTwinOl{
@@ -874,12 +954,22 @@ pub fn map_reads_to_unitigs(
                 chain_reverse: hit.chain_reverse,
             };
             vec.push((hit.start2, hit.end2, small_twin_ol));
+
+            {
+                let mut kmer_vec = kmer_count_map[hit.i2].lock().unwrap();
+                for anchor in hit.chain.iter() {
+                    let reference_hit_kmer = anchor.j;
+                    kmer_vec[reference_hit_kmer as usize].1 += 1;
+                    kmer_vec[reference_hit_kmer as usize].0 = anchor.pos2;
+                }
+            }
         }
     });
 
 
+    let kmer_vecs = kmer_count_map.into_iter().map(|x| x.into_inner().unwrap()).collect::<Vec<Vec<(u32,u32)>>>();
     for (contig_id, boundaries_and_rid) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
-        let unitig_length = unitig_graph.nodes.get(&contig_id).unwrap().length();
+        let unitig_length = unitig_graph.nodes.get(&contig_id).unwrap().cut_length();
         let mut map_vec = vec![];
         for mapping in boundaries_and_rid.iter() {
             let map_len = mapping.1 - mapping.0;
@@ -895,13 +985,15 @@ pub fn map_reads_to_unitigs(
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
         let lapper = Lapper::new(intervals);
+        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, 100, 0, unitig_length).unwrap();
 
-        let mean_depth = map_vec.iter().sum::<usize>() as f64 / unitig_length as f64;
+        let kmer_vec = &kmer_vecs[contig_id];
+        println!("Unitig id kmer counts: u{}", &unitig_graph.nodes.get(&contig_id).unwrap().node_id);
+        let median_kmer_count = sliding_window_kmer_coverages(&kmer_vec, 10, args.kmer_size as usize);
         let map_info = MappingInfo {
+            median_depth: median_depth,
+            minimum_depth: min_depth,
             mapping_boundaries: lapper,
-            mean_depth: mean_depth,
-            //TODO
-            median_depth: mean_depth,
             present: true,
             length: unitig_length,
         };
@@ -910,117 +1002,10 @@ pub fn map_reads_to_unitigs(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct HitInfo {
-    pub index: u32,
-    pub contig_id: u32,
-    pub pos: u32,
-}
-
-pub struct Anchors {
-    anchors: Vec<Anchor>,
-    max_mult: usize,
-}
-
 fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {
     let mask = !(3 << (k - 1));
     snpmers
         .iter()
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>()
-}
-
-pub fn cov_mapping_breakpoints<T>(mapped: &T) -> Vec<Breakpoints>
-where
-    T: NodeMapping,
-{
-    if mapped.mapping_boundaries().intervals.is_empty() {
-        return vec![];
-    }
-    let mut breakpoints = vec![];
-    let depths = mapped.mapping_boundaries().depth().collect::<Vec<_>>();
-    if depths.len() < 3 {
-        return vec![];
-    }
-    // <ooooo|-------
-    if depths[0].start > 100 {
-        breakpoints.push(Breakpoints {
-            pos1: 0,
-            pos2 : depths[0].start as usize,
-            cov: 0,
-        });
-    }
-    //<xxxxx|--------
-    //Cut bad left endpoints. 
-    let depth_start_right = if mapped.reference_length() > 100 + depths[0].stop as usize{
-        mapped
-            .mapping_boundaries()
-            .count(depths[0].stop + 99, depths[0].stop + 100)
-    } else {
-        0
-    };
-    if depths[0].stop > 100 && (depths[1].val > 3 || depth_start_right > 3) && depths[0].val == 1 {
-        breakpoints.push(Breakpoints {
-            pos1: depths[0].start as usize,
-            pos2: depths[0].stop as usize,
-            cov: depths[0].val as usize,
-        });
-    }
-    // -----|xxxx|----
-    for i in 1..depths.len() - 1 {
-        let interval = &depths[i];
-        let last_cov = depths[i - 1].val;
-        let next_cov = depths[i + 1].val;
-        let start = interval.start;
-        let stop = interval.stop as usize;
-        let cov = interval.val as usize;
-        let cond1 = last_cov > 3 && next_cov > 3 && cov == 1;
-        let cond2;
-        if start > 200 && stop + 200 < mapped.reference_length() {
-            let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
-            let right_count = mapped.mapping_boundaries().count(stop as u32 + 198, stop as u32 + 200);
-            cond2 = left_count > 3 && right_count > 3 && cov == 1;
-        } else {
-            cond2 = false;
-        }
-        let cond3 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov < 3;
-        if start > 200
-            && stop + 200 < mapped.reference_length()
-            && (cond1 || cond2 || cond3)
-        {
-            breakpoints.push(Breakpoints {
-                pos1: start as usize,
-                pos2: stop as usize,
-                cov: cov,
-            });
-        }
-    }
-
-    // --------|xxxxx>
-    if depths[depths.len() - 1].start > 100 {
-        let depth_stop_left = mapped.mapping_boundaries().count(
-            depths[depths.len() - 1].start - 100,
-            depths[depths.len() - 1].start - 99,
-        );
-        if (depth_stop_left > 3 || depths[depths.len() - 2].val > 3)
-            && depths[depths.len() - 1].val == 1
-        {
-            breakpoints.push(Breakpoints {
-                pos1: depths[depths.len() - 1].start as usize,
-                pos2: depths[depths.len() - 1].stop as usize,
-                cov: 0,
-            });
-        }
-    }
-
-    // -----|ooooo>
-    if depths[depths.len() - 1].stop as usize + 100 < mapped.reference_length() {
-        breakpoints.push(Breakpoints {
-            pos1: depths[depths.len() - 1].stop as usize,
-            pos2: mapped.reference_length(),
-            cov: depths[depths.len() - 1].val as usize,
-        });
-    }
-
-    return breakpoints;
 }

@@ -3,6 +3,7 @@ use crate::types::*;
 use rust_lapper::Interval;
 use fxhash::FxHashSet;
 
+//TODO: Gap stoppage not implemented. 
 #[target_feature(enable = "avx2")]
 pub unsafe fn dp_anchors_simd(
     matches: &[Anchor],

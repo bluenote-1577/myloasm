@@ -31,6 +31,9 @@ minimap2 = {version = "0.1"}
 memory-stats = "1.2.0"
 fastbloom = "0.8.0"
 crossbeam-channel = "0.5.13"
+flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false }
+gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"] }
+
 #crossbeam-utils = "*"
 
 
@@ -45,8 +48,8 @@ tikv-jemallocator = "0"
 
 
 [profile.release]
-panic = "abort"
-lto = true
+#panic = "abort"
+#lto = true
 
 [profile.dev]
 #opt-level = 1

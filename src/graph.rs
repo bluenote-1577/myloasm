@@ -1,6 +1,8 @@
 use crate::types::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
+use serde::Deserialize;
+use serde::Serialize;
 
 // Common node trait - both ReadData and UnitigNode share these properties
 pub trait GraphNode {
@@ -76,7 +78,7 @@ pub trait GraphEdge {
 }
 
 // Base implementation of a bidirected graph that both can use
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BidirectedGraph<N, E> {
     pub nodes: FxHashMap<NodeIndex, N>,
     pub edges: Vec<Option<E>>,

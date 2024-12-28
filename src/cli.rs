@@ -63,7 +63,7 @@ pub struct Cli {
     #[arg(long, default_value_t=20, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
-    /// Error rate for snpmers for binomial test
+    /// Maximum bubble length to pop
     #[arg(long, default_value_t=100000, help_heading = "Graph Parameters")]
     pub max_bubble_threshold: usize,
 
@@ -74,6 +74,10 @@ pub struct Cli {
     /// Minimum number of reads in output contigs
     #[arg(long, default_value_t = 2)]
     pub min_reads_contig: usize,
+
+    /// Don't map to reads minimap2 (TODO)
+    #[arg(long, default_value_t=false)]
+    pub no_minimap2: bool,
 
     /// HiFi mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
     #[arg(long, help_heading = "Preset Parameters", hide=true)]

@@ -394,7 +394,8 @@ pub fn get_twin_read(
         base_length: len,
         dna_seq: string.try_into().unwrap(),
         est_id: seq_id,
-        depth: None,
+        median_depth: None,
+        min_depth: None,
     });
 
 }

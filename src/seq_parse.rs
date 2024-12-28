@@ -51,28 +51,42 @@ fn first_iteration(
     args: &Cli,
 ) -> Vec<FxHashMap<u64,[u32;2]>>
 {
+    //Topology is
+    //      A-SEND: tx_head, , B-REC: rx_head1, rx_head2...
+    // |   |  ... 
+    // B   B  ...  B-SEND: txs[0...], txs2[0...],... C-REC: rxs
+    // | x | x | ...
+    // C   C  ...
     let hm_size = threads;
     let mask = !(1 << 63);
     let bf_size = args.bloom_filter_size;
     let mut bf_vec_maps : Vec<FxHashMap<u64, [u32;2]>> = vec![FxHashMap::default(); hm_size];
     if bf_size > 0.{
+        let num_b = threads/10 + 1;
         let counter = Arc::new(Mutex::new(0));
-        let mut txs1 = vec![];
-        let mut txs2 = vec![];
         let mut rxs = vec![];
+        let mut txs_vecs = vec![vec![]; num_b];
         for _ in 0..threads {
             let (tx, rx) = unbounded();
-            txs2.push(tx.clone());
-            txs1.push(tx);
+            for i in 1..num_b{
+                txs_vecs[i].push(tx.clone());
+            }
+            txs_vecs[0].push(tx);
             rxs.push(rx);
         }
+
         let (tx_head, rx_head1) = unbounded();
-        let rx_head2 = rx_head1.clone();
-        let rx_heads = vec![rx_head1, rx_head2];
-        let txs_vec = vec![txs1, txs2];
+        let mut rx_heads = vec![];
+        for _ in 1..num_b{
+            let rx_head2 = rx_head1.clone();
+            rx_heads.push(rx_head2);
+        }
+        rx_heads.push(rx_head1);
+
+        assert!(txs_vecs.len() == rx_heads.len());
 
         let fq_files = args.input_files.clone();
-        //Get k-mers
+        //A: Get k-mers
         thread::spawn(move || {
             for fq_file in fq_files{
                 let bufreader = BufReader::new(std::fs::File::open(fq_file).expect("valid path"));
@@ -87,8 +101,8 @@ fn first_iteration(
             drop(tx_head);
             log::debug!("Finished reading all reads.");
         });
-        //Process kmers and send to hash maps
-        for (rx_head, txs) in rx_heads.into_iter().zip(txs_vec.into_iter()){
+        //B: Process kmers and send to hash maps
+        for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()){
             let clone_counter = Arc::clone(&counter);
             thread::spawn(move || {
                 loop{
@@ -124,7 +138,7 @@ fn first_iteration(
             });
         }
 
-        // Update bloom filter
+        //C: Update bloom filter
         let mut handles = Vec::new();
         for rx in rxs.into_iter(){
             handles.push(thread::spawn(move || {
@@ -170,20 +184,30 @@ fn second_iteration(
     let bf_size = args.bloom_filter_size;
     let mask = !(1 << 63);
     let mut vec_maps : Vec<FxHashMap<u64, [u32;2]>> = vec![FxHashMap::default(); threads];
+
+    let num_b = threads/10 + 1;
     let counter = Arc::new(Mutex::new(0));
-    let mut txs1 = vec![];
-    let mut txs2 = vec![];
     let mut rxs = vec![];
+    let mut txs_vecs = vec![vec![]; num_b];
     for _ in 0..threads {
         let (tx, rx) = unbounded();
-        txs2.push(tx.clone());
-        txs1.push(tx);
+        for i in 1..num_b{
+            txs_vecs[i].push(tx.clone());
+        }
+        txs_vecs[0].push(tx);
         rxs.push(rx);
     }
+
     let (tx_head, rx_head1) = unbounded();
-    let rx_head2 = rx_head1.clone();
-    let clone_counter1 = Arc::clone(&counter);
-    let clone_counter2 = Arc::clone(&counter);
+    let mut rx_heads = vec![];
+    for _ in 1..num_b{
+        let rx_head2 = rx_head1.clone();
+        rx_heads.push(rx_head2);
+    }
+    rx_heads.push(rx_head1);
+
+    assert!(txs_vecs.len() == rx_heads.len());
+
     let fq_files = args.input_files.clone();
     thread::spawn(move || {
         for fq_file in fq_files{
@@ -200,75 +224,42 @@ fn second_iteration(
         log::debug!("Finished reading all reads.");
     });
 
-    thread::spawn(move || {
-        loop{
-            match rx_head1.recv() {
-                Ok(split_kmer_info) => {
-                    let mut vec_and_canon = vec![vec![]; threads];
-                    for kmer_i_and_canon in split_kmer_info.into_iter() {
-                        let kmer = kmer_i_and_canon & mask;
-                        let hash = kmer % threads as u64;
-                        vec_and_canon[hash as usize].push(kmer_i_and_canon);
-                    }
+    //B: Process kmers and send to hash maps
+    for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()){
+        let clone_counter = Arc::clone(&counter);
+        thread::spawn(move || {
+            loop{
+                match rx_head.recv() {
+                    Ok(split_kmer_info) => {
+                        let mut vec_and_canon = vec![vec![]; threads];
+                        for kmer_i_and_canon in split_kmer_info.into_iter() {
+                            let kmer = kmer_i_and_canon & mask;
+                            let hash = kmer % threads as u64;
+                            vec_and_canon[hash as usize].push(kmer_i_and_canon);
+                        }
 
-                    for (i, vec) in vec_and_canon.into_iter().enumerate(){
-                        txs1[i].send(vec).unwrap();
-                    }
+                        for (i, vec) in vec_and_canon.into_iter().enumerate(){
+                            txs[i].send(vec).unwrap();
+                        }
 
-                    {
-                        let mut counter = clone_counter2.lock().unwrap();
-                        *counter += 1;
-                        if *counter % 10000 == 0{
-                            log::info!("Processed {} reads.", counter);
+                        {
+                            let mut counter = clone_counter.lock().unwrap();
+                            *counter += 1;
+                            if *counter % 10000 == 0{
+                                log::info!("Processed {} reads.", counter);
+                            }
                         }
                     }
-                }
-                Err(_) => {
-                    break;
+                    Err(_) => {
+                        break;
+                    }
                 }
             }
-        }
-        log::debug!("Finished sending all reads.");
-        for tx in txs1{
-            drop(tx);
-        }
-    });
-
-    thread::spawn(move || {
-        loop{
-            match rx_head2.recv() {
-                Ok(split_kmer_info) => {
-                    let mut vec_and_canon = vec![vec![]; threads];
-                    for kmer_i_and_canon in split_kmer_info.into_iter() {
-                        let kmer = kmer_i_and_canon & mask;
-                        let hash = kmer % threads as u64;
-                        vec_and_canon[hash as usize].push(kmer_i_and_canon);
-                    }
-
-                    for (i, vec) in vec_and_canon.into_iter().enumerate(){
-                        txs2[i].send(vec).unwrap();
-                    }
-
-                    {
-                        let mut counter = clone_counter1.lock().unwrap();
-                        *counter += 1;
-                        if *counter % 10000 == 0{
-                            log::info!("Processed {} reads.", counter);
-                        }
-                    }
-                }
-                Err(_) => {
-                    break;
-                }
+            for tx in txs{
+                drop(tx);
             }
-        }
-        for tx in txs2{
-            drop(tx);
-        }
-        let counter = clone_counter1.lock().unwrap();
-        log::info!("Processed all {} reads.", counter);
-    });
-
+        });
+    }
 
     let mut handles = Vec::new();
     for (rx, my_map) in rxs.into_iter().zip(bf_vec_maps.into_iter()){

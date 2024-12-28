@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::path::PathBuf;
 use bio_seq::prelude::*;
 use rust_lapper::Lapper;
 
@@ -183,7 +184,8 @@ pub struct TwinRead {
     pub base_length: usize,
     pub dna_seq: Seq<Dna>,
     pub est_id: Option<f64>,
-    pub depth: Option<f64>,
+    pub min_depth: Option<f64>,
+    pub median_depth: Option<f64>,
 }
 
 
@@ -192,6 +194,14 @@ pub struct KmerGlobalInfo {
     pub snpmer_info: Vec<SnpmerInfo>,
     pub solid_kmers: HashSet<Kmer64>,
     pub high_freq_thresh: f64,
+    pub read_files: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct TwinReadContainer {
+    pub twin_reads: Vec<TwinRead>,
+    pub outer_indices: Vec<usize>,
+    pub tig_reads: Vec<TwinRead>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Ord, PartialOrd, Hash)]
@@ -216,6 +226,8 @@ pub struct TwinOverlap{
     pub diff_snpmers: usize,
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
+    pub chain: Vec<Anchor>,
+    pub chain_score: i32
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
@@ -224,7 +236,7 @@ pub struct CountsAndBases{
     pub bases: SmallVec<[u8; 4]>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
 pub struct Anchor{
     pub i: u32,
     pub j: u32,
@@ -262,15 +274,16 @@ pub fn bits_to_ascii(bit_rep: u8) -> u8{
 #[derive(Debug, Clone)]
 pub struct MappingInfo {
     pub median_depth: f64,
-    pub mean_depth: f64,
+    pub minimum_depth: f64,
     pub mapping_boundaries: Lapper<u32, SmallTwinOl>,
+    //pub kmer_counts: Vec<u32>,
     pub present: bool,
     pub length: usize,
 }
 
 pub trait NodeMapping {
     fn median_mapping_depth(&self) -> f64;
-    fn mean_mapping_depth(&self) -> f64;
+    fn min_mapping_depth(&self) -> f64;
     fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl>;
     fn set_mapping_info(&mut self, mapping_info: MappingInfo);
     fn mapping_info_present(&self) -> bool;

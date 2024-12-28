@@ -3,18 +3,15 @@ use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cli::Cli;
 use crate::twin_graph;
-use std::path::Path;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
-use crate::mapping;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use crate::types::*;
 use crate::seeding;
 use fishers_exact::fishers_exact;
-use crate::mapping::*;
-use std::io::{BufWriter, Write};
+use std::path::{PathBuf, Path};
 
 
 fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
@@ -225,8 +222,11 @@ fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
 //     return new_map;
 // }
 
-pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, fastq_files: &[String], args: &Cli) -> Vec<TwinRead>{
+pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Vec<TwinRead>{
 
+    let start = std::time::Instant::now();
+
+    let fastq_files = &kmer_info.read_files;
     let mut snpmer_set = HashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter(){
         let k = snpmer_i.k as usize;
@@ -239,7 +239,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, fastq_files: &[St
     let snpmer_set = Arc::new(snpmer_set);
     let twin_read_vec = Arc::new(Mutex::new(vec![]));
 
-    let files_owned = fastq_files.iter().map(|x| x.to_string()).collect::<Vec<String>>();
+    let files_owned = fastq_files.clone();
     let hpc = args.homopolymer_compression;
     let solid_kmers_take = std::mem::take(&mut kmer_info.solid_kmers);
     let arc_solid = Arc::new(solid_kmers_take);
@@ -341,6 +341,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, fastq_files: &[St
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
 
+    log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
 
     return twin_reads;
 }
@@ -360,6 +361,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
     let mut solid_kmers = HashSet::default();
+    let paths_to_files = args.input_files.iter().map(|x| Path::new(x).to_path_buf()).collect::<Vec<_>>();
 
     for pair in big_kmer_map.iter(){
         let counts = pair.1;
@@ -398,6 +400,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
             snpmer_info: vec![],
             solid_kmers: solid_kmers,
             high_freq_thresh: high_freq_thresh as f64,
+            read_files: paths_to_files
         };
     }
 
@@ -476,6 +479,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         snpmer_info: snpmers,
         solid_kmers: solid_kmers,
         high_freq_thresh: high_freq_thresh as f64,
+        read_files: paths_to_files
     };
 }
 
@@ -498,104 +502,4 @@ pub fn parse_unitigs_into_table(cuttlefish_file: &str) -> (FxHashMap<u64, u32>, 
         count += 1;
     }
     return (kmer_to_unitig_count, unitig_vec);
-}
-
-
-fn split_read(twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>) -> Vec<TwinRead>{
-    let mut new_reads = vec![];
-    break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
-    let mut last_break = 0;
-    let k = twin_read.k as usize;
-    for (i,break_point) in break_points.iter().enumerate(){
-        let bp_start = break_point.pos1;
-        let bp_end = break_point.pos2;
-        if bp_start - last_break > 1000{
-            let mut new_read = TwinRead::default();
-
-            //Get depth for split read
-            let mut depth = 0.;
-            let intervals = mapping_info.mapping_boundaries().find(last_break as u32, bp_start as u32);
-            for interval in intervals{
-                if interval.start >= last_break as u32 && interval.stop < bp_start as u32{
-                    depth += (interval.stop - interval.start) as f64;
-                }
-            }
-            if bp_start - last_break == 0{
-                continue;
-            }
-            depth /= (bp_start - last_break) as f64;
-            new_read.depth = Some(depth);
-
-            //Repopulate minimizers and snpmers
-            new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-            new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-            new_read.id = format!("{}+split{}", &twin_read.id, i);
-            log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
-            new_read.k = twin_read.k;
-            new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
-            new_read.base_length = new_read.dna_seq.len();
-            new_reads.push(new_read);
-        }
-        last_break = bp_end;
-    }
-    return new_reads;
-}
-
-pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, args: &Cli)
--> (Vec<TwinRead>, Vec<usize>){
-    let tr_map_info_dict = tr_map_info.iter().map(|x| (x.tr_index, x)).collect::<FxHashMap<usize, &TwinReadMapping>>();
-    let new_twin_reads_bools = Mutex::new(vec![]);
-    let cov_file = Path::new(args.output_dir.as_str()).join("read_coverages.txt");
-    let writer = Mutex::new(BufWriter::new(std::fs::File::create(cov_file).unwrap()));
-    twin_reads.into_par_iter().enumerate().for_each(|(i, mut twin_read)| {
-        if tr_map_info_dict.contains_key(&i){
-
-            let map_info = tr_map_info_dict.get(&i).unwrap();
-            let breakpoints = mapping::cov_mapping_breakpoints(*map_info);
-
-            if log::log_enabled!(log::Level::Trace) {
-                let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
-                let writer = &mut writer.lock().unwrap();
-                for depth in depths{
-                    let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
-                    for breakpoint in breakpoints.iter(){
-                        string.push_str(format!("--{} to {}--", breakpoint.pos1, breakpoint.pos2).as_str());
-                    }
-                    writeln!(writer, "{}", &string).unwrap();
-                }
-            }
-            else{
-                let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
-                for breakpoint in breakpoints.iter(){
-                    read_id_and_breakpoint_string.push_str(format!("{}-{},", breakpoint.pos1, breakpoint.pos2).as_str());
-                }
-                let writer = &mut writer.lock().unwrap();
-                writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
-            }
-            if breakpoints.len() == 0{
-                let mut depth = 0;
-                for interval in map_info.mapping_boundaries().intervals.iter(){
-                    depth += interval.stop - interval.start;
-                }
-                depth /= twin_read.base_length as u32;
-                twin_read.depth = Some(depth as f64);
-                new_twin_reads_bools.lock().unwrap().push((twin_read, true));
-            }
-            else{
-                let splitted_reads = split_read(twin_read, map_info, breakpoints);
-                for new_read in splitted_reads{
-                    new_twin_reads_bools.lock().unwrap().push((new_read, true));
-                }
-            }
-        }
-        else{
-            new_twin_reads_bools.lock().unwrap().push((twin_read, false));
-        }
-    });
-
-    let mut ntr_bools = new_twin_reads_bools.into_inner().unwrap();
-    ntr_bools.sort_by(|a,b| a.0.id.cmp(&b.0.id));
-    let new_outer_indices = ntr_bools.iter().enumerate().filter(|x| x.1.1).map(|x| x.0).collect::<Vec<usize>>();
-    let new_twin_reads = ntr_bools.into_iter().map(|x| x.0).collect::<Vec<TwinRead>>();
-    return (new_twin_reads, new_outer_indices);
 }

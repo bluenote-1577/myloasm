@@ -1,5 +1,8 @@
 use minimap2;
+use gzp::{deflate::Gzip, ZBuilder, ZWriter};
+use std::thread;
 use std::sync::Mutex;
+use crossbeam_channel::unbounded;
 use rayon::prelude::*;
 use crate::types::*;
 use crate::unitig::*;
@@ -34,6 +37,67 @@ fn create_bam_header(sequences: Vec<(String, u32)>) -> Header {
     header
 }
 
+pub fn write_to_paf(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &Cli){
+    let fasta_out_path = Path::new(args.output_dir.as_str()).join("reads_out.fa.gz");
+    let paf_out_path = Path::new(args.output_dir.as_str()).join("final_mapping.paf.gz");
+    let paf_writer = BufWriter::new(File::create(paf_out_path).unwrap());
+    let fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
+    //let fasta_encoder = Mutex::new(GzEncoder::new(fasta_writer, Compression::default()));
+    //let paf_encoder = Mutex::new(GzEncoder::new(BufWriter::new(File::create(paf_out_path).unwrap()), Compression::default()));
+    let contig_vec = final_graph.nodes.values().collect::<Vec<&UnitigNode>>();
+
+    let (tx, rx) = unbounded();
+    let (tx2, rx2) = unbounded();
+
+    contig_vec.iter().for_each(|contig| {
+        let contig_seq: Vec<u8> = contig.base_seq().iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect();
+        if contig_seq.len() == 0{
+            return;
+        }
+
+        let aligner = Aligner::builder().preset(minimap2::Preset::MapPb);
+        let aligner_with_index = aligner.with_seq_and_id(&contig_seq, format!("u{}", contig.node_id).as_bytes()).unwrap();
+
+        contig.mapped_indices().par_iter().for_each(|read_id| {
+            let read_seq_u8 = reads[*read_id].dna_seq.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect::<Vec<u8>>();
+
+            if read_seq_u8.len() == 0{
+                return;
+            }
+
+            let read_name = format!("r{}", *read_id);
+            let read_name_u8 = read_name.as_bytes().to_owned();
+            let records = aligner_with_index.map(&read_seq_u8, true, false, None, None, Some(&read_name_u8));
+
+            tx.send((read_name, read_seq_u8)).unwrap();
+            tx2.send(records).unwrap();
+            return;
+        });
+    });
+
+    drop(tx);
+    drop(tx2);
+    let num_threads_fasta = args.threads/4;
+    let num_threads_paf = args.threads/6;
+
+    thread::spawn(move || {
+        let mut parz_fasta = ZBuilder::<Gzip, _>::new().num_threads(num_threads_fasta).from_writer(fasta_writer);
+        while let Ok((read_name, read_seq_u8)) = rx.recv() {
+            write!(parz_fasta, ">{}\n", read_name).unwrap();
+            write!(parz_fasta, "{}\n", std::str::from_utf8(&read_seq_u8).unwrap()).unwrap();
+        }
+    }).join().unwrap();
+
+    thread::spawn(move || {
+        let mut parz_paf = ZBuilder::<Gzip, _>::new().num_threads(num_threads_paf).from_writer(paf_writer);
+        while let Ok(records) = rx2.recv() {
+            write_paf(&mut parz_paf, records.unwrap());
+        }
+    }).join().unwrap();
+
+
+}
+
 pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &Cli) {
 
     let fasta_out = Path::new(args.output_dir.as_str()).join("reads_out.fasta");
@@ -47,7 +111,7 @@ pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &
     let header = create_bam_header(ids_and_lens_contigs);
     let mut bam_writer = Writer::from_path(&bam_output, &header, rust_htslib::bam::Format::Bam).unwrap();
     bam_writer.set_threads(args.threads as usize).unwrap();
-    let bam_writer_lock = Mutex::new(bam_writer);
+    let _bam_writer_lock = Mutex::new(bam_writer);
 
     //println!("Size of bam_writer: {}", size_of_val(&bam_writer));
     
@@ -64,7 +128,7 @@ pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &
         //let mut header = Header::new();
         //aligner_with_index.populate_header(&mut header);
         contig.mapped_indices().par_iter().for_each(|read_id| {
-            let header_view = HeaderView::from_header(&header);
+            let _header_view = HeaderView::from_header(&header);
             let read_seq_u8 = reads[*read_id].dna_seq.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect::<Vec<u8>>();
             if read_seq_u8.len() == 0{
                 return;
@@ -76,7 +140,7 @@ pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &
                 write!(writer, "{}\n", std::str::from_utf8(&read_seq_u8).unwrap()).unwrap();
             }
             let read_name_u8 = read_name.as_bytes();
-            let records = aligner_with_index.map(&read_seq_u8, true, false, None, None, Some(&read_name_u8));
+            let _records = aligner_with_index.map(&read_seq_u8, true, false, None, None, Some(&read_name_u8));
             //let records = aligner_with_index.map_to_sam(&read_seq_u8, None, Some(read_name_u8), &header_view, None, None).unwrap();
             //TODO implement consensus
             return;
@@ -84,10 +148,13 @@ pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &
     });
 }
 
-fn _write_paf(writer: &Mutex<BufWriter<File>>, record: &minimap2::Mapping){
-    let mut writer = writer.lock().unwrap();
-    write!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-        record.query_name.as_ref().unwrap(), record.query_len.unwrap(), record.query_start, record.query_end, 
-        record.strand, record.target_name.as_ref().unwrap(), record.target_len, record.target_start, record.target_end,
-        record.match_len, record.block_len, record.mapq).unwrap();
+fn write_paf<T>(writer: &mut Box<T>, records: Vec<minimap2::Mapping>)
+where 
+    T: Write + ?Sized{
+    for record in records {
+        write!(writer, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            record.query_name.as_ref().unwrap(), record.query_len.unwrap(), record.query_start, record.query_end, 
+            record.strand, record.target_name.as_ref().unwrap(), record.target_len, record.target_start, record.target_end,
+            record.match_len, record.block_len, record.mapq).unwrap();
+    }
 }

@@ -7,6 +7,7 @@ use statrs::distribution::{Binomial, DiscreteCDF};
 use rayon::prelude::*;
 use std::sync::Mutex;
 use crate::types::*;
+use serde::{Serialize, Deserialize};
 use fxhash::FxHashSet;
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -47,7 +48,7 @@ impl GraphNode for ReadData {
     }
 }
 
-#[derive(Debug, Clone,PartialEq, Default, Hash, Eq)]
+#[derive(Debug, Clone,PartialEq, Default, Hash, Eq, Serialize, Deserialize)]
 pub struct ReadOverlapEdgeTwin {
     pub node1: NodeIndex,
     pub node2: NodeIndex,
@@ -91,7 +92,6 @@ impl ReadOverlapEdgeTwin{
 
 pub type OverlapTwinGraph = BidirectedGraph<ReadData, ReadOverlapEdgeTwin>;
 
-// Transitive reduction implementation
 impl OverlapTwinGraph{
     pub fn other_node(&self, node: NodeIndex, edge: &ReadOverlapEdgeTwin) -> NodeIndex {
         if edge.node1 == node {
@@ -130,27 +130,35 @@ impl OverlapTwinGraph{
             let longest = sorted_all_edges.last().unwrap().0 + FUZZ;
 
             // Iterating over the present node's edges
-            for &(length, edge_id, _) in sorted_all_edges.iter() {
+            //
+            //            edge_id
+            // node_id: o>----->o : other_node
+            for &(length, edge_id, first_direction) in sorted_all_edges.iter() {
                 let edge = self.edges[edge_id].as_ref().unwrap();
                 let other_node = self.other_node(*node_id, edge);
-                let outgoing = self.outgoing_edge(other_node, edge_id);
-                let direction_out_of_initial = self.edges[edge_id].as_ref().unwrap().node_edge_direction(node_id);
+                let present_edge_direction_other = edge.node_edge_direction(&other_node);
+                
+                //Allow self loops. This doesn't happen in practice for the string graph (yet),
+                //but it's a valid operation that should not be reduced. 
+                if other_node == *node_id {
+                    continue;
+                }
 
                 // Iterating over the other node's edges
-                for &(length2, edge_id2, outer2) in &self.get_edges_sorted_by_length(other_node) {
+                //   edge_id
+                //o>------>o : other_node
+                //            edge_id2
+                //         o >------>o : third_node
+                for &(length2, edge_id2, new_edge_direction_other) in &self.get_edges_sorted_by_length(other_node) {
                     //outgoing edge for other node, requires incoming
-                    if outgoing && outer2{
-                        continue
+                    if new_edge_direction_other == present_edge_direction_other {
+                        continue;
                     }
-                    //incoming edge for other node, requires outgoing
-                    if !outgoing && !outer2{
-                        continue
-                    }
-                    if edge_id2 == edge_id{
-                        continue
-                    }
+                    
                     let next_edge = self.edges[edge_id2].as_ref().unwrap();
                     let third_node = self.other_node(other_node, next_edge);
+                    let next_third_direction = next_edge.node_edge_direction(&third_node);
+
                     if mark.get(&third_node).unwrap() == &Mark::InPlay {
                         let lensum = if length + length2 < self.nodes[&other_node].base_length {0} else {length + length2 - self.nodes[&other_node].base_length};
                         if lensum <= longest + FUZZ || true
@@ -160,21 +168,32 @@ impl OverlapTwinGraph{
                             {
                                 mark.insert(third_node, Mark::Eliminated);
                                 let valid_directions = mark_direction_map.entry(third_node).or_insert(FxHashSet::default());
-                                valid_directions.insert(direction_out_of_initial);
-                                log::trace!("Potential reduction from {} to {}, length1 {}, length2 {}, longets {}, lensum {}, edge_info1 {:?}, edge_info2 {:?}, outgoing_edge {}, direction_out {}", node_id, third_node, length, length2, longest, lensum, &edge, &next_edge, outer2, outgoing);
+                                valid_directions.insert((first_direction, next_third_direction));
+                                log::trace!("Potential reduction from {} to {}, length1 {}, length2 {}, longets {}, lensum {}, edge_info1 {:?}, edge_info2 {:?}", node_id, third_node, length, length2, longest, lensum, &edge, &next_edge);
                             }
                         }
                     }
                 }
             }
             // Step 3: Final pass to mark reduced edges
+
+            // Possible reduction:
+            //o>------>o 
+            //         o >------>o 
+
+            // Require direction concordance
+            //o<---------------->o : NOT OK; 
+            //o<----------------<o : NOT OK; 
+            //o>---------------->o : OK
             for &edge_id in node_data.out_edges.iter().chain(node_data.in_edges.iter()){
                 let edge = self.edges[edge_id].as_ref().unwrap();
-                let other_node = self.other_node(*node_id, edge);
                 let direction_out_of_initial = self.edges[edge_id].as_ref().unwrap().node_edge_direction(node_id);
+
+                let other_node = self.other_node(*node_id, edge);
+                let direction_into_other = edge.node_edge_direction(&other_node);
                 if let Some(Mark::Eliminated) = mark.get(&other_node) {
                     if let Some(valid_directions) = mark_direction_map.get(&other_node){
-                        if valid_directions.contains(&direction_out_of_initial){
+                        if valid_directions.contains(&(direction_out_of_initial, direction_into_other)){
                             reduce[edge_id] = true;
                             log::trace!("Reduced from {} to {}. INFO:{:?}", node_id, other_node, &edge);
                         }
@@ -201,7 +220,7 @@ impl OverlapTwinGraph{
         }
     }
 
-    fn get_edges_sorted_by_length(&self, node_id: NodeIndex) -> Vec<(usize, EdgeIndex, bool)> {
+    fn get_edges_sorted_by_length(&self, node_id: NodeIndex) -> Vec<(usize, EdgeIndex, Direction)> {
         let mut sorted_all_edges = vec![];
         let node_data = self.nodes.get(&node_id).unwrap();
         for (l, edge_ind) in node_data
@@ -210,11 +229,11 @@ impl OverlapTwinGraph{
             .chain(node_data.in_edges.iter())
             .enumerate()
         {
-            let outer;
+            let direction;
             if l < node_data.out_edges.len() {
-                outer = true;
+                direction = Direction::Outgoing; 
             } else {
-                outer = false;
+                direction = Direction::Incoming;
             }
             let edge = self.edges[*edge_ind].as_ref().unwrap();
             let n1 = self.nodes.get(&edge.node1).unwrap();
@@ -222,29 +241,10 @@ impl OverlapTwinGraph{
             let string_length = self.nodes[&n1.index].base_length
                 + self.nodes[&n2.index].base_length
                 - edge.overlap_len_bases;
-            sorted_all_edges.push((string_length, *edge_ind, outer));
+            sorted_all_edges.push((string_length, *edge_ind, direction));
         }
-        sorted_all_edges.sort();
+        sorted_all_edges.sort_by(|a,b| a.0.cmp(&b.0));
         sorted_all_edges
-    }
-
-    fn outgoing_edge(&self, node_id: NodeIndex, edge_id: EdgeIndex) -> bool {
-        let edge = self.edges[edge_id].as_ref().unwrap();
-        if edge.node1 == node_id {
-            if edge.forward1{
-                true
-            }
-            else{
-                false
-            }
-        } else {
-            if edge.forward2{
-                false
-            }
-            else{
-                true
-            }
-        }
     }
 }
 
@@ -256,7 +256,7 @@ enum Mark {
     Eliminated,
 }
 
-pub fn read_graph_from_overlaps_twin(all_reads_cat: &Vec<TwinRead>, overlaps: &Vec<TwinOverlap>, args: &Cli) -> OverlapTwinGraph
+pub fn read_graph_from_overlaps_twin(all_reads_cat: &[TwinRead], overlaps: &[TwinOverlap], args: &Cli) -> OverlapTwinGraph
 {
     let raw_edges_file = Path::new(args.output_dir.as_str()).join("edges_raw.txt");
     let mut bufwriter = BufWriter::new(File::create(raw_edges_file).unwrap());
@@ -417,7 +417,8 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &Vec<TwinRead>, overlaps: &V
         }
     }
 
-    let graph = OverlapTwinGraph { nodes, edges };
+    let mut graph = OverlapTwinGraph { nodes, edges };
+    graph.transitive_reduction();
 
     return graph;
 }
@@ -457,6 +458,7 @@ pub fn print_graph_stdout<T>(graph: &OverlapTwinGraph, file: T) where T: AsRef<s
 pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices: &[usize], args: &Cli) -> Vec<TwinOverlap>{
 
     let overlaps_file = Path::new(args.output_dir.as_str()).join("overlaps.txt");
+    let _file = Path::new(args.output_dir.as_str()).join("comparisons.txt");
     let bufwriter = Mutex::new(BufWriter::new(File::create(overlaps_file).unwrap()));
     let vec_format = twin_reads.iter().enumerate().filter(|(i, _)| outer_read_indices.contains(i)).map(|(i, x)| (i,&x.minimizers)).collect::<Vec<_>>();
 
@@ -535,7 +537,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 }
 
 pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead],  args: &Cli) -> Vec<usize>{
-    //let start = std::time::Instant::now();
+    let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
     log::info!("Building inverted index hashmap for all reads...");
     let inverted_index_hashmap =
@@ -567,6 +569,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
     } else {
         (0..twin_reads.len()).into_iter().collect::<Vec<_>>()
     };
+
     log::info!("Removing contained reads...");
     range.into_par_iter().for_each(|i| {
         let mut contained = false;
@@ -714,6 +717,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
         }
     });
     log::info!("{} reads are contained", contained_reads.lock().unwrap().len());
+    log::info!("Time elapsed for removing contained reads is: {:?}", start.elapsed());
     return outer_reads.into_inner().unwrap();
 }
 
@@ -748,4 +752,397 @@ pub fn same_strain(minimizers: usize, snp_diff: usize, snp_shared: usize,  c: u6
     }
 
     return high_id || miscalled_snpmers;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Direction::{Incoming, Outgoing};
+
+    struct MockEdge {
+        pub i: usize,
+        pub j: usize,
+        pub d1: Direction,
+        pub d2: Direction,
+    }
+    
+    impl MockEdge{
+        pub fn new(i: usize, j: usize, d1: Direction, d2: Direction) -> Self{
+            Self{
+                i,
+                j,
+                d1,
+                d2
+            }
+        }
+    }
+
+    fn mock_graph_from_edges(edge_list: Vec<MockEdge>) -> OverlapTwinGraph {
+        let mut nodes = FxHashMap::default();
+        let mut edges = vec![];
+
+        for edge in edge_list {
+            let new_edge = ReadOverlapEdgeTwin {
+                node1: edge.i,
+                node2: edge.j,
+                hang1: 0,
+                hang2: 0,
+                overlap1_len: 2000,
+                overlap2_len: 2000,
+                forward1: edge.d1 == Direction::Outgoing,
+                forward2: edge.d2 == Direction::Incoming,
+                overlap_len_bases: 2000,
+                shared_minimizers: 100,
+                diff_snpmers: 0,
+                shared_snpmers: 10
+            };
+
+            edges.push(Some(new_edge));
+            let ind = edges.len() - 1;
+            {
+                let nodes_len = nodes.len();
+                let rd1 = nodes.entry(edge.i).or_insert(ReadData::default());
+                rd1.base_length = 3000;
+                rd1.read_id = nodes_len.to_string();
+                rd1.index = edge.i;
+                if edge.d1 == Direction::Outgoing {
+                    rd1.out_edges.push(ind)
+                } else {
+                    rd1.in_edges.push(ind)
+                }
+            }
+            {
+                let nodes_len = nodes.len();
+                let rd2 = nodes.entry(edge.j).or_insert(ReadData::default());
+                rd2.index = edge.j;
+                rd2.read_id = nodes_len.to_string();
+                rd2.base_length = 3000;
+                if edge.d2 == Direction::Incoming{
+                    rd2.in_edges.push(ind)
+                } else {
+                    rd2.out_edges.push(ind)
+                }
+            }
+        }
+
+        OverlapTwinGraph { nodes, edges }
+    }
+
+    #[test]
+    fn test_same_strain() {
+        let minimizers = 100;
+        let snp_diff = 10;
+        let snp_shared = 10;
+        let c = 10;
+        let snpmer_threshold = 99.9;
+        let snpmer_error_rate = 0.025;
+        assert_eq!(same_strain(minimizers, snp_diff, snp_shared, c, snpmer_threshold, snpmer_error_rate), false);
+
+        let minimizers = 100;
+        let snp_diff = 1;
+        let snp_shared = 0;
+        assert_eq!(same_strain(minimizers, snp_diff, snp_shared, c, snpmer_threshold, snpmer_error_rate), true);
+
+        let minimizers = 10000;
+        let snp_diff = 5;
+        let snp_shared = 0;
+        assert_eq!(same_strain(minimizers, snp_diff, snp_shared, c, snpmer_threshold, snpmer_error_rate), true);
+
+        let minimizers = 10;
+        let snp_diff = 1;
+        let snp_shared = 0;
+        assert_eq!(same_strain(minimizers, snp_diff, snp_shared, c, snpmer_threshold, snpmer_error_rate), false);
+
+        let minimizers = 100;
+        let snp_diff = 5;
+        let snp_shared = 10;
+        let snpmer_error_rate = 0.50;
+        assert_eq!(same_strain(minimizers, snp_diff, snp_shared, c, snpmer_threshold, snpmer_error_rate), true);
+    }
+
+    #[test]
+    fn test_transitive_reduction_1() {
+        //  >-------------> GOOD
+        // o>----->o>----->o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(0, 2, Outgoing, Incoming),
+        ];
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        assert_eq!(graph.edges.len(), 3);
+
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 2);
+    }
+
+    #[test]
+    fn test_transitive_reduction_2() {
+        //  >-------------< BAD
+        // o>----->o>----->o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(0, 2, Outgoing, Outgoing),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 3);
+    }
+
+    #[test]
+    fn test_transitive_reduction_3() {
+        //  <-------< BAD
+        // o>-->o>-->o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(0, 2, Incoming, Outgoing),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 3);
+    }
+
+    #[test]
+    fn test_transitive_reduction_4() {
+        //  >-------> BAD
+        // o>--<o>-->o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Outgoing),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(0, 2, Outgoing, Incoming),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 3);
+    }
+
+    #[test]
+    fn test_transitive_reduction_5() {
+        //  GOOD
+        // 0<--<1>-->2
+        //  <-------<
+        // 1 to 0 and 2 to 0
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Incoming, Outgoing),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(0, 2, Incoming, Outgoing),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 2);
+    }
+
+    #[test]
+    fn test_transitive_reduction_cycle() {
+        // BAD CYCLE
+        // 0>--->1>-->2
+        //  ^ ------|
+
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(2, 0, Outgoing, Incoming),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 3);
+    }
+
+    #[test]
+    fn test_transitive_reduction_out_triangle(){
+        //      o 
+        //     v  v
+        //    /   \ 
+        //   ^     ^
+        //  o > - < o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Outgoing),
+            MockEdge::new(1, 2, Outgoing, Outgoing),
+            MockEdge::new(2, 0, Outgoing, Outgoing),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 3);
+    }
+
+    #[test]
+    fn test_transitive_reduction_in_triangle(){
+        //      o 
+        //     ^  ^
+        //    /   \ 
+        //   v     v
+        //  o < - > o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Incoming, Incoming),
+            MockEdge::new(1, 2, Incoming, Incoming),
+            MockEdge::new(2, 0, Incoming, Incoming), 
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 3);
+    }
+
+
+    #[test]
+    fn test_transitive_reduction_loops(){
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 0, Outgoing, Incoming),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 2);
+
+        let mock_edges2 = vec![
+            MockEdge::new(0, 0, Outgoing, Incoming)
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges2);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 1);
+    }
+
+    #[test]
+    fn test_transitive_reduction_many_nodes(){
+        //
+        //0    1    2    3    4    5    6    7    8 
+        //o>-->o>-->o>-->o>-->o>-->o>-->o>-->o>-->o
+        // >------->o    o<--<o    o>------->o  : 1,2
+        //     o>------->o : 3
+        // >------------>o : 4
+
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(2, 3, Outgoing, Incoming),
+            MockEdge::new(3, 4, Outgoing, Incoming),
+            MockEdge::new(4, 5, Outgoing, Incoming),
+            MockEdge::new(5, 6, Outgoing, Incoming),
+            MockEdge::new(6, 7, Outgoing, Incoming),
+            MockEdge::new(7, 8, Outgoing, Incoming),
+            MockEdge::new(0, 2, Outgoing, Incoming),
+            MockEdge::new(1, 3, Outgoing, Incoming),
+            MockEdge::new(0, 3, Outgoing, Incoming),
+            MockEdge::new(4, 3, Outgoing, Incoming),
+            MockEdge::new(5, 7, Outgoing, Incoming),
+        ];
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        assert_eq!(graph.edges.len(), 13);
+        graph.transitive_reduction();
+        let some_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+        assert_eq!(some_edges, 9);
+    }
+
+    //For unitigging
+    #[test]
+    fn test_get_nonbranching_paths_1(){
+        //  >-------------> GOOD
+        // o>----->o>----->o
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(0, 2, Outgoing, Incoming),
+        ];
+
+        let graph = mock_graph_from_edges(mock_edges1);
+        let nbp = graph.find_non_branching_paths();
+        assert_eq!(nbp.len(), 3);
+
+        let nbp_set = nbp.into_iter().map(|(x,y)| (x, y)).collect::<FxHashSet<_>>();
+
+        let true_vec = vec![
+            (vec![0], vec![]),
+            (vec![1], vec![]),
+            (vec![2], vec![])
+        ];
+        let true_set = true_vec.into_iter().collect::<FxHashSet<_>>();
+        assert_eq!(nbp_set, true_set);
+    }
+
+    #[test]
+    fn test_get_nonbranching_paths_cycle(){
+        // o>----->o>----->o
+        // ^               |
+        //  <-------------<
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(2, 0, Outgoing, Incoming),
+        ];
+
+        let graph = mock_graph_from_edges(mock_edges1);
+        let nbp = graph.find_non_branching_paths();
+        assert_eq!(nbp.len(), 1);
+
+        //Order nondeterministic, just check sizes
+        //let true_vec = vec![
+        //    (vec![0,1,2], vec![0,1]),
+        //];
+        assert_eq!(nbp[0].0.len(), 3);
+        assert_eq!(nbp[0].1.len(), 2);
+
+
+        // o>------->o
+        // ^       |
+        //  <-----<
+        let mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 0, Outgoing, Incoming),
+        ];
+
+        let graph = mock_graph_from_edges(mock_edges1);
+        let nbp = graph.find_non_branching_paths();
+        assert_eq!(nbp.len(), 1);
+
+        //Order nondeterministic, just check sizes
+        //let true_vec = vec![
+        //    (vec![0,1,2], vec![0,1]),
+        //];
+        assert_eq!(nbp[0].0.len(), 2);
+        assert_eq!(nbp[0].1.len(), 1);
+    }
+
+    #[test]
+    fn test_get_nonbranching_paths_self_cycle(){
+        // o>--
+        // ^  |
+        //  
+        let mock_edges1 = vec![
+            MockEdge::new(0, 0, Outgoing, Incoming),
+        ];
+
+        let graph = mock_graph_from_edges(mock_edges1);
+        let nbp = graph.find_non_branching_paths();
+        assert_eq!(nbp.len(), 1);
+
+        //Order nondeterministic, just check sizes
+        //let true_vec = vec![
+        //    (vec![0,1,2], vec![0,1]),
+        //];
+        assert_eq!(nbp[0].0.len(), 1);
+        assert_eq!(nbp[0].1.len(), 0);
+    }
+    
+    //TODO write more nbp tests... 
 }
