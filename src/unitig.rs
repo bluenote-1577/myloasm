@@ -1,15 +1,15 @@
 use crate::cli::Cli;
-use bio_seq::prelude::*;
 use crate::graph::*;
 use crate::twin_graph::*;
 use crate::types::*;
+use bio_seq::prelude::*;
 use fishers_exact::fishers_exact;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rust_lapper::Lapper;
+use std::collections::VecDeque;
 use std::io::BufWriter;
 use std::io::Write;
-use std::collections::VecDeque;
 use std::panic;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -52,8 +52,8 @@ pub struct BaseInfo {
 
 impl PartialEq for MappingInfo {
     fn eq(&self, other: &Self) -> bool {
-         self.mapping_boundaries.intervals == other.mapping_boundaries.intervals &&
-         self.length == other.length 
+        self.mapping_boundaries.intervals == other.mapping_boundaries.intervals
+            && self.length == other.length
     }
 }
 
@@ -76,7 +76,7 @@ impl NodeMapping for UnitigNode {
     fn min_mapping_depth(&self) -> f64 {
         self.mapping_info.minimum_depth
     }
-        
+
     fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
         &self.mapping_info.mapping_boundaries
     }
@@ -90,7 +90,11 @@ impl NodeMapping for UnitigNode {
         self.mapping_info.length
     }
     fn mapped_indices(&self) -> Vec<usize> {
-        self.mapping_info.mapping_boundaries.iter().map(|x| x.val.query_id as usize).collect::<Vec<usize>>()
+        self.mapping_info
+            .mapping_boundaries
+            .iter()
+            .map(|x| x.val.query_id as usize)
+            .collect::<Vec<usize>>()
     }
 }
 
@@ -200,8 +204,8 @@ impl UnitigGraph {
             //     .map(|&node_ind| self.nodes[&node_ind].read_indices_ori[0].0)
             //     .collect::<Vec<_>>();
             //eprintln!("Unitig path: {:?}, edgepath {:?}", node_id_path, edgepath);
-            //eprintln!("First unit in len {:?} out len {:?} | last unit in len {:?} out len {:?}", 
-            // self.nodes[&nodepath[0]].in_edges(), 
+            //eprintln!("First unit in len {:?} out len {:?} | last unit in len {:?} out len {:?}",
+            // self.nodes[&nodepath[0]].in_edges(),
             // self.nodes[&nodepath[0]].out_edges(),
             // self.nodes[&nodepath[nodepath.len() - 1]].in_edges(),
             // self.nodes[&nodepath[nodepath.len() - 1]].out_edges());
@@ -247,7 +251,7 @@ impl UnitigGraph {
             }
             let median_min_depth = median_weight(&mut min_read_depths);
             let median_median_depth = median_weight(&mut median_read_depths);
-            let new_unitig = UnitigNode{
+            let new_unitig = UnitigNode {
                 internal_overlaps: new_internal_overlaps,
                 read_names: new_read_names,
                 in_edges: Vec::new(),
@@ -293,23 +297,26 @@ impl UnitigGraph {
 
             //Check if circular unitig (more than 1 node); this condition does not imply
             // x -> o -> o -> o -> x
-            if first_node.in_edges().len() == 1 &&
-            first_node.out_edges().len() == 1 &&
-            last_node.in_edges().len() == 1 &&
-            last_node.out_edges().len() == 1 &&
-            nodepath.len() > 1{
+            if first_node.in_edges().len() == 1
+                && first_node.out_edges().len() == 1
+                && last_node.in_edges().len() == 1
+                && last_node.out_edges().len() == 1
+                && nodepath.len() > 1
+            {
                 //CHeck if there is an edge from the last node to the first node that isn't the same as the last edgepath edge
-                for &edge_id in last_node.both_edges(){
-                    if edge_id != edgepath[edgepath.len() - 1]{
+                for &edge_id in last_node.both_edges() {
+                    if edge_id != edgepath[edgepath.len() - 1] {
                         let edge = self.edges[edge_id].as_ref().unwrap();
-                        if edge.from_unitig == last_node.node_hash_id && edge.to_unitig == first_node.node_hash_id{
+                        if edge.from_unitig == last_node.node_hash_id
+                            && edge.to_unitig == first_node.node_hash_id
+                        {
                             old_terminal_edges.insert(edge_id);
-                        }
-                        else if edge.from_unitig == first_node.node_hash_id && edge.to_unitig == last_node.node_hash_id{
+                        } else if edge.from_unitig == first_node.node_hash_id
+                            && edge.to_unitig == last_node.node_hash_id
+                        {
                             old_terminal_edges.insert(edge_id);
                         }
                     }
-
                 }
             }
         }
@@ -384,20 +391,26 @@ impl UnitigGraph {
                 .map(|(idx, _)| reads[*idx].id.clone())
                 .collect();
 
-            let mut median_min_depth_vec = read_indices_ori.iter().map(|(idx, _)| {
-                let read = &reads[*idx];
-                let depth = read.min_depth.unwrap();
-                let length = read.base_length;
-                (depth as f64, length)
-            }).collect::<Vec<(f64, usize)>>();
+            let mut median_min_depth_vec = read_indices_ori
+                .iter()
+                .map(|(idx, _)| {
+                    let read = &reads[*idx];
+                    let depth = read.min_depth.unwrap();
+                    let length = read.base_length;
+                    (depth as f64, length)
+                })
+                .collect::<Vec<(f64, usize)>>();
             let median_min_depth = median_weight(&mut median_min_depth_vec);
 
-            let mut median_median_depth_vec = read_indices_ori.iter().map(|(idx, _)| {
-                let read = &reads[*idx];
-                let depth = read.median_depth.unwrap();
-                let length = read.base_length;
-                (depth as f64, length)
-            }).collect::<Vec<(f64, usize)>>();
+            let mut median_median_depth_vec = read_indices_ori
+                .iter()
+                .map(|(idx, _)| {
+                    let read = &reads[*idx];
+                    let depth = read.median_depth.unwrap();
+                    let length = read.base_length;
+                    (depth as f64, length)
+                })
+                .collect::<Vec<(f64, usize)>>();
             let median_median_depth = median_weight(&mut median_median_depth_vec);
 
             let unitig = UnitigNode {
@@ -471,12 +484,12 @@ impl UnitigGraph {
                 }
                 let other_unitigs = terminal_edge_to_unitigs.get(&edge_id).unwrap();
                 for (unitig_id2, read_id2, read_ori2) in other_unitigs {
-                    //TODO I think this should be disabled. Terminal edges should be able to look back onto itself. 
+                    //TODO I think this should be disabled. Terminal edges should be able to look back onto itself.
                     //if unitig_id == *unitig_id2 {
                     //    continue;
                     //}
                     let overlap_edge = overlap_graph.edges[*edge_id].as_ref().unwrap();
-                    
+
                     //Ensure that the edge corresponds to the unitigs
                     if overlap_edge.node1() != read_id || overlap_edge.node2() != *read_id2 {
                         if overlap_edge.node1() != *read_id2 || overlap_edge.node2() != read_id {
@@ -540,10 +553,10 @@ impl UnitigGraph {
             unitig_graph.test_consistent_left_right_edges();
         }
 
-        let unitig_conf = GetSequenceInfoConfig{
-            blunted : false,
-            dna_seq_info : false,
-            best_overlap_chunk : false,
+        let unitig_conf = GetSequenceInfoConfig {
+            blunted: false,
+            dna_seq_info: false,
+            best_overlap_chunk: false,
         };
         unitig_graph.get_sequence_info(&reads, &unitig_conf);
         let out_file = std::path::Path::new(&args.output_dir).join("unitig_graph.gfa");
@@ -552,21 +565,21 @@ impl UnitigGraph {
         unitig_graph
     }
 
-    pub fn to_fasta<T>(&self, filename: T, args: &Cli) 
-    where 
+    pub fn to_fasta<T>(&self, filename: T, args: &Cli)
+    where
         T: AsRef<std::path::Path>,
     {
         let mut bufwriter = BufWriter::new(std::fs::File::create(filename).unwrap());
         for (_id, unitig) in self.nodes.iter() {
             if unitig.read_indices_ori.len() < args.min_reads_contig
                 && unitig.in_edges().len() + unitig.out_edges().len() == 0
-                {
-                    log::trace!(
-                        "Unitig {} is disconnected with < 3 reads",
-                        unitig.read_indices_ori[0].0
-                    );
-                    continue;
-                }
+            {
+                log::trace!(
+                    "Unitig {} is disconnected with < 3 reads",
+                    unitig.read_indices_ori[0].0
+                );
+                continue;
+            }
             let mut base_seq = unitig.base_seq();
             let empty_seq = dna!("A").to_owned();
             if base_seq.len() == 0 {
@@ -578,12 +591,8 @@ impl UnitigGraph {
             } else {
                 unitig.median_read_depth.unwrap_or(-1.)
             };
-            name += &format!(
-                " len:{} depth:{:.1}",
-                unitig.cut_length(),
-                depth
-            );
-            if base_seq.len() == 1{
+            name += &format!(" len:{} depth:{:.1}", unitig.cut_length(), depth);
+            if base_seq.len() == 1 {
                 name += " EMPTY";
             }
             writeln!(bufwriter, "{}", name).unwrap();
@@ -592,8 +601,14 @@ impl UnitigGraph {
     }
 
     // Convert to GFA format
-    pub fn to_gfa<T>(&mut self, filename: T, output_readgroups: bool, output_sequences: bool, reads: &[TwinRead], args: &Cli)
-    where
+    pub fn to_gfa<T>(
+        &mut self,
+        filename: T,
+        output_readgroups: bool,
+        output_sequences: bool,
+        reads: &[TwinRead],
+        args: &Cli,
+    ) where
         T: AsRef<std::path::Path>,
     {
         let edge_file = filename.as_ref().with_extension("edges");
@@ -623,7 +638,7 @@ impl UnitigGraph {
             let empty_seq = Seq::new();
             if !output_sequences {
                 base_seq = &empty_seq;
-            } 
+            }
 
             let min_mapping_depth;
             let median_map_depth;
@@ -634,20 +649,20 @@ impl UnitigGraph {
                 median_map_depth = -1.;
                 min_mapping_depth = -1.;
             };
-            
+
             let median_read_depth = unitig.median_read_depth.unwrap_or(-1.);
             let min_read_depth = unitig.min_read_depth.unwrap_or(-1.);
 
             gfa.push_str(&format!(
-                "S\tu{}\t{}\tLN:i:{}\tDP:f:{:.1}\tMED_MAP_DP:f:{:.1}\tRD_DP:f:{:.1}\tMED_RD_DP:f:{:.1}\n",
+                "S\tu{}\t{}\tLN:i:{}\tDP:f:{:.1}\tMED_PRIM_DP:f:{:.1}\tMAP_DP:f:{:.1}\tMED_MAP_DP:f:{:.1}\n",
                 unitig.read_indices_ori[0].0,
                 //String::from_utf8(unitig.raw_consensus()).unwrap(),
                 base_seq,
                 unitig.cut_length(),
-                min_mapping_depth,
-                median_map_depth,
                 min_read_depth,
                 median_read_depth,
+                min_mapping_depth,
+                median_map_depth,
             ));
 
             if output_readgroups {
@@ -659,7 +674,7 @@ impl UnitigGraph {
                     let range = unitig.read_positions_internal()[count];
                     let length = range.1 - range.0;
                     gfa.push_str(&format!(
-                        "a\tu{},{}-{}\t{}\t{}\t{}\t{}\t{}\n",
+                        "a\tu{},{}-{}\t{}\t{}\t{}\t{}\t{}\tDP:{}\n",
                         unitig.read_indices_ori[0].0,
                         range.0,
                         range.1,
@@ -667,7 +682,8 @@ impl UnitigGraph {
                         curr_pos,
                         read.id,
                         ori_string,
-                        length
+                        length,
+                        read.min_depth.unwrap()
                     ));
                     curr_pos += length;
                     count += 1;
@@ -692,9 +708,9 @@ impl UnitigGraph {
                 edge.overlap.shared_snpmers,
                 edge.overlap.diff_snpmers,
                 edge.overlap.node1,
-                if edge.overlap.forward1 {"+"} else {"-"},
+                if edge.overlap.forward1 { "+" } else { "-" },
                 edge.overlap.node2,
-                if edge.overlap.forward2 {"+"} else {"-"},
+                if edge.overlap.forward2 { "+" } else { "-" },
             )
             .unwrap();
 
@@ -721,8 +737,7 @@ impl UnitigGraph {
                 //the from_orientation is false.
                 if e.from_unitig == e.to_unitig {
                     continue;
-                }
-                else if e.from_read_idx == unitig.read_indices_ori[0].0 {
+                } else if e.from_read_idx == unitig.read_indices_ori[0].0 {
                     in_readset.insert(e.from_read_idx);
                     debug_assert!(
                         !e.f1,
@@ -761,10 +776,9 @@ impl UnitigGraph {
             let mut out_readset = FxHashSet::default();
             for edge in unitig.out_edges.iter() {
                 let e = self.edges[*edge].as_ref().unwrap();
-                if e.from_unitig == e.to_unitig{
-                    continue
-                }
-                else if e.from_read_idx == unitig.read_indices_ori[0].0 {
+                if e.from_unitig == e.to_unitig {
+                    continue;
+                } else if e.from_read_idx == unitig.read_indices_ori[0].0 {
                     out_readset.insert(e.from_read_idx);
                     debug_assert!(e.f1, "Edge: {:?} and node {:?}", e, unitig.read_indices_ori);
                 } else if e.to_read_idx == unitig.read_indices_ori[0].0 {
@@ -855,7 +869,7 @@ impl UnitigGraph {
         return return_cut_map;
     }
 
-    pub fn remove_tips(&mut self, length: usize, num_reads: usize, keep: bool) {
+    fn remove_tips_internal(&mut self, length: usize, num_reads: usize, keep: bool) {
         let node_to_sizeread_map = self.get_all_connected_components();
         let mut unitigs_to_remove = Vec::new();
         let mut debug_ids = vec![];
@@ -887,7 +901,10 @@ impl UnitigGraph {
         log::info!("Removing {} tips", unitigs_to_remove.len());
         log::debug!("Unitigs to remove: {:?}", debug_ids);
         self.remove_nodes(&unitigs_to_remove, keep);
+    }
 
+    pub fn remove_tips(&mut self, length: usize, num_reads: usize, keep: bool) {
+        self.remove_tips_internal(length, num_reads, keep);
         self.re_unitig();
     }
 
@@ -925,7 +942,11 @@ impl UnitigGraph {
                 }
             }
         }
-        log::info!("Removed {} bubbles at max length {}", num_bubbles, max_length);
+        log::info!(
+            "Removed {} bubbles at max length {}",
+            num_bubbles,
+            max_length
+        );
         self.re_unitig();
     }
 
@@ -972,16 +993,16 @@ impl UnitigGraph {
                 let num_reads = other_node.read_indices_ori.len() as f64;
                 seen_vertices.insert(other_node_ind);
                 let other_node_leftdir = edge.node_edge_direction(&other_node_ind);
-                // This is a problem for circular contigs... 
+                // This is a problem for circular contigs...
                 // if other_node_ind == n_id {
                 //     return None;
                 // }
-                if other_node_ind == n_id{ 
+                if other_node_ind == n_id {
                     // The node comes back to its own direction
                     if other_node_leftdir == right_direction {
                         return None;
                     }
-                } 
+                }
                 if prev_dist > max_length {
                     return None;
                 }
@@ -989,22 +1010,28 @@ impl UnitigGraph {
                     let other_node_inc_dir = other_node.edges_direction(&other_node_leftdir);
                     post_visit_edgecount.insert(other_node_ind, other_node_inc_dir.len() as i64);
                     num_outstanding += 1;
-                    distances.insert(other_node_ind, prev_dist + other_node.unique_length.unwrap());
+                    distances.insert(
+                        other_node_ind,
+                        prev_dist + other_node.unique_length.unwrap(),
+                    );
                     traceback.insert(other_node_ind, Some((v.0, edge_ind)));
                     depth_length.insert(
                         other_node_ind,
-                        prev_score + other_node.median_read_depth.unwrap() * num_reads,
+                        prev_score + other_node.min_read_depth.unwrap() * num_reads,
                     );
                 } else {
                     if prev_dist + other_node.unique_length.unwrap() < distances[&other_node_ind] {
-                        distances.insert(other_node_ind, prev_dist + other_node.unique_length.unwrap());
+                        distances.insert(
+                            other_node_ind,
+                            prev_dist + other_node.unique_length.unwrap(),
+                        );
                     }
-                    if prev_score + other_node.median_read_depth.unwrap() * num_reads
+                    if prev_score + other_node.min_read_depth.unwrap() * num_reads
                         > depth_length[&other_node_ind]
                     {
                         depth_length.insert(
                             other_node_ind,
-                            prev_score + other_node.median_read_depth.unwrap() * num_reads,
+                            prev_score + other_node.min_read_depth.unwrap() * num_reads,
                         );
                         traceback.insert(other_node_ind, Some((v.0, edge_ind)));
                     }
@@ -1072,16 +1099,22 @@ impl UnitigGraph {
                         .collect::<FxHashSet<_>>();
                     log::debug!("Best path {:?}", &debug_path);
                     if !debug_path.contains(&start_node_id) || !debug_path.contains(&end_node_id) {
-                        log::debug!("ERROR: Path between {} and {} does not contain start or end node", start_node_id, end_node_id);
+                        log::debug!(
+                            "ERROR: Path between {} and {} does not contain start or end node",
+                            start_node_id,
+                            end_node_id
+                        );
                         return None;
                     }
 
-                    let first_last_matching_c1 = debug_path.first().unwrap() == &start_node_id && debug_path.last().unwrap() == &end_node_id;
-                    let first_last_matching_c2 = debug_path.first().unwrap() == &end_node_id && debug_path.last().unwrap() == &start_node_id;
+                    let first_last_matching_c1 = debug_path.first().unwrap() == &start_node_id
+                        && debug_path.last().unwrap() == &end_node_id;
+                    let first_last_matching_c2 = debug_path.first().unwrap() == &end_node_id
+                        && debug_path.last().unwrap() == &start_node_id;
 
                     if !first_last_matching_c1 && !first_last_matching_c2 {
                         log::debug!("ERROR: Path between {} and {} does not start and end at the correct nodes", start_node_id, end_node_id);
-                        return None
+                        return None;
                     }
                     return Some((remove_vertices, remove_edges));
                 }
@@ -1233,16 +1266,14 @@ impl UnitigGraph {
                 .collect::<FxHashMap<_, _>>();
         }
 
-
         let mut baseinfos = vec![];
         for (key, node) in self.nodes.iter() {
             let left_cut = cut_map[key].0;
             let right_cut = cut_map[key].1;
             let base_info;
-            if best_overlap_chunk{
+            if best_overlap_chunk {
                 base_info = get_base_info_mapchunks(left_cut, right_cut, node, reads, dna_seq_info)
-            }
-            else{
+            } else {
                 base_info = get_base_info_overlaps(left_cut, right_cut, node, reads, dna_seq_info)
             }
             baseinfos.push((*key, base_info));
@@ -1252,7 +1283,7 @@ impl UnitigGraph {
             self.nodes.get_mut(&key).unwrap().base_info = base_info;
         }
 
-        if !blunted{
+        if !blunted {
             self.get_unique_lengths();
         }
     }
@@ -1319,7 +1350,6 @@ impl UnitigGraph {
         }
     }
 
-    
     fn _add_edges(&mut self, edges: Vec<UnitigEdge>) {
         for edge in edges {
             let f1 = edge.f1;
@@ -1342,41 +1372,45 @@ impl UnitigGraph {
         }
     }
 
-    pub fn cut_z_edges(&mut self, _args: &Cli){
+    pub fn cut_z_edges(&mut self, _args: &Cli) {
         let mut edges_to_remove = FxHashSet::default();
-        for unitig in self.nodes.values(){
-            if unitig.in_edges().len() > 1{
+        for unitig in self.nodes.values() {
+            if unitig.in_edges().len() > 1 {
                 let z_edges = self.get_z_edges(unitig, Direction::Incoming);
-                //TODO will handle case with > 1 z edge later 
-                if z_edges.len() == 1{
-                    for edge_id in z_edges{
+                //TODO will handle case with > 1 z edge later
+                if z_edges.len() == 1 {
+                    for edge_id in z_edges {
                         edges_to_remove.insert(edge_id);
                     }
                 }
             }
-            if unitig.out_edges().len() > 1{
+            if unitig.out_edges().len() > 1 {
                 let z_edges = self.get_z_edges(unitig, Direction::Outgoing);
-                //TODO will handle case with > 1 z edge later 
-                if z_edges.len() == 1{
-                    for edge_id in z_edges{
+                //TODO will handle case with > 1 z edge later
+                if z_edges.len() == 1 {
+                    for edge_id in z_edges {
                         edges_to_remove.insert(edge_id);
                     }
                 }
             }
         }
 
-        for edge in edges_to_remove.iter(){
+        for edge in edges_to_remove.iter() {
             let edge = self.edges[*edge].as_ref().unwrap();
-            log::trace!("Removing edge: {} -- {} ", self.nodes[&edge.from_unitig].node_id, self.nodes[&edge.to_unitig].node_id);
+            log::trace!(
+                "Removing edge: {} -- {} ",
+                self.nodes[&edge.from_unitig].node_id,
+                self.nodes[&edge.to_unitig].node_id
+            );
         }
         log::info!("Cut {} z-edges", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
         self.re_unitig();
     }
 
-    fn get_z_edges(&self, unitig: &UnitigNode, direction: Direction) -> Vec<EdgeIndex>{
+    fn get_z_edges(&self, unitig: &UnitigNode, direction: Direction) -> Vec<EdgeIndex> {
         let edges;
-        if direction == Direction::Outgoing{
+        if direction == Direction::Outgoing {
             edges = unitig.out_edges()
         } else {
             edges = unitig.in_edges()
@@ -1386,19 +1420,19 @@ impl UnitigGraph {
         //let mut first_hit_nodes = FxHashSet::default();
         let mut used_edges = FxHashSet::default();
         let mut edges_to_explore: VecDeque<(EdgeIndex, &UnitigNode)> = VecDeque::new();
-        for edge in edges{
+        for edge in edges {
             edges_to_explore.push_back((*edge, unitig));
             used_edges.insert(*edge);
         }
         junction_edges.extend(edges);
-        while edges_to_explore.len() > 0{
+        while edges_to_explore.len() > 0 {
             let (edge_id, new_unitig) = edges_to_explore.pop_front().unwrap();
             let edge = self.edges[edge_id].as_ref().unwrap();
             let other_node = edge.other_node(new_unitig.node_hash_id);
             let relative_direction_other = edge.node_edge_direction(&other_node);
             let other_edges = self.nodes[&other_node].edges_direction(&relative_direction_other);
-            for &candidate_edge_id in other_edges{
-                if !used_edges.contains(&candidate_edge_id){
+            for &candidate_edge_id in other_edges {
+                if !used_edges.contains(&candidate_edge_id) {
                     let other_unitig = &self.nodes[&other_node];
                     edges_to_explore.push_back((candidate_edge_id, other_unitig));
                     junction_edges.push(candidate_edge_id);
@@ -1409,26 +1443,27 @@ impl UnitigGraph {
 
         let mut z_edges = vec![];
 
-        for edge_id in junction_edges{
+        for edge_id in junction_edges {
             let edge = &self.edges[edge_id].as_ref().unwrap();
             let n1 = &self.nodes[&edge.from_unitig];
             let n2 = &self.nodes[&edge.to_unitig];
-            let n1_direction_edges = n1.edges_direction(&edge.node_edge_direction(&edge.from_unitig));
+            let n1_direction_edges =
+                n1.edges_direction(&edge.node_edge_direction(&edge.from_unitig));
             let n2_direction_edges = n2.edges_direction(&edge.node_edge_direction(&edge.to_unitig));
             let mut n1_comp = FxHashSet::default();
             let mut n2_comp = FxHashSet::default();
-            if n1_direction_edges.len() == 1 || n2_direction_edges.len() == 1{
+            if n1_direction_edges.len() == 1 || n2_direction_edges.len() == 1 {
                 continue;
             }
             let edge_length = edge.overlap.overlap_len_bases;
 
-            let mut exist_larger_edge = false; 
-            for &edge_id2 in n1_direction_edges{
-                if edge_id2 == edge_id{
+            let mut exist_larger_edge = false;
+            for &edge_id2 in n1_direction_edges {
+                if edge_id2 == edge_id {
                     continue;
                 }
                 let edge2 = self.edges[edge_id2].as_ref().unwrap();
-                if edge2.overlap.overlap_len_bases > edge_length{
+                if edge2.overlap.overlap_len_bases > edge_length {
                     exist_larger_edge = true;
                 }
                 let other_node = edge2.other_node(n1.node_hash_id);
@@ -1436,13 +1471,13 @@ impl UnitigGraph {
                 n1_comp.insert((other_node, direction));
             }
 
-            for &edge_id2 in n2_direction_edges{
-                if edge_id2 == edge_id{
+            for &edge_id2 in n2_direction_edges {
+                if edge_id2 == edge_id {
                     continue;
                 }
                 let edge2 = self.edges[edge_id2].as_ref().unwrap();
 
-                if edge2.overlap.overlap_len_bases > edge_length{
+                if edge2.overlap.overlap_len_bases > edge_length {
                     exist_larger_edge = true;
                 }
 
@@ -1453,20 +1488,20 @@ impl UnitigGraph {
 
             // Need a edge that supports a z-edge to
             // be larger than the z-edge
-            if !exist_larger_edge{
+            if !exist_larger_edge {
                 continue;
             }
 
             let mut n1_connect_n2 = false;
-            for (node, direction) in n1_comp.iter(){
+            for (node, direction) in n1_comp.iter() {
                 let unitig = &self.nodes[&node];
                 //check if any edges hit anything in n2
-                
+
                 let edges = unitig.edges_direction(&direction);
-                for &edge_id3 in edges{
+                for &edge_id3 in edges {
                     let edge3 = self.edges[edge_id3].as_ref().unwrap();
                     let node3 = edge3.other_node(*node);
-                    if n2_comp.contains(&(node3, edge3.node_edge_direction(&node3))){
+                    if n2_comp.contains(&(node3, edge3.node_edge_direction(&node3))) {
                         //dbg!(n1.node_id, n2.node_id, &n1_comp, &n2_comp);
                         n1_connect_n2 = true;
                         break;
@@ -1474,15 +1509,22 @@ impl UnitigGraph {
                 }
             }
 
-            if !n1_connect_n2{
+            if !n1_connect_n2 {
                 z_edges.push(edge_id);
             }
         }
-        return z_edges
+        return z_edges;
     }
 
-    fn safe_given_forward_back(&self, unitig: &UnitigNode, edge: &UnitigEdge, max_forward: usize, max_reads_forward: usize, safe_length_back: usize) -> bool{
-
+    fn safe_given_forward_back(
+        &self,
+        unitig: &UnitigNode,
+        edge: &UnitigEdge,
+        max_forward: usize,
+        max_reads_forward: usize,
+        safe_length_back: usize,
+        removed_edges: &FxHashSet<EdgeIndex>,
+    ) -> bool {
         let max_length_forward_search = max_forward;
         let length_back_safe = safe_length_back;
         let mut safe = false;
@@ -1503,28 +1545,32 @@ impl UnitigGraph {
         forbidden_nodes.insert(unitig.node_hash_id);
 
         //Search forward until a node has sufficient "backing"
-        while travelled < max_length_forward_search && travelled_reads < max_reads_forward{
-            if to_search.len() == 0{
+        while travelled < max_length_forward_search && travelled_reads < max_reads_forward {
+            if to_search.len() == 0 {
                 break;
             }
             let (node, direction) = to_search.pop_front().unwrap();
             //println!("DBG! {}", node);
-            if seen_nodes.contains(&node){
+            if seen_nodes.contains(&node) {
                 continue;
             }
             seen_nodes.insert(node);
             let unitig = &self.nodes[&node];
 
             //Check if the node has sufficient "backing"
-            let back_found = self.search_dir_until_safe(unitig, direction, length_back_safe, &forbidden_nodes);
-            if back_found{
+            let back_found =
+                self.search_dir_until_safe(unitig, direction, length_back_safe, &forbidden_nodes, removed_edges);
+            if back_found {
                 safe = true;
                 break;
             }
 
             forbidden_nodes.insert(node);
             let forward_edges = unitig.edges_direction(&direction.reverse());
-            for f_edge in forward_edges{
+            for f_edge in forward_edges {
+                if removed_edges.contains(&f_edge) {
+                    continue;
+                }
                 let f_edge = self.edges[*f_edge].as_ref().unwrap();
                 let f_node = f_edge.other_node(node);
                 to_search.push_front((f_node, f_edge.node_edge_direction(&f_node)));
@@ -1537,9 +1583,9 @@ impl UnitigGraph {
         return safe;
     }
 
-    fn _forward_and_back(&self, unitig: &UnitigNode, direction: Direction) -> Vec<EdgeIndex>{
+    fn _forward_and_back(&self, unitig: &UnitigNode, direction: Direction) -> Vec<EdgeIndex> {
         let edges;
-        if direction == Direction::Outgoing{
+        if direction == Direction::Outgoing {
             edges = unitig.out_edges()
         } else {
             edges = unitig.in_edges()
@@ -1548,7 +1594,7 @@ impl UnitigGraph {
         let mut z_edges = vec![];
         let mut first_hit_nodes = FxHashSet::default();
         let mut used_edges = FxHashSet::default();
-        for edge_id in edges{
+        for edge_id in edges {
             let edge = self.edges[*edge_id].as_ref().unwrap();
             let other_node = edge.other_node(unitig.node_hash_id);
             let relative_direction_other = edge.node_edge_direction(&other_node);
@@ -1559,7 +1605,7 @@ impl UnitigGraph {
         //Assume degree > 1 so  o -- x
         //                      |
         //                      x
-        for edge_id in edges{
+        for edge_id in edges {
             let edge = self.edges[*edge_id].as_ref().unwrap();
             let other_node = edge.other_node(unitig.node_hash_id);
             let other_unitig = &self.nodes[&other_node];
@@ -1570,32 +1616,46 @@ impl UnitigGraph {
             //      o -- o
             //      |
             // x -- o
-            for edge_id2 in other_edges{
-                if used_edges.contains(edge_id2){
+            for edge_id2 in other_edges {
+                if used_edges.contains(edge_id2) {
                     continue;
                 }
-                let third_node = self.edges[*edge_id2].as_ref().unwrap().other_node(other_node);
+                let third_node = self.edges[*edge_id2]
+                    .as_ref()
+                    .unwrap()
+                    .other_node(other_node);
                 let third_unitig = &self.nodes[&third_node];
-                let relative_direction_third = self.edges[*edge_id2].as_ref().unwrap().node_edge_direction(&third_node);
+                let relative_direction_third = self.edges[*edge_id2]
+                    .as_ref()
+                    .unwrap()
+                    .node_edge_direction(&third_node);
                 let third_edges = third_unitig.edges_direction(&relative_direction_third);
                 used_edges.insert(*edge_id2);
 
-                // If the third node has >= 1 edge that does not connect to the first node 
+                // If the third node has >= 1 edge that does not connect to the first node
                 // or any of the second nodes,
-                // then the second edge is a z-edge 
+                // then the second edge is a z-edge
                 let mut second_is_z = false;
-                for edge_id3 in third_edges{
-                    if used_edges.contains(edge_id3){
+                for edge_id3 in third_edges {
+                    if used_edges.contains(edge_id3) {
                         continue;
                     }
                     second_is_z = true;
-                    let fourth_node = self.edges[*edge_id3].as_ref().unwrap().other_node(third_node);
-                    let relative_direction_fourth = self.edges[*edge_id3].as_ref().unwrap().node_edge_direction(&fourth_node);
-                    if fourth_node == unitig.node_hash_id || first_hit_nodes.contains(&(fourth_node, relative_direction_fourth)){
+                    let fourth_node = self.edges[*edge_id3]
+                        .as_ref()
+                        .unwrap()
+                        .other_node(third_node);
+                    let relative_direction_fourth = self.edges[*edge_id3]
+                        .as_ref()
+                        .unwrap()
+                        .node_edge_direction(&fourth_node);
+                    if fourth_node == unitig.node_hash_id
+                        || first_hit_nodes.contains(&(fourth_node, relative_direction_fourth))
+                    {
                         second_is_z = false;
                     }
                 }
-                if second_is_z{
+                if second_is_z {
                     z_edges.push(*edge_id2);
                 }
             }
@@ -1603,106 +1663,158 @@ impl UnitigGraph {
         return z_edges;
     }
 
-    pub fn resolve_bridged_repeats<T>(&mut self, _args: &Cli, ol_thresh: f64, out_file: T, max_forward: usize, max_reads_forward: usize, safe_length_back: usize) 
-    where T: AsRef<std::path::Path>,
+    pub fn resolve_bridged_repeats<T>(
+        &mut self,
+        _args: &Cli,
+        ol_thresh: f64,
+        cov_score: Option<f64>,
+        out_file: T,
+        max_forward: usize,
+        max_reads_forward: usize,
+        safe_length_back: usize,
+    ) where
+        T: AsRef<std::path::Path>,
     {
         let mut unitig_edge_file = BufWriter::new(std::fs::File::create(out_file).unwrap());
         let mut removed_edges = FxHashSet::default();
-        for (_n_id, unitig) in self.nodes.iter() {
-            for (_, edges) in [&unitig.in_edges(), &unitig.out_edges()]
-                .into_iter()
-                .enumerate()
-            {
-                let mut putative_removal = vec![];
-                // try to cut
+        let mut all_edges_sorted = vec![];
+
+        for (i,edge) in self.edges.iter().enumerate(){
+            if let Some(edge) = edge{
+                let uni1 = &self.nodes[&edge.from_unitig];
+                let uni2 = &self.nodes[&edge.to_unitig];
+                let overlap_len = edge.overlap.overlap_len_bases;
+
+                let cov_ratio = 1./pseudocount_cov(uni1.min_read_depth.unwrap(), uni2.min_read_depth.unwrap());
+                let score = cov_ratio * overlap_len as f64;
+                all_edges_sorted.push((i, score));
+                // smaller score is worse. small overlap len and large diff
+            }
+        }
+
+        all_edges_sorted.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        let all_edges_sorted = all_edges_sorted.iter().map(|x| x.0).collect::<Vec<_>>();
+
+        for edge_id in all_edges_sorted {
+            let edge = &self.edges[edge_id].as_ref().unwrap();
+            let unitig_terminals = [edge.from_unitig, edge.to_unitig];
+            for unitig_id in unitig_terminals{
+                if removed_edges.contains(&edge_id) {
+                    continue;
+                }
+                let unitig = &self.nodes[&unitig_id];
+                let direction = edge.node_edge_direction(&unitig_id);
+                let edges = unitig.edges_direction(&direction);
                 if edges.len() > 1 {
                     let mut overlaps = vec![];
                     // let mut endpoint_covs = vec![];
 
-                     for edge_id in edges.iter() {
-                         let edge = &self.edges[*edge_id].as_ref().unwrap();
-                         let ol = edge.overlap.overlap_len_bases;
-                         overlaps.push(ol);
+                    for edge_id in edges.iter() {
+                        let edge = &self.edges[*edge_id].as_ref().unwrap();
+                        let ol = edge.overlap.overlap_len_bases;
+                        overlaps.push(ol);
                     }
 
                     let max_ol = *overlaps.iter().max().unwrap();
-                    for i in 0..edges.len() {
-                        let edge = &self.edges[edges[i]].as_ref().unwrap();
-                        let uni1 = self.nodes[&edge.from_unitig].read_indices_ori[0].0;
-                        let uni2 = self.nodes[&edge.to_unitig].read_indices_ori[0].0;
 
-                        //let direction1 = edge.node_edge_direction(&edge.from_unitig);
-                        //let direction2 = edge.node_edge_direction(&edge.to_unitig);
-                        //let num_edges_1 = uni1.edges_direction(&direction1).len();
-                        //let num_edges_2 = uni2.edges_direction(&direction2).len();
+                    let uni1 = &self.nodes[&edge.from_unitig];
+                    let uni2 = &self.nodes[&edge.to_unitig];
+                    let uni1_id = uni1.node_id;
+                    let uni2_id = uni2.node_id;
 
-                        //println!("DBG, {}-{}: {} {}", uni1.node_hash_id, uni2.node_hash_id, num_edges_1, num_edges_2);
-                        let safe = self.safe_given_forward_back(unitig, edge, max_forward, max_reads_forward, safe_length_back);
+                    //let direction1 = edge.node_edge_direction(&edge.from_unitig);
+                    //let direction2 = edge.node_edge_direction(&edge.to_unitig);
+                    //let num_edges_1 = uni1.edges_direction(&direction1).len();
+                    //let num_edges_2 = uni2.edges_direction(&direction2).len();
 
-                        let ol_score = overlaps[i] as f64 / max_ol as f64; // higher better
-                        let mut smallest_less_pvalue = 1.;
-                        for j in 0..edges.len() {
-                            if i == j {
-                                continue;
-                            }
-                            let other_edge = &self.edges[edges[j]].as_ref().unwrap();
-                            let contingency_table = [
-                                edge.overlap.shared_snpmers as u32,
-                                other_edge.overlap.shared_snpmers as u32,
-                                edge.overlap.diff_snpmers as u32,
-                                other_edge.overlap.diff_snpmers as u32,
-                            ];
-                            let p_value = fishers_exact(&contingency_table).unwrap().less_pvalue;
-                            if p_value < smallest_less_pvalue {
-                                smallest_less_pvalue = p_value;
-                            }
-                        }
-
-                        // Overlap is, coverage is twice, or the fisher pval is significantly smaller
-                        // when compared against the most strain-specific best edges
-                        let cut;
-                        //let ol_thresh = if !safe { ol_thresh / 2. } else { ol_thresh};
-                        if (ol_score < ol_thresh && safe)
-                            || (smallest_less_pvalue < 0.05 && safe)
-                        {
-                            cut = true;
-                            putative_removal.push(edges[i]);
-                        } else {
-                            cut = false;
-                        }
-                        writeln!(
-                            unitig_edge_file,
-                            "{}-{}, {} {} snp_share:{}, snp_diff:{}, ol_length:{}, ol_score:{}, specific_score:{}, safe:{}, removed:{}",
-                            uni1,
-                            uni2,
-                            if edge.f1 {"+"} else {"-"},
-                            if edge.f2 {"+"} else {"-"},
-                            edge.overlap.shared_snpmers,
-                            edge.overlap.diff_snpmers,
-                            edge.overlap.overlap_len_bases,
-                            ol_score,
-                            smallest_less_pvalue,
-                            safe,
-                            cut
-                        ).unwrap();
+                    //println!("DBG, {}-{}: {} {}", uni1.node_hash_id, uni2.node_hash_id, num_edges_1, num_edges_2);
+                    let safe = self.safe_given_forward_back(
+                        unitig,
+                        edge,
+                        max_forward,
+                        max_reads_forward,
+                        safe_length_back,
+                        &removed_edges,
+                    );
+                    if !safe {
+                        continue;
                     }
-                }
-                if putative_removal.len() < edges.len() {
-                    for edge in putative_removal {
-                        removed_edges.insert(edge);
+
+                    let ol_score = edge.overlap.overlap_len_bases as f64 / max_ol as f64; // higher better
+                    // let mut smallest_less_pvalue = 1.;
+                    // for j in 0..edges.len() {
+                    //     if i == j {
+                    //         continue;
+                    //     }
+                    //     let other_edge = &self.edges[edges[j]].as_ref().unwrap();
+                    //     let contingency_table = [
+                    //         edge.overlap.shared_snpmers as u32,
+                    //         other_edge.overlap.shared_snpmers as u32,
+                    //         edge.overlap.diff_snpmers as u32,
+                    //         other_edge.overlap.diff_snpmers as u32,
+                    //     ];
+                    //     let p_value = fishers_exact(&contingency_table).unwrap().less_pvalue;
+                    //     if p_value < smallest_less_pvalue {
+                    //         smallest_less_pvalue = p_value;
+                    //     }
+                    // }
+
+                    let cov_pseudo_val = pseudocount_cov(
+                        uni1.min_read_depth.unwrap(),
+                        uni2.min_read_depth.unwrap(),
+                    );
+
+                    // let cov_pseudo_val = square_root_poisson_kl(
+                    //     uni1.min_read_depth.unwrap(),
+                    //     uni2.min_read_depth.unwrap(),
+                    // );
+
+                    let cut;
+                    if (ol_score < ol_thresh)
+                    //    || (smallest_less_pvalue < 0.05)
+                        || (cov_score.is_some() && cov_pseudo_val > cov_score.unwrap())
+                    {
+                        cut = true;
+                        removed_edges.insert(edge_id);
+                    } else {
+                        cut = false;
                     }
+                    writeln!(
+                        unitig_edge_file,
+                        "{}-{}, {} {} snp_share:{}, snp_diff:{}, ol_length:{}, ol_score:{}, specific_score:{}, safe:{}, removed:{}",
+                        uni1_id,
+                        uni2_id,
+                        if edge.f1 {"+"} else {"-"},
+                        if edge.f2 {"+"} else {"-"},
+                        edge.overlap.shared_snpmers,
+                        edge.overlap.diff_snpmers,
+                        edge.overlap.overlap_len_bases,
+                        ol_score,
+                        //smallest_less_pvalue,
+                        "NA",
+                        safe,
+                        cut
+                    ).unwrap();
                 }
             }
         }
-        log::info!("Cutting {} edges that have low relative confidence ({})", removed_edges.len(), ol_thresh);
+        log::info!(
+            "Cutting {} edges that have low relative confidence ({})",
+            removed_edges.len(),
+            ol_thresh
+        );
         self.remove_edges(removed_edges);
         self.re_unitig();
     }
 
-    pub fn print_statistics(self){
+    pub fn print_statistics(self) {
         //Print n50, name of largest contig, largest contig size, number of contigs
 
-        let mut contig_sizes = self.nodes.iter().map(|(_, node)| node.cut_length()).collect::<Vec<_>>();
+        let mut contig_sizes = self
+            .nodes
+            .iter()
+            .map(|(_, node)| node.cut_length())
+            .collect::<Vec<_>>();
         contig_sizes.sort();
         let n50 = contig_sizes.iter().sum::<usize>() / 2;
         let contig_sizes = contig_sizes.iter().rev();
@@ -1718,7 +1830,6 @@ impl UnitigGraph {
 
         let largest_contig = self.nodes.iter().max_by_key(|(_, node)| node.cut_length());
         if let Some(largest_contig) = largest_contig {
-
             let largest_contig_size = largest_contig.1.cut_length();
             let num_contigs = self.nodes.len();
             log::info!("-------------- Assembly statistics --------------");
@@ -1727,16 +1838,21 @@ impl UnitigGraph {
             log::info!("Number of contigs: {}", num_contigs);
             log::info!("Total bases within assembly is {}", n50 * 2);
             log::info!("-------------------------------------------------");
-
         } else {
             log::info!("WARNING: No contigs found.");
             return;
         }
-        
     }
 
-    fn search_dir_until_safe(&self, unitig: &UnitigNode, direction: Direction, length: usize, forbidden_nodes: &FxHashSet<NodeIndex>) -> bool{
-        let mut nodes_and_distances :FxHashMap<NodeIndex,usize> = FxHashMap::default();
+    fn search_dir_until_safe(
+        &self,
+        unitig: &UnitigNode,
+        direction: Direction,
+        length: usize,
+        forbidden_nodes: &FxHashSet<NodeIndex>,
+        removed_edges: &FxHashSet<EdgeIndex>
+    ) -> bool {
+        let mut nodes_and_distances: FxHashMap<NodeIndex, usize> = FxHashMap::default();
         let mut to_search = VecDeque::new();
         let mut achieved_length = false;
 
@@ -1745,50 +1861,53 @@ impl UnitigGraph {
         let mut iteration = 0;
 
         //Search in the direction until a path has been found with length > length
-        while !to_search.is_empty(){
+        while !to_search.is_empty() {
             let (node, dir) = to_search.pop_front().unwrap();
             //println!("DBG BACK {} DIST {}", node, nodes_and_distances[&node]);
             let edges = self.nodes[&node].edges_direction(&dir);
             let curr_min_dist = nodes_and_distances[&node];
-            for edge_id in edges{
+            for edge_id in edges {
                 let edge = self.edges[*edge_id].as_ref().unwrap();
                 let other_node = edge.other_node(node);
 
-                if forbidden_nodes.contains(&other_node){
+                if forbidden_nodes.contains(&other_node) || removed_edges.contains(edge_id) {
                     continue;
                 }
 
                 let other_unitig = &self.nodes[&other_node];
 
-                if nodes_and_distances.contains_key(&other_node){
-                    *nodes_and_distances.get_mut(&other_node).unwrap() = nodes_and_distances[&other_node].min(curr_min_dist + other_unitig.unique_length.unwrap());
-                }
-                else{
-                    nodes_and_distances.insert(other_node, curr_min_dist + other_unitig.unique_length.unwrap());
+                if nodes_and_distances.contains_key(&other_node) {
+                    *nodes_and_distances.get_mut(&other_node).unwrap() = nodes_and_distances
+                        [&other_node]
+                        .min(curr_min_dist + other_unitig.unique_length.unwrap());
+                } else {
+                    nodes_and_distances.insert(
+                        other_node,
+                        curr_min_dist + other_unitig.unique_length.unwrap(),
+                    );
                     let other_dir = edge.node_edge_direction(&other_node).reverse();
                     to_search.push_back((other_node, other_dir));
                 }
 
-                if nodes_and_distances[&other_node] > length{
+                if nodes_and_distances[&other_node] > length {
                     achieved_length = true;
                     break;
                 }
 
                 iteration += 1;
-                if iteration > 100{
+                if iteration > 100 {
                     achieved_length = true;
                     break;
                 }
-                
             }
         }
         return achieved_length;
     }
 
-    //Assume that the graph has not been blunted. 
-    fn get_unique_lengths(&mut self){
-        for node in self.nodes.values_mut(){
-            if node.right_cut() > 0 || node.left_cut() > 0{
+    //Assume that the graph has not been blunted.
+    fn get_unique_lengths(&mut self) {
+        for node in self.nodes.values_mut() {
+            if node.right_cut() > 0 || node.left_cut() > 0 {
                 panic!("Node has been blunted. Cannot calculate unique length.");
             }
             let non_self_edges_in = node.in_edges().iter().filter(|&x| {
@@ -1800,33 +1919,64 @@ impl UnitigGraph {
                 edge.from_unitig != edge.to_unitig
             });
 
-            let in_max_overlap = non_self_edges_in.map(|x| self.edges[*x].as_ref().unwrap().overlap.overlap_len_bases).max().unwrap_or(0);
-            let out_max_overlap = non_self_edges_out.map(|x| self.edges[*x].as_ref().unwrap().overlap.overlap_len_bases).max().unwrap_or(0);
+            let in_max_overlap = non_self_edges_in
+                .map(|x| self.edges[*x].as_ref().unwrap().overlap.overlap_len_bases)
+                .max()
+                .unwrap_or(0);
+            let out_max_overlap = non_self_edges_out
+                .map(|x| self.edges[*x].as_ref().unwrap().overlap.overlap_len_bases)
+                .max()
+                .unwrap_or(0);
             node.unique_length = Some(
-                (node.cut_length() as i64 - in_max_overlap.max(out_max_overlap) as i64).max(0) as usize
+                (node.cut_length() as i64 - in_max_overlap.max(out_max_overlap) as i64).max(0)
+                    as usize,
             );
         }
+    }
+
+    pub fn progressive_cut_lowest(&mut self) -> usize{
+        let mut lowest_cov = f64::MAX;
+        for node in self.nodes.values(){
+            if node.both_edges().collect::<Vec<_>>().len() == 0{
+                continue;
+            }
+            if node.min_read_depth.unwrap() < lowest_cov{
+                lowest_cov = node.min_read_depth.unwrap();
+            }
+        }
+        let mut nodes_to_remove = FxHashSet::default();
+        for node in self.nodes.values(){
+            if node.min_read_depth.unwrap() == lowest_cov{
+                nodes_to_remove.insert(node.node_hash_id);
+            }
+        }
+        let num_removed_nodes = nodes_to_remove.len();
+
+        self.remove_nodes(&nodes_to_remove.into_iter().collect::<Vec<_>>(), false);
+        self.re_unitig();
+        return num_removed_nodes;
     }
 }
 
 fn overhang_and_overlap_list(node: &UnitigNode) -> (Vec<usize>, Vec<usize>) {
     let mut overhangs = Vec::new();
     let mut overlaps = Vec::new();
-    for i in 0..node.read_indices_ori.len() - 1{
+    for i in 0..node.read_indices_ori.len() - 1 {
         let node1 = node.read_indices_ori[i].0;
         let node2 = node.read_indices_ori[i + 1].0;
         let internal_edge = &node.internal_overlaps[i];
-        if node1 == internal_edge.node1 && node2 == internal_edge.node2{
+        if node1 == internal_edge.node1 && node2 == internal_edge.node2 {
             overhangs.push(internal_edge.hang1);
             overhangs.push(internal_edge.hang2);
             overlaps.push(internal_edge.overlap1_len);
             overlaps.push(internal_edge.overlap2_len);
-        } else if node1 == internal_edge.node2 && node2 == internal_edge.node1{
+        } else if node1 == internal_edge.node2 && node2 == internal_edge.node1 {
             overhangs.push(internal_edge.hang2);
             overhangs.push(internal_edge.hang1);
             overlaps.push(internal_edge.overlap2_len);
             overlaps.push(internal_edge.overlap1_len);
         } else {
+            dbg!(node1, node2, internal_edge.node1, internal_edge.node2, i);
             panic!("Internal overlap does not match read indices");
         }
     }
@@ -1859,17 +2009,26 @@ fn get_base_info_overlaps(
             }
             range = (carryover, end);
         } else if i == 0 {
-            let mut end = reads[ind].base_length as i64 + 1 - internal_ol_len[0] as i64 - overhangs[0] as i64 - overhangs[1] as i64;
+            let mut end = reads[ind].base_length as i64 + 1
+                - internal_ol_len[0] as i64
+                - overhangs[0] as i64
+                - overhangs[1] as i64;
             if end < 0 {
                 end = 0;
             }
             range = (carryover, end as usize);
             hang_ind += 2;
         } else if i == node.read_indices_ori.len() - 1 {
-            range = (carryover, reads[ind].base_length - right_cut.min(reads[ind].base_length));
+            range = (
+                carryover,
+                reads[ind].base_length - right_cut.min(reads[ind].base_length),
+            );
             hang_ind += 2;
         } else {
-            let mut end = reads[ind].base_length as i64 + 1 - internal_ol_len[hang_ind] as i64 - overhangs[hang_ind] as i64 - overhangs[hang_ind + 1] as i64;
+            let mut end = reads[ind].base_length as i64 + 1
+                - internal_ol_len[hang_ind] as i64
+                - overhangs[hang_ind] as i64
+                - overhangs[hang_ind + 1] as i64;
             if end < 0 {
                 end = 0;
             }
@@ -1904,7 +2063,6 @@ fn get_base_info_overlaps(
     return base_info;
 }
 
-
 fn get_base_info_mapchunks(
     _left_cut: usize,
     _right_cut: usize,
@@ -1916,29 +2074,383 @@ fn get_base_info_mapchunks(
 }
 
 #[inline]
-pub fn median(v: &mut [f64]) -> Option<f64>{
-    if v.len() == 0{
+pub fn median(v: &mut [f64]) -> Option<f64> {
+    if v.len() == 0 {
         return None;
     }
     let len = v.len();
-    v.sort_by(|a,b| a.partial_cmp(b).unwrap());   
-    Some(v[len / 2])
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    if len % 2 == 0 {
+        return Some((v[len / 2 - 1] + v[len / 2]) / 2.);
+    }
+    else{
+        Some(v[len / 2])
+    }
+
 }
 
 #[inline]
-pub fn median_weight(v: &mut [(f64, usize)]) -> Option<f64>{
-    if v.len() == 0{
+pub fn median_weight(v: &mut [(f64, usize)]) -> Option<f64> {
+    if v.len() == 0 {
         return None;
     }
+
     let len = v.len();
-    v.sort_by(|a,b| a.partial_cmp(b).unwrap());   
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut median_ind = 0;
     let total_length = v.iter().map(|x| x.1).sum::<usize>();
-    for i in 0..len{
-        if v[i].1 >= total_length / 2{
+    let mut curr_sum = 0;
+    for i in 0..len {
+        curr_sum += v[i].1;
+        if curr_sum >= total_length / 2 {
             median_ind = i;
             break;
         }
     }
     Some(v[median_ind].0)
+}
+
+#[inline]
+pub fn square_root_poisson_kl(cov1: f64, cov2: f64) -> f64 {
+    let p_cov1 = cov1 + 1.;
+    let p_cov2 = cov2 + 1.;
+    let kl_1 = p_cov1 * (p_cov1.ln() - p_cov2.ln());
+    let kl_2 = p_cov2 * (p_cov2.ln() - p_cov1.ln());
+    return (kl_1 + kl_2) / (p_cov1 + p_cov2).sqrt();
+}
+
+#[inline]
+pub fn pseudocount_cov(cov1: f64, cov2: f64) -> f64 {
+    let pcount = 5.;
+    let numerator = cov1.max(cov2) + pcount;
+    let denominator = cov1.min(cov2) + pcount;
+    return numerator / denominator;
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper struct to make test graph construction easier
+    struct MockUnitigBuilder {
+        nodes: FxHashMap<NodeIndex, UnitigNode>,
+        edges: Vec<Option<UnitigEdge>>,
+        next_node_id: NodeIndex,
+        corresponding_reads: Vec<TwinRead>,
+    }
+
+    impl MockUnitigBuilder {
+        fn new() -> Self {
+            Self {
+                nodes: FxHashMap::default(),
+                edges: Vec::new(),
+                next_node_id: 0,
+                corresponding_reads: Vec::new(),
+            }
+        }
+
+        // Add a node with specified number of reads and coverage
+        fn add_node(&mut self, num_reads: usize, min_depth: f64) -> NodeIndex {
+
+            let mut internal_overlaps = vec![];
+            let read_indices: Vec<(NodeIndex, bool)> = (0..num_reads)
+                .map(|i| (i as NodeIndex + self.corresponding_reads.len(), true))
+                .collect();
+
+            for i in 0..num_reads - 1{
+                let generic_internal_overlap = ReadOverlapEdgeTwin {
+                    node1: self.corresponding_reads.len() as NodeIndex + i,
+                    node2: self.corresponding_reads.len() as NodeIndex + 1 + i,
+                    hang1: 0,
+                    hang2: 0,
+                    overlap1_len: 1000,
+                    overlap2_len: 1000,
+                    forward1: true,
+                    forward2: true,
+                    overlap_len_bases: 1000,
+                    shared_minimizers: 100,
+                    diff_snpmers: 0,
+                    shared_snpmers: 10,
+                };
+                internal_overlaps.push(generic_internal_overlap);
+            }
+
+            for _ in 0..num_reads{
+                let generic_read = TwinRead{
+                    minimizers: vec![],
+                    snpmers: vec![],
+                    dna_seq: Seq::new(),
+                    base_length: 2000,
+                    k: 21,
+                    est_id: None,
+                    id: "na".to_string(),
+                    min_depth: Some(min_depth),
+                    median_depth: Some(2.*min_depth),
+                };
+                
+                self.corresponding_reads.push(generic_read);
+            }
+
+            let node_id = self.next_node_id;
+            self.next_node_id += 1;
+
+            // Create mock read indices
+            let node = UnitigNode {
+                read_indices_ori: read_indices,
+                //internal overlaps only used for base-level information... not needed for topology tests
+                internal_overlaps,
+                read_names: vec!["na".to_string(); num_reads],
+                in_edges: vec![],
+                out_edges: vec![],
+                node_id: node_id,
+                node_hash_id: node_id,
+                min_read_depth: Some(min_depth),
+                median_read_depth: Some(2.*min_depth),
+                unique_length: None,
+                base_info: BaseInfo::default(),
+                mapping_info: MappingInfo::default(),
+                read_min_depths: vec![(min_depth, 1000);num_reads],
+                read_median_depths: vec![(min_depth, 1000); num_reads],
+            };
+
+            self.nodes.insert(node_id, node);
+            node_id
+        }
+
+        // Add an edge between nodes
+        fn add_edge(&mut self, from: NodeIndex, to: NodeIndex, overlap_len: usize, f1: bool, f2: bool) {
+            let from_read_idx = self.nodes[&from].read_indices_ori.last().unwrap().0;
+            let to_read_idx = self.nodes[&to].read_indices_ori.first().unwrap().0;
+            let edge = UnitigEdge {
+                overlap: ReadOverlapEdgeTwin {
+                    node1: from_read_idx,
+                    node2: to_read_idx,
+                    hang1: 0,
+                    hang2: 0,
+                    overlap1_len: overlap_len,
+                    overlap2_len: overlap_len,
+                    forward1: f1,
+                    forward2: f2,
+                    overlap_len_bases: overlap_len,
+                    shared_minimizers: 100,
+                    diff_snpmers: 0,
+                    shared_snpmers: 10,
+                },
+                from_read_idx,
+                to_read_idx,
+                from_unitig: from,
+                to_unitig: to,
+                f1,
+                f2,
+            };
+
+            let edge_idx = self.edges.len();
+            
+            // Update node edge lists
+            if f1 {
+                self.nodes.get_mut(&from).unwrap().out_edges.push(edge_idx);
+            } else {
+                self.nodes.get_mut(&from).unwrap().in_edges.push(edge_idx);
+            }
+            
+            if f2 {
+                self.nodes.get_mut(&to).unwrap().in_edges.push(edge_idx);
+            } else {
+                self.nodes.get_mut(&to).unwrap().out_edges.push(edge_idx);
+            }
+
+            self.edges.push(Some(edge));
+        }
+
+        fn build(self) -> (UnitigGraph, Vec<TwinRead>) {
+           let mut g = UnitigGraph {
+                nodes: self.nodes,
+                edges: self.edges,
+            };
+            let reads = self.corresponding_reads;
+            g.get_sequence_info(&reads, &GetSequenceInfoConfig::default());
+            return (g, reads);
+        }
+    }
+
+    // Test median_weight function
+    #[test]
+    fn test_median_weight() {
+        let mut v = vec![(1.0, 1), (2.0, 2), (3.0, 3)];
+        assert_eq!(median_weight(&mut v), Some(2.0));
+
+        let mut v = vec![(1.0, 1), (2.0, 5), (3.0, 15)];
+        assert_eq!(median_weight(&mut v), Some(3.0));
+
+        let mut v = vec![(1.0, 1), (2.0, 5), (3.0, 1)];
+        assert_eq!(median_weight(&mut v), Some(2.0));
+
+        let mut v = vec![];
+        assert_eq!(median_weight(&mut v), None);
+    }
+
+    // Test tip removal
+    #[test]
+    fn test_remove_tips() {
+        // Create a graph with a tip:
+        // n1 -> n2 
+        //  ↘
+        //   n4 (tip)
+        let mut builder = MockUnitigBuilder::new();
+        
+        let n1 = builder.add_node(10, 10.0);
+        let n2 = builder.add_node(10, 10.0);
+        let n4 = builder.add_node(1, 5.0); // tip node
+
+        builder.add_edge(n1, n2, 100, true, true);
+        builder.add_edge(n1, n4, 100, true, true);
+
+        let (mut graph, _reads) = builder.build();
+        assert!(graph.nodes.len() == 3);
+        
+        // Remove tips
+        graph.remove_tips_internal(500, 2, false);
+        assert!(graph.nodes.len() == 2);
+        assert!(!graph.nodes.contains_key(&n4));
+    }
+
+    // Test bubble detection
+    #[test]
+    fn test_bubble_detection_simple() {
+        // Create a simple bubble:
+        // n0 -> n1 -> n3
+        //  ↘        ↗  
+        //   -> n2 ->
+        let mut builder = MockUnitigBuilder::new();
+        
+        let n0 = builder.add_node(3, 10.0);
+        let n1 = builder.add_node(3, 10.0);
+        let n2 = builder.add_node(3, 5.0);
+        let n3 = builder.add_node(3, 10.0);
+
+        builder.add_edge(n0, n1, 100, true, true);
+        builder.add_edge(n0, n2, 100, true, true);
+        builder.add_edge(n1, n3, 100, true, true);
+        builder.add_edge(n2, n3, 100, true, true);
+
+        let (graph, _reads) = builder.build();
+        
+        // Test bubble detection from n0
+        let result = graph.get_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        assert!(result.is_some());
+        
+        let (nodes_to_remove, _) = result.unwrap();
+        // Should remove the lower coverage path
+        assert!(graph.nodes[&nodes_to_remove[0]].min_read_depth.unwrap() == 5.0);
+        assert_eq!(nodes_to_remove.len(), 1);
+    }
+
+    #[test]
+    fn test_bubble_detection_self_loop() {
+        // Create a simple bubble:
+        // n0 -> n1 -> n3
+        //  ↘        ↗  
+        //   -> n2 ->
+        //     ↘^ 
+        let mut builder = MockUnitigBuilder::new();
+        
+        let n0 = builder.add_node(3, 10.0);
+        let n1 = builder.add_node(3, 10.0);
+        let n2 = builder.add_node(3, 5.0);
+        let n3 = builder.add_node(3, 10.0);
+
+        builder.add_edge(n0, n1, 100, true, true);
+        builder.add_edge(n0, n2, 100, true, true);
+        builder.add_edge(n1, n3, 100, true, true);
+        builder.add_edge(n2, n3, 100, true, true);
+        builder.add_edge(n2, n2, 100, true, true);
+
+        let (graph, _reads) = builder.build();
+        
+        // Test bubble detection from n0
+        let result = graph.get_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_bubble_detection_complex() {
+        // Create a simple bubble:
+        // n0 -> n1 -> n3 -> 
+        //  ↘        ↗      n5
+        //   -> n2 -> n4 ↗ 
+        let mut builder = MockUnitigBuilder::new();
+        
+        let n0 = builder.add_node(3, 10.0);
+        let n1 = builder.add_node(3, 10.0);
+        let n2 = builder.add_node(3, 5.0);
+        let n3 = builder.add_node(3, 10.0);
+        let n4 = builder.add_node(3, 20.0);
+        let n5 = builder.add_node(3, 10.0);
+
+        builder.add_edge(n0, n1, 100, true, true);
+        builder.add_edge(n0, n2, 100, true, true);
+        builder.add_edge(n1, n3, 100, true, true);
+        builder.add_edge(n2, n3, 100, true, true);
+        builder.add_edge(n2, n4, 100, true, true);
+        builder.add_edge(n4, n5, 100, true, true);
+        builder.add_edge(n3, n5, 100, true, true);
+
+        let (graph, _reads) = builder.build();
+        
+        // Test bubble detection from n0
+        let result = graph.get_bubble_remove_nodes(Direction::Incoming, n5, 50000);
+        assert!(result.is_some());
+        let (nodes_to_remove, _) = result.unwrap();
+        assert!(nodes_to_remove.len() == 2);
+        assert!(nodes_to_remove.contains(&n3));
+        assert!(nodes_to_remove.contains(&n1));
+    }
+
+    // Test safe path detection
+    #[test]
+    fn test_safe_path_detection() {
+        // Create a graph with a safe path:
+        // ----> n1 -> n2 
+        //       ↘     
+        // n4 ->  n5 ----- 
+        let mut builder = MockUnitigBuilder::new();
+        
+        let n1 = builder.add_node(100, 10.0);
+        let n2 = builder.add_node(100, 10.0);
+        let n4 = builder.add_node(100, 10.0);
+        let n5 = builder.add_node(100, 10.0);
+
+        builder.add_edge(n1, n2, 100, true, true);
+        builder.add_edge(n1, n5, 100, true, true);
+        builder.add_edge(n4, n5, 100, true, true);
+        
+        let (graph, _reads) = builder.build();
+
+        // Test if path through n1->n5 is safe
+        let edge = graph.edges[1].as_ref().unwrap();
+        let result = graph.safe_given_forward_back(
+            &graph.nodes[&n1],
+            edge,
+            2000, // max_forward
+            5,    // max_reads_forward
+            1000, // safe_length_back
+            &FxHashSet::default()
+        );
+        
+        assert!(result);
+
+        let edge = graph.edges[0].as_ref().unwrap();
+        let result = graph.safe_given_forward_back(
+            &graph.nodes[&n1],
+            edge,
+            2000, // max_forward
+            5,    // max_reads_forward
+            1000, // safe_length_back
+            &FxHashSet::default()
+        );
+        
+        assert!(!result);
+
+    }
 }

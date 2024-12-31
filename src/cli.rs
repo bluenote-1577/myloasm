@@ -63,9 +63,14 @@ pub struct Cli {
     #[arg(long, default_value_t=20, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
-    /// Maximum bubble length to pop
+    /// Maximum bubble length to pop; keep alternates
     #[arg(long, default_value_t=100000, help_heading = "Graph Parameters")]
     pub max_bubble_threshold: usize,
+
+    /// Small bubble length to pop; discard alternates
+    #[arg(long, default_value_t=50000, help_heading = "Graph Parameters")]
+    pub small_bubble_threshold: usize,
+
 
     /// Bloom filter size in GB
     #[arg(short, long, default_value_t=3.)]

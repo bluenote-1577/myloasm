@@ -270,8 +270,17 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
         }
 
         // Remove nodes
-        for node_idx in nodes_to_remove {
-            self.nodes.remove(node_idx);
+        if !keep_as_output{
+            for node_idx in nodes_to_remove {
+                self.nodes.remove(node_idx);
+            }
+        }
+        else{
+            for node_idx in nodes_to_remove {
+                let node = self.nodes.get_mut(node_idx).unwrap();
+                node.in_edges_mut().clear();
+                node.out_edges_mut().clear();
+            }
         }
     }
 

@@ -1,5 +1,5 @@
 use minimap2;
-use gzp::{deflate::Gzip, ZBuilder, ZWriter};
+use gzp::{deflate::Gzip, ZBuilder};
 use std::thread;
 use std::sync::Mutex;
 use crossbeam_channel::unbounded;
