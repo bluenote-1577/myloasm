@@ -1,5 +1,6 @@
 use bincode;
 use clap::Parser;
+use fxhash::FxHashSet;
 use myloasm::cli;
 use myloasm::consensus;
 use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
@@ -36,33 +37,79 @@ fn main() {
     let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &output_dir);
 
     // Step 4: Construct raw unitig graph
-    let mut unitig_graph =
+    let unitig_graph =
         unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, &overlaps, &args);
 
-    // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
-    light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
+    // light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
 
-    // Step 6: Second round of cleaning. TODO use coverage information, remove larger tips and bubbles. Imbue graph with sequence information
-    heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
-    unitig_graph.to_gfa(
-        output_dir.join("after_heavy.gfa"),
-        true,
-        true,
-        &twin_reads,
-        &args,
-    );
+    // heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
+    //     unitig_graph.to_gfa(
+    //         output_dir.join("after_heavy.gfa"),
+    //         true,
+    //         true,
+    //         &twin_reads,
+    //         &args,
+    // );
 
+    let prog_dir = temp_dir.join("progressive");
+    let mut contigs_per_coverage = vec![];
+
+    let max_cov = unitig_graph
+        .nodes
+        .values()
+        .map(|x| x.min_read_depth.unwrap())
+        .max_by(|x, y| x.partial_cmp(y).unwrap())
+        .unwrap_or(1.);
+
+    for cov_thresh in 0..=max_cov as usize {
+        log::info!("Processing coverage {}", cov_thresh);
+        let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
+        std::fs::create_dir_all(&prog_dir_cov).unwrap();
+        let cov_thresh = cov_thresh as f64;
+        let mut unitig_graph_with_threshold = unitig_graph.clone();
+        unitig_graph_with_threshold.cut_coverage(cov_thresh);
+        unitig_graph_with_threshold
+            .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
+
+        // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
+        light_progressive_cleaning(
+            &mut unitig_graph_with_threshold,
+            &twin_reads,
+            &args,
+            &prog_dir_cov,
+            false
+        );
+
+        // Step 6: Second round of cleaning. TODO use coverage information, remove larger tips and bubbles. Imbue graph with sequence information
+        heavy_cleaning(
+            &mut unitig_graph_with_threshold,
+            &twin_reads,
+            &args,
+            &prog_dir_cov,
+        );
+
+        // Push contigs at this coverage level
+        unitig_graph_with_threshold.clear_edges();
+        let graph_to_contigs: Vec<unitig::UnitigNode> =
+            unitig_graph_with_threshold.nodes.into_values().collect();
+        contigs_per_coverage.push(graph_to_contigs);
+    }
+
+    let mut unitig_graph =
+        get_contigs_from_progressive_coverage(&contigs_per_coverage, &args, &temp_dir);
 
     // Step X: Progressive coverage filter
     //progressive_coverage_filter(&mut unitig_graph, &twin_reads, &args, &temp_dir);
 
     // Step 7: Align reads back to graph. TODO consensus and etc.
+    log::info!("Beginning final alignment of reads to graph...");
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
     get_seq_config.dna_seq_info = true;
     unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-    log::info!("Aligning reads back to graph...");
+
     let start = Instant::now();
     mapping::map_reads_to_unitigs(&mut unitig_graph, &kmer_info, &twin_reads, &args);
+
     log::info!(
         "Time elapsed for aligning reads to graph is {:?}",
         start.elapsed()
@@ -284,6 +331,7 @@ fn light_progressive_cleaning(
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
     temp_dir: &PathBuf,
+    output_temp: bool
 ) {
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
@@ -291,7 +339,7 @@ fn light_progressive_cleaning(
     let divider = 3;
 
     loop {
-        log::info!("Cleaning graph iteration {}", iteration);
+        log::debug!("Cleaning graph iteration {}", iteration);
         let mut size_graph = unitig_graph.nodes.len();
 
         // Remove tips
@@ -300,13 +348,15 @@ fn light_progressive_cleaning(
             let read_cutoff = args.tip_read_cutoff;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-            unitig_graph.to_gfa(
-                temp_dir.join(format!("{}-tip_unitig_graph.gfa", iteration)),
-                true,
-                false,
-                &twin_reads,
-                &args,
-            );
+            if output_temp{
+                unitig_graph.to_gfa(
+                    temp_dir.join(format!("{}-tip_unitig_graph.gfa", iteration)),
+                    true,
+                    false,
+                    &twin_reads,
+                    &args,
+                );
+            }
             if unitig_graph.nodes.len() == size_graph {
                 break;
             }
@@ -317,13 +367,15 @@ fn light_progressive_cleaning(
         let bubble_length_cutoff = args.small_bubble_threshold;
         unitig_graph.pop_bubbles(bubble_length_cutoff);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.to_gfa(
-            temp_dir.join(format!("{}-bubble_unitig_graph.gfa", iteration)),
-            true,
-            false,
-            &twin_reads,
-            &args,
-        );
+        if output_temp{
+            unitig_graph.to_gfa(
+                temp_dir.join(format!("{}-bubble_unitig_graph.gfa", iteration)),
+                true,
+                false,
+                &twin_reads,
+                &args,
+            );
+        }
 
         //Cut bridged repeats; "drop" cuts
         let prebridge_file = temp_dir.join(format!("{}-pre_bridge_cuts.txt", iteration));
@@ -337,14 +389,16 @@ fn light_progressive_cleaning(
             100_000,
         );
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.to_gfa(
-            temp_dir.join(format!("{}-resolve_unitig_graph.gfa", iteration)),
-            true,
-            false,
-            &twin_reads,
-            &args,
-        );
-
+        if output_temp{
+            unitig_graph.to_gfa(
+                temp_dir.join(format!("{}-resolve_unitig_graph.gfa", iteration)),
+                true,
+                false,
+                &twin_reads,
+                &args,
+            );
+        }
+        
         iteration += 1;
         if iteration == 4 {
             break;
@@ -362,13 +416,54 @@ fn light_progressive_cleaning(
         }
         size_graph = unitig_graph.nodes.len();
     }
-    unitig_graph.to_gfa(
-        temp_dir.join("pre-final_unitig_graph.gfa"),
-        true,
-        false,
-        &twin_reads,
-        &args,
-    );
+    if output_temp{
+        unitig_graph.to_gfa(
+            temp_dir.join("pre-final_unitig_graph.gfa"),
+            true,
+            false,
+            &twin_reads,
+            &args,
+        );
+    }
+}
+
+fn get_contigs_from_progressive_coverage(
+    contigs_per_coverage: &Vec<Vec<unitig::UnitigNode>>,
+    _args: &cli::Cli,
+    _temp_dir: &PathBuf,
+) -> unitig::UnitigGraph {
+    let mut final_unitig_graph = unitig::UnitigGraph::new();
+    let mut used_reads = FxHashSet::default();
+    for (cov, contigs) in contigs_per_coverage.iter().enumerate().rev() {
+        for contig in contigs.iter() {
+            if contig.min_read_depth.unwrap() as usize >= cov * 2 {
+                let mut unused = true;
+
+                for (read, _) in contig.read_indices_ori.iter() {
+                    if used_reads.contains(read) {
+                        unused = false;
+                        break;
+                    }
+                }
+
+                if !unused {
+                    continue;
+                }
+
+                let mut contig_with_new_id = contig.clone();
+                contig_with_new_id.node_hash_id = final_unitig_graph.nodes.len();
+                final_unitig_graph
+                    .nodes
+                    .insert(final_unitig_graph.nodes.len(), contig_with_new_id);
+
+                for (read, _) in contig.read_indices_ori.iter() {
+                    used_reads.insert(read);
+                }
+            }
+        }
+    }
+
+    return final_unitig_graph;
 }
 
 fn heavy_cleaning(
@@ -418,6 +513,14 @@ fn heavy_cleaning(
     }
 
     unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+    unitig_graph.to_gfa(
+        temp_dir.join("after_heavy.gfa"),
+        true,
+        true,
+        &twin_reads,
+        &args,
+    );
 }
 
 fn remove_tips_until_stable(
@@ -426,9 +529,9 @@ fn remove_tips_until_stable(
     tip_length_cutoff: usize,
     tip_read_cutoff: usize,
     max_bubble_threshold: usize,
-    temp_dir: &PathBuf,
+    _temp_dir: &PathBuf,
     save_tips: bool,
-    args: &cli::Cli,
+    _args: &cli::Cli,
 ) {
     let get_seq_config = types::GetSequenceInfoConfig::default();
     let mut size_graph = unitig_graph.nodes.len();
@@ -444,13 +547,13 @@ fn remove_tips_until_stable(
     }
 }
 
-fn progressive_coverage_filter(
+fn _progressive_coverage_filter(
     unitig_graph: &mut unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
     temp_dir: &PathBuf,
 ) {
-    let mut get_seq_config = types::GetSequenceInfoConfig::default();
+    let get_seq_config = types::GetSequenceInfoConfig::default();
 
     let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
     let tip_read_cutoff_heavy = args.tip_read_cutoff;
@@ -470,20 +573,27 @@ fn progressive_coverage_filter(
             args,
         );
 
-
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         let num_cut = unitig_graph.progressive_cut_lowest();
-        log::info!("Progressive coverage filter iteration {}. Cut {} nodes", counter, num_cut);
+        log::info!(
+            "Progressive coverage filter iteration {}. Cut {} nodes",
+            counter,
+            num_cut
+        );
         unitig_graph.get_sequence_info(twin_reads, &get_seq_config);
+
+        let prog_folder = temp_dir.join("progressive");
+        std::fs::create_dir_all(&prog_folder).unwrap();
+
         unitig_graph.to_gfa(
             //temp_dir.join("progressive-{}-_unitig_graph.gfa"),
-            temp_dir.join(format!("progressive-{}-_unitig_graph.gfa", counter)),
+            prog_folder.join(format!("progressive-{}-_unitig_graph.gfa", counter)),
             true,
             true,
             &twin_reads,
             &args,
         );
-        if num_cut == 0{
+        if num_cut == 0 {
             break;
         }
         counter += 1;

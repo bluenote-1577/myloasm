@@ -188,6 +188,21 @@ impl<'a> GraphEdge for &'a UnitigEdge {
 pub type UnitigGraph = BidirectedGraph<UnitigNode, UnitigEdge>;
 
 impl UnitigGraph {
+    pub fn new() -> Self {
+        UnitigGraph {
+            nodes: FxHashMap::default(),
+            edges: Vec::new(),
+        }
+    }
+
+    pub fn clear_edges(&mut self) {
+        self.edges.clear();
+        for (_, node) in self.nodes.iter_mut() {
+            node.in_edges.clear();
+            node.out_edges.clear();
+        }
+    }
+
     fn re_unitig(&mut self) {
         let mut new_unitig_graph = UnitigGraph {
             nodes: FxHashMap::default(),
@@ -898,7 +913,7 @@ impl UnitigGraph {
             }
         }
 
-        log::info!("Removing {} tips", unitigs_to_remove.len());
+        log::debug!("Removing {} tips", unitigs_to_remove.len());
         log::debug!("Unitigs to remove: {:?}", debug_ids);
         self.remove_nodes(&unitigs_to_remove, keep);
     }
@@ -942,7 +957,7 @@ impl UnitigGraph {
                 }
             }
         }
-        log::info!(
+        log::debug!(
             "Removed {} bubbles at max length {}",
             num_bubbles,
             max_length
@@ -1403,7 +1418,7 @@ impl UnitigGraph {
                 self.nodes[&edge.to_unitig].node_id
             );
         }
-        log::info!("Cut {} z-edges", edges_to_remove.len());
+        log::debug!("Cut {} z-edges", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
         self.re_unitig();
     }
@@ -1798,7 +1813,7 @@ impl UnitigGraph {
                 }
             }
         }
-        log::info!(
+        log::debug!(
             "Cutting {} edges that have low relative confidence ({})",
             removed_edges.len(),
             ol_thresh
@@ -1934,10 +1949,25 @@ impl UnitigGraph {
         }
     }
 
+    pub fn cut_coverage(&mut self, cov : f64){
+        let mut nodes_to_remove = FxHashSet::default();
+        for node in self.nodes.values(){
+            if node.min_read_depth.unwrap() < cov{
+                nodes_to_remove.insert(node.node_hash_id);
+            }
+        }
+        self.remove_nodes(&nodes_to_remove.into_iter().collect::<Vec<_>>(), false);
+        self.re_unitig();
+    }
+
     pub fn progressive_cut_lowest(&mut self) -> usize{
         let mut lowest_cov = f64::MAX;
         for node in self.nodes.values(){
             if node.both_edges().collect::<Vec<_>>().len() == 0{
+                continue;
+            }
+            //circular
+            if node.in_edges == node.out_edges{
                 continue;
             }
             if node.min_read_depth.unwrap() < lowest_cov{
@@ -1947,12 +1977,15 @@ impl UnitigGraph {
         let mut nodes_to_remove = FxHashSet::default();
         for node in self.nodes.values(){
             if node.min_read_depth.unwrap() == lowest_cov{
+                if node.in_edges == node.out_edges{
+                    continue;
+                }
                 nodes_to_remove.insert(node.node_hash_id);
             }
         }
         let num_removed_nodes = nodes_to_remove.len();
 
-        self.remove_nodes(&nodes_to_remove.into_iter().collect::<Vec<_>>(), false);
+        self.remove_nodes(&nodes_to_remove.into_iter().collect::<Vec<_>>(), true);
         self.re_unitig();
         return num_removed_nodes;
     }
