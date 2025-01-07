@@ -285,7 +285,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             let seqlen = seq.len();
                             let qualities = msg.1;
                             let id = msg.2;
-                            let mut twin_read = seeding::get_twin_read(seq, qualities, k, c, set.as_ref(), id);
+                            let mut twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
                             if twin_read.is_some(){
                                 let mut solid_minis = vec![];
                                 let mut solid_snpmers = vec![];

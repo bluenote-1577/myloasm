@@ -100,6 +100,60 @@ impl OverlapTwinGraph{
             edge.node1
         }
     }
+    //Initial construction allowed lax overlaps, now prune if 
+    //it doesn't cause tipping. Can look into more sophisticated heuristics later.
+    pub fn prune_lax_overlaps(&mut self){
+        let mut edges_to_remove = FxHashSet::default();
+        for i in 0..self.edges.len(){
+            let edge_opt = &self.edges[i];
+            if edge_opt.is_none(){
+                continue;
+            }
+
+            let edge = edge_opt.as_ref().unwrap();
+            // Good overlap
+            if edge.diff_snpmers == 0{
+                continue;
+            }
+
+            // Check that node1 and node2 have non-lax overlaps
+            let node1 = self.nodes.get(&edge.node1).unwrap();
+            let node2 = self.nodes.get(&edge.node2).unwrap();
+            let dir1 = edge.node_edge_direction(&edge.node1);
+            let dir2 = edge.node_edge_direction(&edge.node2);
+
+            let edge_nd1 = node1.edges_direction(&dir1);
+            let edge_nd2 = node2.edges_direction(&dir2);
+
+            let mut node1_good_found = false;
+            for edge_id in edge_nd1{
+                if let Some(edge) = &self.edges[*edge_id]{
+                    if edge.diff_snpmers == 0{
+                        node1_good_found = true;
+                        break;
+                    }
+                }
+            }
+
+            let mut node2_good_found = false;
+            for edge_id in edge_nd2{
+                if let Some(edge) = &self.edges[*edge_id]{
+                    if edge.diff_snpmers == 0{
+                        node2_good_found = true;
+                        break;
+                    }
+                }
+            }
+
+            if node1_good_found || node2_good_found{
+                edges_to_remove.insert(i);
+                self.edges[i] = None;
+            }
+        }
+
+        log::debug!("Pruning {} lax overlaps", edges_to_remove.len());
+        self.remove_edges(edges_to_remove);
+    }   
 
     pub fn transitive_reduction(&mut self) {
         const FUZZ: usize = 10;
@@ -280,9 +334,9 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &[TwinRead], overlaps: &[Twi
         //check if end-to-end overlap
         
         let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, args.c as u64);
-        let same_strain = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
+        let same_strain_lax = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
 
-        if !same_strain {
+        if !same_strain_lax {
             continue;
         }
 
@@ -418,7 +472,20 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &[TwinRead], overlaps: &[Twi
     }
 
     let mut graph = OverlapTwinGraph { nodes, edges };
+
     graph.transitive_reduction();
+
+    //Prune lax overlaps if there are perfect overlaps. 
+    // It's actually important to do this after transitive reduction,
+    // As tenuous transitive overlaps can create a lax overlap
+    // That does not get pruned
+
+    //        ----------x 
+    //    --x-------       | first and third read should not connected after pruning 
+    //---------
+    //    --------x---
+    //        ----x----------
+    graph.prune_lax_overlaps();
 
     return graph;
 }
@@ -525,10 +592,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
 
                 ).unwrap();
-                //if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate) {
-                if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold_contain, 0.) {
-                    overlaps.lock().unwrap().push(twlap);
-                }
+                overlaps.lock().unwrap().push(twlap);
             }
         }
     });
@@ -765,6 +829,7 @@ mod tests {
         pub j: usize,
         pub d1: Direction,
         pub d2: Direction,
+        pub diff_snpmers: usize,
     }
     
     impl MockEdge{
@@ -773,7 +838,8 @@ mod tests {
                 i,
                 j,
                 d1,
-                d2
+                d2,
+                diff_snpmers: 0
             }
         }
     }
@@ -794,7 +860,7 @@ mod tests {
                 forward2: edge.d2 == Direction::Incoming,
                 overlap_len_bases: 2000,
                 shared_minimizers: 100,
-                diff_snpmers: 0,
+                diff_snpmers: edge.diff_snpmers,
                 shared_snpmers: 10
             };
 
@@ -1144,6 +1210,120 @@ mod tests {
         assert_eq!(nbp[0].0.len(), 1);
         assert_eq!(nbp[0].1.len(), 0);
     }
-    
-    //TODO write more nbp tests... 
+
+    #[test]
+    fn test_prune_lax_overlaps_nofp1(){
+        // o>--x-->o>----->o
+        let mut mock_edges1 = vec![
+            MockEdge::new(0, 1, Outgoing, Incoming),
+            MockEdge::new(1, 2, Outgoing, Incoming),
+        ];
+
+        mock_edges1[0].diff_snpmers = 2;
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.prune_lax_overlaps();
+        let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+
+        assert_eq!(good_edges, 2);
+
+    }
+
+    #[test]
+    fn test_prune_lax_overlaps_nofp2(){
+        // o<--x-->o>---x-<o
+        let mut mock_edges1 = vec![
+            MockEdge::new(0, 1, Incoming, Incoming),
+            MockEdge::new(1, 2, Incoming, Outgoing),
+        ];
+
+        mock_edges1[0].diff_snpmers = 2;
+        mock_edges1[1].diff_snpmers = 2;
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.prune_lax_overlaps();
+        let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+
+        assert_eq!(good_edges, 2);
+    }
+
+    #[test]
+    fn test_prune_lax_overlaps_simple(){
+        // 1 -- > 2
+        //   ↘ (x)
+        // 3 --> 4
+        let mut mock_edges1 = vec![
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(1, 4, Outgoing, Incoming),
+            MockEdge::new(3, 4, Outgoing, Incoming),
+        ];
+
+        mock_edges1[1].diff_snpmers = 5;
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.prune_lax_overlaps();
+        let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+
+        assert_eq!(good_edges, 2);
+
+        // Change orientations
+        // 1 >--< 2
+        //    ↘ (x)
+        // 3 <--> 4
+        let mut mock_edges1 = vec![
+            MockEdge::new(1, 2, Outgoing, Outgoing),
+            MockEdge::new(1, 4, Outgoing, Incoming),
+            MockEdge::new(3, 4, Incoming, Incoming),
+        ];
+
+        mock_edges1[1].diff_snpmers = 5;
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.prune_lax_overlaps();
+        let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+
+        assert_eq!(good_edges, 2);
+    }
+
+    #[test]
+    fn test_prune_lax_overlaps_cross(){
+        // 1 -x- > 2
+        //   ↗↘ 
+        // 3 -x-> 4
+        let mut mock_edges1 = vec![
+            MockEdge::new(1, 2, Outgoing, Incoming),
+            MockEdge::new(1, 4, Outgoing, Incoming),
+            MockEdge::new(3, 2, Outgoing, Incoming),
+            MockEdge::new(3, 4, Outgoing, Incoming),
+        ];
+
+        mock_edges1[0].diff_snpmers = 5;
+        mock_edges1[3].diff_snpmers = 5;
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.prune_lax_overlaps();
+        let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+
+        assert_eq!(good_edges, 2);
+
+        // Change orientations
+        // 1 >--< 2
+        //    ↘ 
+        // 3 <--> 4
+        let mut mock_edges1 = vec![
+            MockEdge::new(1, 2, Outgoing, Outgoing),
+            MockEdge::new(1, 4, Outgoing, Incoming),
+            MockEdge::new(3, 2, Incoming, Outgoing),
+            MockEdge::new(3, 4, Incoming, Incoming),
+        ];
+
+        mock_edges1[0].diff_snpmers = 5;
+        mock_edges1[3].diff_snpmers = 5;
+
+        let mut graph = mock_graph_from_edges(mock_edges1);
+        graph.prune_lax_overlaps();
+        let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
+
+        assert_eq!(good_edges, 2);
+    }
 }

@@ -409,7 +409,7 @@ pub fn get_twin_read_syncmer(
         let hash = mm_hash64(canonical_s_mer);
         
         // Add to our window of s-mer hashes
-        s_mer_hashes.push_back((hash, i + 1 - s));
+        s_mer_hashes.push_back(hash);
         if s_mer_hashes.len() > k - s + 1 {
             s_mer_hashes.pop_front();
         }
@@ -429,12 +429,12 @@ pub fn get_twin_read_syncmer(
             *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
         } 
         // Check for minimizer using syncmer method
-        else if i >= k - 1 && s_mer_hashes.len() == k - s + 1 {
+       if i >= k - 1 && s_mer_hashes.len() == k - s + 1 {
             let middle_idx = (k - s) / 2;
-            let (middle_hash, _) = s_mer_hashes[middle_idx];
+            let middle_hash = s_mer_hashes[middle_idx];
             
             // Check if middle s-mer has minimum hash
-            if s_mer_hashes.iter().all(|(h, _)| *h >= middle_hash) {
+            if s_mer_hashes.iter().all(|h| *h >= middle_hash) {
                 minimizers_in_read.push((i + 1 - k, canonical_kmer_marker));
             }
         }
@@ -571,13 +571,6 @@ pub fn get_twin_read(
         min_depth: None,
     });
 
-}
-
-#[inline]
-fn id_from_qval(qval: u8) -> f64 {
-    let q = (qval - 33) as f64;
-    let p = 10.0f64.powf(-q / 10.0);
-    return p;
 }
 
 fn estimate_sequence_identity(qualities: Option<&Vec<u8>>) -> Option<f64> {

@@ -17,7 +17,7 @@ pub struct Cli {
     pub kmer_size: usize,
 
     /// Compression ratio
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "11")]
     pub c: usize,
 
     /// Number of threads to use for processing

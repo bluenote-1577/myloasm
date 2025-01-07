@@ -660,7 +660,7 @@ fn unitigs_to_tr(
             .iter()
             .map(|x| bits_to_ascii(x.to_bits()) as u8)
             .collect::<Vec<u8>>();
-        let tr = seeding::get_twin_read(u8_seq, None, args.kmer_size, args.c, &snpmer_set, id);
+        let tr = seeding::get_twin_read_syncmer(u8_seq, None, args.kmer_size, args.c, &snpmer_set, id);
         if let Some(mut tr) = tr {
             let mut solid_minis = vec![];
             let mut solid_snpmers = vec![];

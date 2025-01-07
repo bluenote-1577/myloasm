@@ -94,9 +94,8 @@ fn first_iteration(
                 while let Some(record) = reader.next() {
                     let rec = record.expect("Error reading record");
                     let seq = rec.seq().to_vec();
-                    let qualities = rec.qual();
-                    let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
-                    tx_head.send(split_kmer_info).unwrap();
+                    let qualities = rec.qual().map(Vec::from);
+                    tx_head.send((seq,qualities)).unwrap();
                 }
             }
             drop(tx_head);
@@ -108,7 +107,8 @@ fn first_iteration(
             thread::spawn(move || {
                 loop{
                     match rx_head.recv() {
-                        Ok(split_kmer_info) => {
+                        Ok((seq, qualities)) => {
+                            let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
                             let mut vec_and_canon = vec![vec![]; hm_size];
                             for kmer_i_and_canon in split_kmer_info.into_iter() {
                                 let kmer = kmer_i_and_canon & mask;
@@ -217,9 +217,8 @@ fn second_iteration(
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
                 let seq = rec.seq().to_vec();
-                let qualities = rec.qual();
-                let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
-                tx_head.send(split_kmer_info).unwrap();
+                let qualities = rec.qual().map(Vec::from);
+                tx_head.send((seq,qualities)).unwrap();
             }
         }
         drop(tx_head);
@@ -232,7 +231,8 @@ fn second_iteration(
         thread::spawn(move || {
             loop{
                 match rx_head.recv() {
-                    Ok(split_kmer_info) => {
+                    Ok((seq,qualities)) => {
+                        let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
                         let mut vec_and_canon = vec![vec![]; threads];
                         for kmer_i_and_canon in split_kmer_info.into_iter() {
                             let kmer = kmer_i_and_canon & mask;
