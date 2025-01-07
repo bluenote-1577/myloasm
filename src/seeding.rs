@@ -377,11 +377,10 @@ pub fn get_twin_read(
             if let Some(qualities) = qualities.as_ref(){
                 // --xxoxx
                 // pos = 2, k = 5, i = 6, mid_pos = 4
-                // Let k = 5. Then i = k - 1 + pos. 
                 // We want mid = pos + k/2
                 // So mid = i - k + 1 + k/2
                 // The middle quality val will be at k/2 + i. 
-                let mid = i - k + 1 + mid_k;
+                let mid = i + 1 + mid_k - k;
                 mid_base_qval = 100. - 10.0f64.powf((qualities[mid] - 33) as f64 / 10.);
             }
             else{
