@@ -525,7 +525,8 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
 
                 ).unwrap();
-                if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate) {
+                //if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate) {
+                if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold_contain, 0.) {
                     overlaps.lock().unwrap().push(twlap);
                 }
             }
@@ -655,7 +656,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
             let diff_snpmers = twin_overlap.diff_snpmers;
 
             let identity = id_est(shared_minimizers, diff_snpmers, args.c as u64);
-            let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
+            let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, args.c as u64, args.snpmer_threshold_contain, 0.);
 
             let len1 = twin_overlap.end1 - twin_overlap.start1;
             let len2 = twin_overlap.end2 - twin_overlap.start2;

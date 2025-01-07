@@ -1,3 +1,4 @@
+use crate::constants::MID_BASE_THRESHOLD;
 use crate::types::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -336,6 +337,7 @@ pub fn get_twin_read(
     let marker_rev_mask = !(3 << (2 * marker_k - 2));
     let len = string.len();
     let threshold = u64::MAX / (c as u64);
+    let mid_k = k / 2;
 
     for i in 0..marker_k - 1 {
         let nuc_f = BYTE_TO_SEQ[string[i] as usize] as u64;
@@ -347,6 +349,7 @@ pub fn get_twin_read(
     }
 
     for i in marker_k-1..len {
+
         let nuc_byte = string[i] as usize;
         let nuc_f = BYTE_TO_SEQ[nuc_byte] as u64;
         let nuc_r = 3 - nuc_f;
@@ -369,7 +372,24 @@ pub fn get_twin_read(
         };
         
         if snpmer_set.contains(&canonical_kmer_marker){
-            snpmers_in_read.push((i + 1 - k, canonical_kmer_marker));
+            //Estimate mid base quality
+            let mid_base_qval;
+            if let Some(qualities) = qualities.as_ref(){
+                // --xxoxx
+                // pos = 2, k = 5, i = 6, mid_pos = 4
+                // Let k = 5. Then i = k - 1 + pos. 
+                // We want mid = pos + k/2
+                // So mid = i - k + 1 + k/2
+                // The middle quality val will be at k/2 + i. 
+                let mid = i - k + 1 + mid_k;
+                mid_base_qval = 100. - 10.0f64.powf((qualities[mid] - 33) as f64 / 10.);
+            }
+            else{
+                mid_base_qval = 100.;
+            }
+            if mid_base_qval > MID_BASE_THRESHOLD{
+                snpmers_in_read.push((i + 1 - k, canonical_kmer_marker));
+            }
             *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
         }
         else if mm_hash64(canonical_kmer_marker) < threshold {

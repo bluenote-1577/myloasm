@@ -1,4 +1,7 @@
 use crate::cli::Cli;
+use crate::constants::MINIMIZER_END_NTH_COV;
+use crate::constants::SAMPLING_RATE_COV;
+use crate::twin_graph;
 use std::io::Write;
 use std::io::BufWriter;
 use std::path::Path;
@@ -12,6 +15,7 @@ pub struct TwinReadMapping {
     pub tr_index: usize,
     pub mapping_info: MappingInfo,
     pub lapper_strain_max: Lapper<u32, bool>,
+    pub snpmer_alternate_counts: Vec<(u32, [u32;2])>
 }
 
 impl NodeMapping for TwinReadMapping {
@@ -47,7 +51,7 @@ where
     let mut min_blocks = vec![];
     let mut median_blocks = vec![];
     let mut depths = vec![];
-    if sampling > seq_length{
+    if sampling > sampling{
         return None;
     }
     
@@ -82,6 +86,11 @@ where
             median_blocks.push(median);
         }
     }
+
+    if min_blocks.len() == 0{
+        log::debug!("No blocks found for depth calculation, start {} end {}", seq_start, seq_length);
+        return Some((0.,0.))
+    }
     
     min_blocks.sort();
     median_blocks.sort();
@@ -107,10 +116,10 @@ pub fn sliding_window_kmer_coverages(cov_vec: &Vec<(u32,u32)>, window_size: usiz
             max_covs.push(max);
         }
     }
-    println!("Max covs: {:?}", max_covs);
-    println!("Raw covs: {:?}", cov_vec);
+    log::trace!("Max covs: {:?}", max_covs);
+    log::trace!("Raw covs: {:?}", cov_vec);
     let returned_cov = (*max_covs.iter().min().unwrap()) as f64;
-    println!("Returned cov: {}", returned_cov);
+    log::trace!("Returned cov: {}", returned_cov);
     return returned_cov;
 }
 
@@ -209,12 +218,59 @@ where
     return breakpoints;
 }
 
-fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>) -> Vec<TwinRead>{
+fn binomial_test_threshold_snpmers(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, args: &Cli){
+
+    //Remove SNPmers that are likely to be errors
+    let mut new_snpmers = vec![];
+    let mut counter = 0;
+    let mut ambiguous_pos_opt = mapping_info.snpmer_alternate_counts.get(counter);
+    for (pos, snpmer) in twin_read.snpmers.iter(){
+        if let Some(ambiguous_pos) = ambiguous_pos_opt{
+            if *pos as u32 == ambiguous_pos.0{
+                counter += 1;
+                ambiguous_pos_opt = mapping_info.snpmer_alternate_counts.get(counter);
+                
+                //do binomial test. if pass, push
+                let count1 = ambiguous_pos.1[0];
+                let count2 = ambiguous_pos.1[1];
+                let total = count1 + count2;
+                let p = args.snpmer_error_rate;
+                let n = total;
+                let k = count1.max(count2);
+
+                if count2.min(count1) == 1{
+                    continue;
+                }
+
+                let binom_p_val = 1.0 - twin_graph::binomial_test(n as u64, k as u64, 1.0 - p);
+
+                if binom_p_val < 0.01{
+                    new_snpmers.push((*pos, *snpmer));
+                }
+                else{
+                    println!("snpmer removed, binom p val: {}, n: {} k: {}", binom_p_val, n, k);
+                }
+            }
+        }
+        else{
+            new_snpmers.push((*pos, *snpmer));
+        }
+    }
+
+    twin_read.snpmers = new_snpmers;
+
+}
+
+fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, args: &Cli) -> Vec<TwinRead>{
 
     //Return the read, populate the depth from mapping_info
     if break_points.len() == 0{
         twin_read.median_depth = Some(mapping_info.median_mapping_depth());
         twin_read.min_depth = Some(mapping_info.min_mapping_depth());
+    }
+
+    if args.ec{
+        binomial_test_threshold_snpmers(&mut twin_read, mapping_info, args);
     }
 
     let mut new_reads = vec![];
@@ -227,9 +283,10 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
         let bp_end = break_point.pos2;
         if bp_start - last_break > 1000{
             let mut new_read = TwinRead::default();
+            let (first_mini, last_mini) = first_last_mini_in_range(last_break, bp_start, k, MINIMIZER_END_NTH_COV, &twin_read.minimizers);
 
             //Get depth for split read, USING THE STRAIN SPECIFIC/MAXIMAL LAPPER
-            let (min_depth, median_depth) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, 100, last_break, bp_start).unwrap();
+            let (min_depth, median_depth) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini).unwrap();
             new_read.min_depth = Some(min_depth);
             new_read.median_depth = Some(median_depth);
             
@@ -246,6 +303,39 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
         last_break = bp_end;
     }
     return new_reads;
+}
+
+pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[(usize,u64)]) -> (usize, usize){
+    let mut first_mini = start;
+    let mut count_first = 0;
+    let mut last_mini = end;
+    let mut count_last = 0;
+
+    for (mini_pos, _) in minis.iter(){
+        if *mini_pos >= start{
+            count_first += 1;
+            first_mini = *mini_pos;
+        }
+        if count_first == nth{
+            break;
+        }
+    }
+
+    for (mini_pos, _) in minis.iter().rev(){
+        if mini_pos + k - 1 < end{
+            last_mini = *mini_pos;
+            count_last += 1;
+        }
+        if count_last == nth{
+            break;
+        }
+    }
+
+    if last_mini <= first_mini{
+        return (start, end);
+    }
+
+    return (first_mini, last_mini);
 }
 
 pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, args: &Cli)
@@ -280,7 +370,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
             }
 
-            let splitted_reads = split_read_and_populate_depth(twin_read, map_info, breakpoints);
+            let splitted_reads = split_read_and_populate_depth(twin_read, map_info, breakpoints, args);
             for new_read in splitted_reads{
                 new_twin_reads_bools.lock().unwrap().push((new_read, true));
             }

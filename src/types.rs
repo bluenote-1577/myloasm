@@ -227,7 +227,16 @@ pub struct TwinOverlap{
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
     pub chain: Vec<Anchor>,
-    pub chain_score: i32
+    pub chain_score: i32,
+    pub snpmer_relative_bases: Vec<SnpmerHit>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub struct SnpmerHit {
+    pub pos1: usize,
+    pub pos2: usize,
+    pub base1: u8,
+    pub base2: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
@@ -312,4 +321,27 @@ pub struct GetSequenceInfoConfig{
     pub blunted: bool,
     pub dna_seq_info: bool,
     pub best_overlap_chunk: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BubblePopResult{
+    pub original_direction: Direction,
+    pub end_direction: Direction,
+    pub source_hash_id: NodeIndex,
+    pub sink_hash_id: NodeIndex,
+    pub remove_nodes: Vec<NodeIndex>,
+    pub remove_edges: FxHashSet<EdgeIndex>,
+}
+
+impl BubblePopResult{
+    pub fn new(original_direction: Direction, end_direction: Direction, source_hash_id: NodeIndex, sink_hash_id: NodeIndex, remove_nodes: Vec<NodeIndex>, remove_edges: FxHashSet<EdgeIndex>) -> Self{
+        BubblePopResult{
+            original_direction,
+            end_direction,
+            source_hash_id,
+            sink_hash_id,
+            remove_nodes,
+            remove_edges
+        }
+    }
 }

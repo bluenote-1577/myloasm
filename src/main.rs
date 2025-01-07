@@ -1,9 +1,11 @@
 use bincode;
 use clap::Parser;
+use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
 use myloasm::consensus;
 use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
+use myloasm::graph::GraphNode;
 use myloasm::kmer_comp;
 use myloasm::map_processing;
 use myloasm::mapping;
@@ -12,6 +14,7 @@ use myloasm::twin_graph;
 use myloasm::types;
 use myloasm::types::TwinOverlap;
 use myloasm::unitig;
+use myloasm::unitig::NodeSequence;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
@@ -37,7 +40,7 @@ fn main() {
     let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &output_dir);
 
     // Step 4: Construct raw unitig graph
-    let unitig_graph =
+    let mut unitig_graph =
         unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, &overlaps, &args);
 
     // light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
@@ -51,93 +54,70 @@ fn main() {
     //         &args,
     // );
 
-    let prog_dir = temp_dir.join("progressive");
-    let mut contigs_per_coverage = vec![];
+    
+    // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
+    light_progressive_cleaning(
+        &mut unitig_graph,
+        &twin_reads,
+        &args,
+        &temp_dir,
+        true
+    );
 
-    let max_cov = unitig_graph
-        .nodes
-        .values()
-        .map(|x| x.min_read_depth.unwrap())
-        .max_by(|x, y| x.partial_cmp(y).unwrap())
-        .unwrap_or(1.);
-
-    for cov_thresh in 0..=max_cov as usize {
-        log::info!("Processing coverage {}", cov_thresh);
-        let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
-        std::fs::create_dir_all(&prog_dir_cov).unwrap();
-        let cov_thresh = cov_thresh as f64;
-        let mut unitig_graph_with_threshold = unitig_graph.clone();
-        unitig_graph_with_threshold.cut_coverage(cov_thresh);
-        unitig_graph_with_threshold
-            .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
-
-        // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
-        light_progressive_cleaning(
-            &mut unitig_graph_with_threshold,
-            &twin_reads,
-            &args,
-            &prog_dir_cov,
-            false
-        );
-
-        // Step 6: Second round of cleaning. TODO use coverage information, remove larger tips and bubbles. Imbue graph with sequence information
-        heavy_cleaning(
-            &mut unitig_graph_with_threshold,
-            &twin_reads,
-            &args,
-            &prog_dir_cov,
-        );
-
-        // Push contigs at this coverage level
-        unitig_graph_with_threshold.clear_edges();
-        let graph_to_contigs: Vec<unitig::UnitigNode> =
-            unitig_graph_with_threshold.nodes.into_values().collect();
-        contigs_per_coverage.push(graph_to_contigs);
-    }
-
-    let mut unitig_graph =
-        get_contigs_from_progressive_coverage(&contigs_per_coverage, &args, &temp_dir);
+    // Step 6: Second round of cleaning. TODO use coverage information, remove larger tips and bubbles. Imbue graph with sequence information
+    heavy_cleaning(
+        &mut unitig_graph,
+        &twin_reads,
+        &args,
+        &temp_dir,
+    );
 
     // Step X: Progressive coverage filter
-    //progressive_coverage_filter(&mut unitig_graph, &twin_reads, &args, &temp_dir);
+    let mut contig_graph = progressive_coverage_contigs(
+        unitig_graph,
+        &twin_reads,
+        &args,
+        &temp_dir,
+        &output_dir,
+    );
 
     // Step 7: Align reads back to graph. TODO consensus and etc.
     log::info!("Beginning final alignment of reads to graph...");
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
     get_seq_config.dna_seq_info = true;
-    unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+    contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
     let start = Instant::now();
-    mapping::map_reads_to_unitigs(&mut unitig_graph, &kmer_info, &twin_reads, &args);
+    mapping::map_reads_to_unitigs(&mut contig_graph, &kmer_info, &twin_reads, &args);
 
     log::info!(
         "Time elapsed for aligning reads to graph is {:?}",
         start.elapsed()
     );
-    unitig_graph.to_gfa(
+    contig_graph.to_gfa(
         output_dir.join("final_contig_graph.gfa"),
         true,
         true,
         &twin_reads,
         &args,
     );
-    unitig_graph.to_gfa(
+    contig_graph.to_gfa(
         output_dir.join("final_contig_graph_noseq.gfa"),
         true,
         false,
         &twin_reads,
         &args,
     );
-    unitig_graph.to_fasta(output_dir.join("final_contigs.fa"), &args);
+    contig_graph.to_fasta(output_dir.join("final_contigs.fa"), &args);
 
     // Step 8: TODO
     if !args.no_minimap2 {
         log::info!("Running minimap2...");
-        consensus::write_to_paf(&unitig_graph, &twin_reads, &args);
+        consensus::write_to_paf(&contig_graph, &twin_reads, &args);
         log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
     }
 
-    unitig_graph.print_statistics();
+    contig_graph.print_statistics(&args);
     log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
 }
 
@@ -308,6 +288,7 @@ fn get_overlaps_from_twin_reads(
             File::open(output_dir.join("overlaps.bin")).unwrap(),
         ))
         .unwrap();
+        log::info!("Loaded overlaps from file.");
     } else {
         log::info!("Getting overlaps between outer reads...");
         let start = Instant::now();
@@ -338,6 +319,9 @@ fn light_progressive_cleaning(
     let mut iteration = 1;
     let divider = 3;
 
+    let safety_edge_cov_score_thresholds = [50., 25., 10.];
+    //let safety_edge_cov_score_thresholds = [1000000.];
+
     loop {
         log::debug!("Cleaning graph iteration {}", iteration);
         let mut size_graph = unitig_graph.nodes.len();
@@ -352,7 +336,7 @@ fn light_progressive_cleaning(
                 unitig_graph.to_gfa(
                     temp_dir.join(format!("{}-tip_unitig_graph.gfa", iteration)),
                     true,
-                    false,
+                    true,
                     &twin_reads,
                     &args,
                 );
@@ -365,7 +349,7 @@ fn light_progressive_cleaning(
 
         // Pop bubbles
         let bubble_length_cutoff = args.small_bubble_threshold;
-        unitig_graph.pop_bubbles(bubble_length_cutoff);
+        unitig_graph.pop_bubbles(bubble_length_cutoff, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if output_temp{
             unitig_graph.to_gfa(
@@ -379,10 +363,12 @@ fn light_progressive_cleaning(
 
         //Cut bridged repeats; "drop" cuts
         let prebridge_file = temp_dir.join(format!("{}-pre_bridge_cuts.txt", iteration));
+        let edge_safe_cov_threshold = safety_edge_cov_score_thresholds[(iteration - 1).min(safety_edge_cov_score_thresholds.len() - 1)];
         unitig_graph.resolve_bridged_repeats(
             &args,
             0.75 / (divider as f64) * iteration as f64,
             None,
+            Some(edge_safe_cov_threshold),
             prebridge_file,
             FORWARD_READ_SAFE_SEARCH_CUTOFF,
             args.tip_read_cutoff,
@@ -409,7 +395,7 @@ fn light_progressive_cleaning(
     loop {
         unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.pop_bubbles(args.small_bubble_threshold);
+        unitig_graph.pop_bubbles(args.small_bubble_threshold, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if unitig_graph.nodes.len() == size_graph {
             break;
@@ -418,7 +404,7 @@ fn light_progressive_cleaning(
     }
     if output_temp{
         unitig_graph.to_gfa(
-            temp_dir.join("pre-final_unitig_graph.gfa"),
+            temp_dir.join("after-light.gfa"),
             true,
             false,
             &twin_reads,
@@ -428,15 +414,22 @@ fn light_progressive_cleaning(
 }
 
 fn get_contigs_from_progressive_coverage(
-    contigs_per_coverage: &Vec<Vec<unitig::UnitigNode>>,
+    mut graph_per_coverage: FxHashMap<usize, unitig::UnitigGraph>,
     _args: &cli::Cli,
     _temp_dir: &PathBuf,
 ) -> unitig::UnitigGraph {
     let mut final_unitig_graph = unitig::UnitigGraph::new();
     let mut used_reads = FxHashSet::default();
-    for (cov, contigs) in contigs_per_coverage.iter().enumerate().rev() {
-        for contig in contigs.iter() {
-            if contig.min_read_depth.unwrap() as usize >= cov * 2 {
+    let mut covs = graph_per_coverage.keys().cloned().collect::<Vec<_>>();
+    covs.sort();
+
+      // Iterate over indices separately to avoid borrowing conflicts
+      for cov in covs.into_iter().rev() {
+        let mut contigs_to_keep = FxHashSet::default();
+        
+        // First pass: identify contigs to keep
+        for contig in graph_per_coverage[&cov].nodes.values() {
+            if contig.min_read_depth.unwrap() >= cov as f64 * 1.5 {
                 let mut unused = true;
 
                 for (read, _) in contig.read_indices_ori.iter() {
@@ -450,19 +443,66 @@ fn get_contigs_from_progressive_coverage(
                     continue;
                 }
 
-                let mut contig_with_new_id = contig.clone();
-                contig_with_new_id.node_hash_id = final_unitig_graph.nodes.len();
-                final_unitig_graph
-                    .nodes
-                    .insert(final_unitig_graph.nodes.len(), contig_with_new_id);
+                contigs_to_keep.insert(contig.node_hash_id.clone());
 
+                log::debug!(
+                    "Keeping contig u{} with cov {} of size {} at threshold {}", 
+                    contig.node_id, 
+                    contig.min_read_depth.unwrap(), 
+                    contig.cut_length(),
+                    cov
+                );
+                
                 for (read, _) in contig.read_indices_ori.iter() {
-                    used_reads.insert(read);
+                    used_reads.insert(read.clone());
                 }
             }
         }
+
+        // Second pass: remove nodes
+        let contigs_to_remove: Vec<_> = graph_per_coverage[&cov]
+            .nodes
+            .keys()
+            .filter(|x| !contigs_to_keep.contains(x))
+            .cloned()
+            .collect();
+            
+        graph_per_coverage.get_mut(&cov).unwrap().remove_nodes(&contigs_to_remove, false);
+
+        //Have to do work in order to preserve indices during updates
+        let mut new_node_hash_id_map = FxHashMap::default();
+        for (count,node) in graph_per_coverage.get_mut(&cov).unwrap().nodes.values_mut().enumerate() {
+            for edge_index in node.in_edges_mut().iter_mut() {
+                *edge_index += final_unitig_graph.edges.len();
+            }
+            for edge_index in node.out_edges_mut().iter_mut() {
+                *edge_index += final_unitig_graph.edges.len();
+            }
+
+            let new_hash_id = count + final_unitig_graph.nodes.len();
+            new_node_hash_id_map.insert(node.node_hash_id, new_hash_id);
+            node.node_hash_id = new_hash_id;
+        }
+
+        for edge_index in 0..graph_per_coverage[&cov].edges.len() {
+            let edge_opt = &mut graph_per_coverage.get_mut(&cov).unwrap().edges[edge_index];
+            if edge_opt.is_none() {
+                continue;
+            }
+            let edge = &mut edge_opt.as_mut().unwrap();
+            let from_unitig_clone = edge.from_unitig.clone();
+            let to_unitig_clone = edge.to_unitig.clone();
+            edge.from_unitig = new_node_hash_id_map[&from_unitig_clone];
+            edge.to_unitig = new_node_hash_id_map[&to_unitig_clone];
+        }
+
+        final_unitig_graph.edges.extend(std::mem::take(&mut graph_per_coverage.get_mut(&cov).unwrap().edges));
+        for (_, node) in std::mem::take(&mut graph_per_coverage.get_mut(&cov).unwrap().nodes){
+            final_unitig_graph.nodes.insert(node.node_hash_id, node);
+        }
     }
 
+    final_unitig_graph.re_unitig();
     return final_unitig_graph;
 }
 
@@ -475,15 +515,19 @@ fn heavy_cleaning(
     let get_seq_config = types::GetSequenceInfoConfig::default();
     let mut size_graph = unitig_graph.nodes.len();
     let mut counter = 0;
-    let cov_score_thresholds = [10., 7., 5., 3., 2.];
+    let cov_score_thresholds = [20., 10., 5., 3., 2.];
+    let ratio_length_thresholds = [0.25, 0.5, 0.75];
+    let safety_edge_cov_score_thresholds = [100000000.];
 
     // TODO cut large tips (but keep them) and remove large bubbles
     loop {
         let ind = counter.min(cov_score_thresholds.len() - 1);
+        let ind_ratio = counter.min(ratio_length_thresholds.len() - 1);
+        let ind_edge_safety_ratio = counter.min(safety_edge_cov_score_thresholds.len() - 1);
         let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
         let tip_read_cutoff_heavy = args.tip_read_cutoff;
         let bubble_threshold_heavy = args.max_bubble_threshold;
-        let save_tips = true;
+        let save_tips = false;
 
         remove_tips_until_stable(
             unitig_graph,
@@ -495,16 +539,34 @@ fn heavy_cleaning(
             save_tips,
             args,
         );
+
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.to_gfa(
+            temp_dir.join(format!("heavy-{}-clean_unitig_graph.gfa", counter)),
+            true,
+            false,
+            &twin_reads,
+            &args,
+        );
+
         unitig_graph.resolve_bridged_repeats(
             &args,
-            0.50,
+            ratio_length_thresholds[ind_ratio],
             Some(cov_score_thresholds[ind] as f64),
+            Some(safety_edge_cov_score_thresholds[ind_edge_safety_ratio]),
             temp_dir.join(format!("f{}-resolve_unitig_graph.txt", counter)),
             args.tip_length_cutoff * 5,
             args.tip_read_cutoff * 5,
             300_000,
         );
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.to_gfa(
+            temp_dir.join(format!("heavy-{}-resolve_unitig_graph.gfa", counter)),
+            true,
+            false,
+            &twin_reads,
+            &args,
+        );
         if unitig_graph.nodes.len() == size_graph {
             break;
         }
@@ -538,7 +600,7 @@ fn remove_tips_until_stable(
     loop {
         unitig_graph.remove_tips(tip_length_cutoff, tip_read_cutoff, save_tips);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        unitig_graph.pop_bubbles(max_bubble_threshold);
+        unitig_graph.pop_bubbles(max_bubble_threshold, save_tips);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if unitig_graph.nodes.len() == size_graph {
             break;
@@ -547,55 +609,75 @@ fn remove_tips_until_stable(
     }
 }
 
-fn _progressive_coverage_filter(
-    unitig_graph: &mut unitig::UnitigGraph,
+fn progressive_coverage_contigs(
+    unitig_graph: unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
     temp_dir: &PathBuf,
-) {
-    let get_seq_config = types::GetSequenceInfoConfig::default();
+    output_dir: &PathBuf,
+) -> unitig::UnitigGraph {
 
-    let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
-    let tip_read_cutoff_heavy = args.tip_read_cutoff;
-    let bubble_threshold_heavy = args.max_bubble_threshold;
-    let save_tips = true;
-    let mut counter = 0;
+    log::info!("Progressive coverage filtering...");
+    let prog_dir = temp_dir.join("progressive");
 
-    loop {
-        remove_tips_until_stable(
-            unitig_graph,
-            twin_reads,
-            tip_length_cutoff_heavy,
-            tip_read_cutoff_heavy,
-            bubble_threshold_heavy,
-            temp_dir,
-            save_tips,
-            args,
-        );
+    let max_cov = unitig_graph
+        .nodes
+        .values()
+        .map(|x| x.min_read_depth.unwrap())
+        .max_by(|x, y| x.partial_cmp(y).unwrap())
+        .unwrap_or(1.);
 
-        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-        let num_cut = unitig_graph.progressive_cut_lowest();
-        log::info!(
-            "Progressive coverage filter iteration {}. Cut {} nodes",
-            counter,
-            num_cut
-        );
-        unitig_graph.get_sequence_info(twin_reads, &get_seq_config);
 
-        let prog_folder = temp_dir.join("progressive");
-        std::fs::create_dir_all(&prog_folder).unwrap();
+    let mut cov_to_graph_map = FxHashMap::default();
+    let mut unitig_graph_with_threshold = unitig_graph.clone();
 
-        unitig_graph.to_gfa(
-            //temp_dir.join("progressive-{}-_unitig_graph.gfa"),
-            prog_folder.join(format!("progressive-{}-_unitig_graph.gfa", counter)),
+    let up_to_30 = (0..30).collect::<Vec<_>>();
+    let after_30 = (30..=max_cov as usize).step_by(2).collect::<Vec<_>>();
+    let all_covs = up_to_30.iter().chain(after_30.iter());
+
+    for &cov_thresh in all_covs.into_iter() {
+        
+        log::debug!("Processing coverage {}", cov_thresh);
+        let cov_thresh = cov_thresh as f64;
+
+        let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
+        std::fs::create_dir_all(&prog_dir_cov).unwrap();
+
+        unitig_graph_with_threshold.cut_coverage(cov_thresh);
+        unitig_graph_with_threshold
+            .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
+
+        let tip_length_cutoff_heavy = args.tip_length_cutoff * 15;
+        let tip_read_cutoff_heavy = args.tip_read_cutoff;
+        let bubble_threshold_heavy = args.max_bubble_threshold * 2;
+
+        remove_tips_until_stable(&mut unitig_graph_with_threshold, twin_reads, tip_length_cutoff_heavy, tip_read_cutoff_heavy, bubble_threshold_heavy, &temp_dir, true, &args);
+        unitig_graph_with_threshold
+            .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
+        
+        unitig_graph_with_threshold.to_gfa(
+            prog_dir_cov.join("filtered_graph.gfa"),
             true,
             true,
             &twin_reads,
             &args,
         );
-        if num_cut == 0 {
-            break;
-        }
-        counter += 1;
+        
+        // Push contigs at this coverage level
+        cov_to_graph_map.insert(cov_thresh as usize, unitig_graph_with_threshold.clone());
     }
+
+    let mut unitig_graph =
+        get_contigs_from_progressive_coverage(cov_to_graph_map, &args, &temp_dir);
+    unitig_graph.get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
+    unitig_graph.to_gfa(
+        output_dir.join("fnc_nomap.gfa"),
+        true,
+        true,
+        &twin_reads,
+        &args,
+    );
+
+    return unitig_graph;
+
 }

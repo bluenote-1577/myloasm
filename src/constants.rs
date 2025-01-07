@@ -2,3 +2,7 @@
 pub const FORWARD_READ_SAFE_SEARCH_CUTOFF: usize = 10000;
 //foward_read_safe_search_cutoff: usize = 10000;
 pub const MAX_GAP_CHAINING: usize = 200;
+pub const SAMPLING_RATE_COV: usize = 10;
+pub const MINIMIZER_END_NTH_COV: usize = 10;
+pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
+pub const MID_BASE_THRESHOLD: f64 = 0.97;

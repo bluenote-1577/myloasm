@@ -11,6 +11,7 @@ pub mod cbloom;
 pub mod consensus;
 pub mod seq_parse;
 pub mod map_processing;
+pub mod unitig_utils;
 
 #[cfg(target_arch = "x86_64")]
 pub mod avx2_seeding;

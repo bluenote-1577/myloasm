@@ -58,6 +58,7 @@ pub trait GraphEdge {
     }
     //o>--->o is outgoing for n1, incoming for n2
     //o<---->o is incoming for n1, incoming for n2. etc
+    //TODO this fails for circular paths
     fn node_edge_direction(&self, node: &NodeIndex) -> Direction {
         if self.node1() == *node {
             if self.orientation1() {
@@ -255,14 +256,14 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
             let node = self.nodes.get_mut(&node_idx).unwrap();
             node.in_edges_mut().retain(|&edge| {
                 if let Some(Some(edge)) = self.edges.get(edge) {
-                    !remove_set.contains(&edge.node1())
+                    !remove_set.contains(&edge.node1()) && !remove_set.contains(&edge.node2())
                 } else {
                     false
                 }
             });
             node.out_edges_mut().retain(|&edge| {
                 if let Some(Some(edge)) = self.edges.get(edge) {
-                    !remove_set.contains(&edge.node2())
+                    !remove_set.contains(&edge.node2()) && !remove_set.contains(&edge.node1())
                 } else {
                     false
                 }
@@ -283,7 +284,6 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
             }
         }
     }
-
 }
 
 pub fn orientation_list<E: GraphEdge>(node_indices: &[NodeIndex], edges: &[E]) -> Vec<bool> {

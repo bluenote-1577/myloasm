@@ -52,7 +52,11 @@ pub struct Cli {
     #[arg(long, default_value_t=90.)]
     pub quality_value_cutoff: f64,
 
-    /// Snpmer identity threshold for overlaps
+    /// Snpmer identity threshold for containment
+    #[arg(long, default_value_t=100.00, help_heading = "Overlap Parameters")]
+    pub snpmer_threshold_contain: f64,
+
+    /// Mininum snpmer identity threshold for overlaps
     #[arg(long, default_value_t=99.9, help_heading = "Overlap Parameters")]
     pub snpmer_threshold: f64,
 
@@ -72,12 +76,16 @@ pub struct Cli {
     pub small_bubble_threshold: usize,
 
 
+    /// Test SNPMER error correction
+    #[arg(long, help_heading = "Graph Parameters")]
+    pub ec: bool,
+
     /// Bloom filter size in GB
     #[arg(short, long, default_value_t=3.)]
     pub bloom_filter_size: f64,
 
     /// Minimum number of reads in output contigs
-    #[arg(long, default_value_t = 2)]
+    #[arg(long, default_value_t = 3)]
     pub min_reads_contig: usize,
 
     /// Don't map to reads minimap2 (TODO)

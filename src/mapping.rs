@@ -1,5 +1,7 @@
 use crate::cli::Cli;
 use crate::constants::MAX_GAP_CHAINING;
+use crate::constants::MINIMIZER_END_NTH_COV;
+use crate::constants::SAMPLING_RATE_COV;
 use std::io::Write;
 use std::io::BufWriter;
 use std::path::Path;
@@ -306,7 +308,7 @@ pub fn dp_anchors(
         if used_anchors.contains(&best_index) {
             continue;
         }
-        if score < max_score * 3 / 4 {
+        if score < max_score * 1 / 4 {
             break;
         }
 
@@ -471,6 +473,7 @@ pub fn compare_twin_reads(
 
         let mut intersect_split = 0;
         let mut intersection_snp = 0;
+        let mut snpmer_relative_hits = vec![];
 
         if compare_snpmers{
             shared_snpmer = 0;
@@ -525,6 +528,18 @@ pub fn compare_twin_reads(
                         let i = ind_redirect1[i as usize];
                         let j = anchor.j;
                         let j = ind_redirect2[j as usize];
+                        let base1 = ((seq1.snpmers[i as usize].1 & !mask) >> (k - 1)) as u8;
+                        let base2 = ((seq2.snpmers[j as usize].1 & !mask) >> (k - 1)) as u8;
+
+                        let snpmer_hit = SnpmerHit{
+                            pos1: seq1.snpmers[i as usize].0,
+                            pos2: seq2.snpmers[j as usize].0,
+                            base1: base1,
+                            base2: base2,
+                        };
+
+                        snpmer_relative_hits.push(snpmer_hit);
+
                         if seq1.snpmers[i as usize].1 == seq2.snpmers[j as usize].1 {
                             shared_snpmer += 1;
                         } else {
@@ -599,6 +614,7 @@ pub fn compare_twin_reads(
             intersect: (intersect_split, intersection_snp),
             chain: mini_chain,
             chain_score: mini_chain_info.score,
+            snpmer_relative_bases: snpmer_relative_hits,
         };
         twin_overlaps.push(twinol);
     }
@@ -637,7 +653,7 @@ fn unitigs_to_tr(
     args: &Cli,
 ) -> FxHashMap<usize, TwinRead> {
     let mut tr_unitigs = FxHashMap::default();
-    for (&node_id, unitig) in unitig_graph.nodes.iter() {
+    for (&node_hash_id, unitig) in unitig_graph.nodes.iter() {
         let id = format!("u{}", unitig.read_indices_ori[0].0);
         let u8_seq = unitig
             .base_seq()
@@ -660,7 +676,7 @@ fn unitigs_to_tr(
             }
             tr.minimizers = solid_minis;
             tr.snpmers = solid_snpmers;
-            tr_unitigs.insert(node_id, tr);
+            tr_unitigs.insert(node_hash_id, tr);
         }
     }
     return tr_unitigs;
@@ -714,7 +730,11 @@ pub fn map_reads_to_outer_reads<'a>(
 
     let mini_index = get_minimizer_index_ref(&tr_outer);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
-    let kmer_count_map = Mutex::new(FxHashMap::default());
+    //let kmer_count_map = Mutex::new(FxHashMap::default());
+    let mut outer_read_to_snpmer_bases_map = vec![];
+    for _ in 0..tr_outer.len(){
+        outer_read_to_snpmer_bases_map.push(Mutex::new(FxHashMap::default()));
+    }
     let counter = Mutex::new(0);
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
@@ -760,7 +780,9 @@ pub fn map_reads_to_outer_reads<'a>(
                     tr_outer[&hit.i2].base_length,
                     hit.chain_reverse,
                 );
-                let strain_specific = same_strain(
+
+                //Used for EC
+                let strain_specific_thresh1 = same_strain(
                     hit.shared_minimizers,
                     hit.diff_snpmers,
                     hit.shared_snpmers,
@@ -768,37 +790,78 @@ pub fn map_reads_to_outer_reads<'a>(
                     args.snpmer_threshold,
                     args.snpmer_error_rate
                 );
-                let mut map = mapping_boundaries_map.lock().unwrap();
-                let vec = map.entry(hit.i2).or_insert(vec![]);
-                let small_twin_ol = SmallTwinOl{
-                    query_id: rid as u32,
-                    query_range: (hit.start1 as u32, hit.end1 as u32),
-                    shared_minimizers: hit.shared_minimizers as u32,
-                    diff_snpmers: hit.diff_snpmers as u32,
-                    shared_snpmers: hit.shared_snpmers as u32,
-                    chain_reverse: hit.chain_reverse,
-                };
-                vec.push((hit.start2 + 50, hit.end2 - 50, small_twin_ol, max_overlap && strain_specific));
-            }
-            {
-                let mut kmer_map = kmer_count_map.lock().unwrap();
-                let index_of_outer_in_all = outer_read_indices[hit.i2];
-                let outer_read_minimizers_len = twin_reads[index_of_outer_in_all].minimizers.len();
-                let vec = kmer_map.entry(hit.i2).or_insert(vec![0; outer_read_minimizers_len]);
-                for anchor in hit.chain.iter() {
-                    let reference_hit_kmer = anchor.j;
-                    vec[reference_hit_kmer as usize] += 1;
+                
+                //Used for coverage
+                let strain_specific_thresh2 = same_strain(
+                    hit.shared_minimizers,
+                    hit.diff_snpmers,
+                    hit.shared_snpmers,
+                    args.c as u64,
+                    args.snpmer_threshold_contain,
+                    0.,
+                );
+
+                //Populate mapping boundaries map
+                {
+                    let mut map = mapping_boundaries_map.lock().unwrap();
+                    let vec = map.entry(hit.i2).or_insert(vec![]);
+                    let small_twin_ol = SmallTwinOl{
+                        query_id: rid as u32,
+                        query_range: (hit.start1 as u32, hit.end1 as u32),
+                        shared_minimizers: hit.shared_minimizers as u32,
+                        diff_snpmers: hit.diff_snpmers as u32,
+                        shared_snpmers: hit.shared_snpmers as u32,
+                        chain_reverse: hit.chain_reverse,
+                    };
+                    vec.push((hit.start2 + 50, hit.end2 - 50, small_twin_ol, max_overlap && strain_specific_thresh2));
+                }
+
+                //Populate snpmer relative hit map for EC
+                {
+                    if strain_specific_thresh1{
+                        let mut inner_mapping_count_dict = outer_read_to_snpmer_bases_map[hit.i2].lock().unwrap();
+                        for snpmer_hit in hit.snpmer_relative_bases.iter(){
+                            let base_to_count = inner_mapping_count_dict.entry((snpmer_hit.pos2, snpmer_hit.base2)).or_insert(FxHashMap::default());
+                            let count = base_to_count.entry(snpmer_hit.base1).or_insert(0);
+                            *count += 1;
+                        }
+                    }
                 }
             }
+            //Populate kmer count map
+            // {
+            //     let mut kmer_map = kmer_count_map.lock().unwrap();
+            //     let index_of_outer_in_all = outer_read_indices[hit.i2];
+            //     let outer_read_minimizers_len = twin_reads[index_of_outer_in_all].minimizers.len();
+            //     let vec = kmer_map.entry(hit.i2).or_insert(vec![0; outer_read_minimizers_len]);
+            //     for anchor in hit.chain.iter() {
+            //         let reference_hit_kmer = anchor.j;
+            //         vec[reference_hit_kmer as usize] += 1;
+            //     }
+            // }
         }
         //println!("Anchor finding time: {}us", anchor_finding_time);
         //println!("Overlap time: {}us", overlap_time);
     });
 
-    let kmer_count_map = kmer_count_map.into_inner().unwrap();
-    for (contig_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
-        let index_of_outer_in_all = outer_read_indices[contig_id];
+    //let kmer_count_map = kmer_count_map.into_inner().unwrap();
+    let snpmer_relative_bases_map : Vec<FxHashMap<_,_>> = outer_read_to_snpmer_bases_map.into_iter().map(|x| x.into_inner().unwrap()).collect();
+    for (outer_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
+        let snpmer_bases = &snpmer_relative_bases_map[outer_id];
+        let mut vec_snpmer_bases = snpmer_bases.iter().collect::<Vec<_>>();
+        vec_snpmer_bases.retain(|x| x.1.len() > 1);
+        vec_snpmer_bases.sort_by(|a, b| a.0.cmp(&b.0));
+        let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
+        println!("Contig {}, SNPMER_BASES {:?}", twin_reads[index_of_outer_in_all].id, vec_snpmer_bases);
+
+        let mut snpmer_to_major_minor_count = vec![];
+        for (pos_and_base, count_map) in vec_snpmer_bases.iter(){
+            let pos = pos_and_base.0;
+            let counts = count_map.values().collect::<Vec<_>>();
+            snpmer_to_major_minor_count.push((pos as u32, [*counts[0], *counts[1]]));
+        }
+        
         let mut map_vec = vec![];
         for mapping in boundaries.iter() {
             let map_len = mapping.1 - mapping.0;
@@ -825,12 +888,14 @@ pub fn map_reads_to_outer_reads<'a>(
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
 
+
+        let (outer_read_first_mini_pos, outer_read_last_mini_pos) = first_last_mini_in_range(0, outer_read_length, args.kmer_size, MINIMIZER_END_NTH_COV, twin_reads[index_of_outer_in_all].minimizers.as_slice());
         
         let lapper = Lapper::new(intervals);
-        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, 100, 0, outer_read_length).unwrap();
+        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, outer_read_first_mini_pos, outer_read_last_mini_pos).unwrap();
         //let mean_depth = map_vec.iter().sum::<usize>() as f64 / outer_read_length as f64;
 
-        let kmer_counts =  kmer_count_map.get(&contig_id).unwrap();
+        //let kmer_counts =  kmer_count_map.get(&contig_id).unwrap();
 
         let map_info = MappingInfo {
             minimum_depth: min_depth,
@@ -841,9 +906,11 @@ pub fn map_reads_to_outer_reads<'a>(
         };
 
         let twinread_mapping = TwinReadMapping {
-            tr_index: outer_read_indices[contig_id],
+            tr_index: outer_read_indices[outer_id],
             mapping_info: map_info,
             lapper_strain_max: Lapper::new(strain_specific_max_intervals),
+            snpmer_alternate_counts: snpmer_to_major_minor_count,
+
         };
         ret.push(twinread_mapping);
     }
@@ -985,10 +1052,12 @@ pub fn map_reads_to_unitigs(
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
         let lapper = Lapper::new(intervals);
-        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, 100, 0, unitig_length).unwrap();
+
+        let (unitig_first_mini_pos, unitig_last_mini_pos) = first_last_mini_in_range(0, unitig_length, args.kmer_size, MINIMIZER_END_NTH_COV, tr_unitigs[&contig_id].minimizers.as_slice());
+        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, unitig_first_mini_pos, unitig_last_mini_pos).unwrap();
 
         let kmer_vec = &kmer_vecs[contig_id];
-        println!("Unitig id kmer counts: u{}", &unitig_graph.nodes.get(&contig_id).unwrap().node_id);
+        // println!("Unitig id kmer counts: u{}", &unitig_graph.nodes.get(&contig_id).unwrap().node_id);
         let median_kmer_count = sliding_window_kmer_coverages(&kmer_vec, 10, args.kmer_size as usize);
         let map_info = MappingInfo {
             median_depth: median_depth,
