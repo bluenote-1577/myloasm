@@ -94,7 +94,8 @@ fn first_iteration(
                 while let Some(record) = reader.next() {
                     let rec = record.expect("Error reading record");
                     let seq = rec.seq().to_vec();
-                    let split_kmer_info = seeding::split_kmer_mid(seq, k);
+                    let qualities = rec.qual();
+                    let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
                     tx_head.send(split_kmer_info).unwrap();
                 }
             }
@@ -216,7 +217,8 @@ fn second_iteration(
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
                 let seq = rec.seq().to_vec();
-                let split_kmer_info = seeding::split_kmer_mid(seq, k);
+                let qualities = rec.qual();
+                let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
                 tx_head.send(split_kmer_info).unwrap();
             }
         }

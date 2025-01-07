@@ -1784,7 +1784,7 @@ impl UnitigGraph {
             .nodes
             .iter()
             .filter(|(_, node)| {
-                    if node.read_indices_ori.len() < args.min_reads_contig
+                    if node.read_indices_ori.len() <= args.min_reads_contig
                         && node.in_edges().len() + node.out_edges().len() == 0{
                             return false;
                     }

@@ -5,4 +5,5 @@ pub const MAX_GAP_CHAINING: usize = 200;
 pub const SAMPLING_RATE_COV: usize = 10;
 pub const MINIMIZER_END_NTH_COV: usize = 10;
 pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
-pub const MID_BASE_THRESHOLD: f64 = 0.97;
+pub const MID_BASE_THRESHOLD_READ: f64 = 0.98;
+pub const MID_BASE_THRESHOLD_INITIAL: f64 = 0.90;

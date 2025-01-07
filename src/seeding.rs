@@ -1,4 +1,5 @@
-use crate::constants::MID_BASE_THRESHOLD;
+use crate::constants::MID_BASE_THRESHOLD_READ;
+use crate::constants::MID_BASE_THRESHOLD_INITIAL;
 use crate::types::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -386,7 +387,7 @@ pub fn get_twin_read(
             else{
                 mid_base_qval = 100.;
             }
-            if mid_base_qval > MID_BASE_THRESHOLD{
+            if mid_base_qval > MID_BASE_THRESHOLD_READ{
                 snpmers_in_read.push((i + 1 - k, canonical_kmer_marker));
             }
             *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
@@ -419,6 +420,13 @@ pub fn get_twin_read(
 
 }
 
+#[inline]
+fn id_from_qval(qval: u8) -> f64 {
+    let q = (qval - 33) as f64;
+    let p = 10.0f64.powf(-q / 10.0);
+    return p;
+}
+
 fn estimate_sequence_identity(qualities: Option<&Vec<u8>>) -> Option<f64> {
     if qualities.is_none() {
         return None;
@@ -436,6 +444,7 @@ fn estimate_sequence_identity(qualities: Option<&Vec<u8>>) -> Option<f64> {
 
 pub fn split_kmer_mid(
     string: Vec<u8>,
+    qualities: Option<&[u8]>,
     k: usize
 ) -> Vec<u64>{
     type MarkerBits = u64;
@@ -459,6 +468,18 @@ pub fn split_kmer_mid(
     let split_mask = !(3 << (k-1));
     let _split_mask_extract = !split_mask;
     let len = string.len();
+    let mid_k = k / 2;
+    let mut positions_to_skip = FxHashSet::default();
+    if let Some(qualities) = qualities.as_ref(){
+        let quality_vec: Vec<f64> = qualities.iter().map(|q| id_from_qval(*q)).collect();
+        for i in marker_k-1..quality_vec.len(){
+            let mid_pos = i + 1 + mid_k - k;
+            if quality_vec[mid_pos] < MID_BASE_THRESHOLD_INITIAL{
+                positions_to_skip.insert(i);
+            }
+        }
+        
+    }
 
     for i in 0..marker_k - 1 {
         let nuc_f = BYTE_TO_SEQ[string[i] as usize] as u64;
@@ -486,6 +507,11 @@ pub fn split_kmer_mid(
         //Palindromes can mess things up because the middle base
         //is automatically a SNPmer. 
         if split_f == split_r{
+            continue;
+        }
+
+        // Skip low-identity mid bases
+        if positions_to_skip.contains(&i){
             continue;
         }
 
