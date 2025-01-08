@@ -1,6 +1,6 @@
 use bincode;
 use clap::Parser;
-use flexi_logger::{Duplicate, FileSpec, Logger, DeferredNow, Record};
+use flexi_logger::{Duplicate, FileSpec, DeferredNow, Record};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
@@ -143,10 +143,10 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
     }
 
     // Initialize logger with CLI-specified level
-    let log_file = output_dir.join("myloasm.log");
+    let filespec = FileSpec::default().directory(output_dir).basename("myloasm");
     flexi_logger::Logger::try_with_str(args.log_level_filter().to_string())
         .expect("Something went wrong with logging")
-        .log_to_file(FileSpec::try_from(log_file).unwrap()) // write logs to file
+        .log_to_file(filespec) // write logs to file
         .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
         .format(my_own_format) // use a simple colored format
         .start()
@@ -235,6 +235,7 @@ fn get_twin_reads_from_kmer_info(
         .unwrap();
         log::info!("Loaded twin reads from file.");
     } else {
+        log::info!("Getting twin reads from snpmers...");
         // First: get twin reads from snpmers
         let twin_reads_raw = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
         let num_reads = twin_reads_raw.len();
@@ -540,7 +541,7 @@ fn heavy_cleaning(
     let ratio_length_thresholds = [0.25, 0.5, 0.75];
     let safety_edge_cov_score_thresholds = [100000000.];
 
-    // TODO cut large tips (but keep them) and remove large bubbles
+    let save_tips = true;
     loop {
         let ind = counter.min(cov_score_thresholds.len() - 1);
         let ind_ratio = counter.min(ratio_length_thresholds.len() - 1);
@@ -548,7 +549,6 @@ fn heavy_cleaning(
         let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
         let tip_read_cutoff_heavy = args.tip_read_cutoff;
         let bubble_threshold_heavy = args.max_bubble_threshold;
-        let save_tips = false;
 
         remove_tips_until_stable(
             unitig_graph,

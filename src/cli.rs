@@ -64,11 +64,11 @@ pub struct Cli {
     #[arg(long, default_value_t=0.025, help_heading = "Overlap Parameters")]
     pub snpmer_error_rate: f64,
 
-    #[arg(long, default_value_t=20, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=25, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
     /// Maximum bubble length to pop; keep alternates
-    #[arg(long, default_value_t=300000, help_heading = "Graph Parameters")]
+    #[arg(long, default_value_t=500000, help_heading = "Graph Parameters")]
     pub max_bubble_threshold: usize,
 
     /// Small bubble length to pop; discard alternates

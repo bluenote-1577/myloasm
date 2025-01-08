@@ -645,6 +645,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
         if read1.est_id.is_some() && read1.est_id.unwrap() < args.quality_value_cutoff {
             return;
         }
+
         let start = std::time::Instant::now();
         let mut index_count_map = FxHashMap::default();
         let mut index_range_map = FxHashMap::default();
