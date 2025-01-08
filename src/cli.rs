@@ -32,7 +32,7 @@ pub struct Cli {
     #[arg(short, long, default_value = "output")]
     pub output_dir: String,
 
-    /// Verbosity level
+    /// Verbosity level. Written to the .log file in output directory.
     #[arg(short, long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
 
@@ -120,5 +120,9 @@ impl Cli {
             LogLevel::Debug => log::LevelFilter::Debug,
             LogLevel::Trace => log::LevelFilter::Trace,
         }
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("{:?}", self)
     }
 }

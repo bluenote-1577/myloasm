@@ -612,7 +612,6 @@ pub fn compare_twin_reads(
             snpmers_in_both: (seq1.snpmers.len(), seq2.snpmers.len()),
             chain_reverse: mini_chain_info.reverse,
             intersect: (intersect_split, intersection_snp),
-            chain: mini_chain,
             chain_score: mini_chain_info.score,
             snpmer_relative_bases: snpmer_relative_hits,
         };
@@ -853,7 +852,7 @@ pub fn map_reads_to_outer_reads<'a>(
         vec_snpmer_bases.sort_by(|a, b| a.0.cmp(&b.0));
         let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
-        println!("Contig {}, SNPMER_BASES {:?}", twin_reads[index_of_outer_in_all].id, vec_snpmer_bases);
+        //println!("Contig {}, SNPMER_BASES {:?}", twin_reads[index_of_outer_in_all].id, vec_snpmer_bases);
 
         let mut snpmer_to_major_minor_count = vec![];
         for (pos_and_base, count_map) in vec_snpmer_bases.iter(){
@@ -939,11 +938,6 @@ pub fn map_reads_to_unitigs(
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, args);
     let mini_index = get_minimizer_index(&tr_unitigs);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
-    let mut kmer_count_map = vec![];
-    for i in 0..unitig_graph.nodes.len(){
-        let num_minimizers = tr_unitigs[&i].minimizers.len();
-        kmer_count_map.push(Mutex::new(vec![(0,0); num_minimizers]));
-    }
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mini = &read.minimizers;
@@ -1021,20 +1015,10 @@ pub fn map_reads_to_unitigs(
                 chain_reverse: hit.chain_reverse,
             };
             vec.push((hit.start2, hit.end2, small_twin_ol));
-
-            {
-                let mut kmer_vec = kmer_count_map[hit.i2].lock().unwrap();
-                for anchor in hit.chain.iter() {
-                    let reference_hit_kmer = anchor.j;
-                    kmer_vec[reference_hit_kmer as usize].1 += 1;
-                    kmer_vec[reference_hit_kmer as usize].0 = anchor.pos2;
-                }
-            }
         }
     });
 
 
-    let kmer_vecs = kmer_count_map.into_iter().map(|x| x.into_inner().unwrap()).collect::<Vec<Vec<(u32,u32)>>>();
     for (contig_id, boundaries_and_rid) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
         let unitig_length = unitig_graph.nodes.get(&contig_id).unwrap().cut_length();
         let mut map_vec = vec![];
@@ -1056,9 +1040,8 @@ pub fn map_reads_to_unitigs(
         let (unitig_first_mini_pos, unitig_last_mini_pos) = first_last_mini_in_range(0, unitig_length, args.kmer_size, MINIMIZER_END_NTH_COV, tr_unitigs[&contig_id].minimizers.as_slice());
         let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, unitig_first_mini_pos, unitig_last_mini_pos).unwrap();
 
-        let kmer_vec = &kmer_vecs[contig_id];
         // println!("Unitig id kmer counts: u{}", &unitig_graph.nodes.get(&contig_id).unwrap().node_id);
-        let median_kmer_count = sliding_window_kmer_coverages(&kmer_vec, 10, args.kmer_size as usize);
+        //let median_kmer_count = sliding_window_kmer_coverages(&kmer_vec, 10, args.kmer_size as usize);
         let map_info = MappingInfo {
             median_depth: median_depth,
             minimum_depth: min_depth,

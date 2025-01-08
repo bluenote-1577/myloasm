@@ -7,3 +7,5 @@ pub const MINIMIZER_END_NTH_COV: usize = 10;
 pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
 pub const MID_BASE_THRESHOLD_READ: u8 = 17; // 98%
 pub const MID_BASE_THRESHOLD_INITIAL: u8 = 10; // 90%
+pub const MAX_BUBBLE_UNITIGS_FINAL_STAGE: usize = 5;
+pub const TS_DASHES_BLANK_COLONS_DOT_BLANK: &str = "%Y-%m-%d %H:%M:%S%.3f";

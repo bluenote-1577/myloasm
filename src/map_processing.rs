@@ -247,9 +247,6 @@ fn binomial_test_threshold_snpmers(twin_read: &mut TwinRead, mapping_info: &Twin
                 if binom_p_val < 0.01{
                     new_snpmers.push((*pos, *snpmer));
                 }
-                else{
-                    println!("snpmer removed, binom p val: {}, n: {} k: {}", binom_p_val, n, k);
-                }
             }
         }
         else{

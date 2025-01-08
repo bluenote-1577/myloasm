@@ -226,7 +226,6 @@ pub struct TwinOverlap{
     pub diff_snpmers: usize,
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
-    pub chain: Vec<Anchor>,
     pub chain_score: i32,
     pub snpmer_relative_bases: Vec<SnpmerHit>,
 }

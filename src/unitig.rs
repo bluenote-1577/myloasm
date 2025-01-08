@@ -916,7 +916,7 @@ impl UnitigGraph {
         }
 
         log::debug!("Removing {} tips", unitigs_to_remove.len());
-        log::debug!("Unitigs to remove: {:?}", debug_ids);
+        log::trace!("Unitigs to remove: {:?}", debug_ids);
         self.remove_nodes(&unitigs_to_remove, keep);
     }
 
@@ -925,7 +925,8 @@ impl UnitigGraph {
         self.re_unitig();
     }
 
-    pub fn pop_bubbles(&mut self, max_length: usize, keep: bool) {
+    pub fn pop_bubbles(&mut self, max_length: usize, max_number_nodes: Option<usize>, keep: bool) {
+        let max_number_nodes = max_number_nodes.unwrap_or(usize::MAX);
         let node_ids = self.nodes.keys().copied().collect::<Vec<_>>();
         let mut visited: FxHashSet<NodeIndex> = FxHashSet::default();
         let mut num_bubbles = 0;
@@ -938,11 +939,11 @@ impl UnitigGraph {
                     continue;
                 }
                 if self.nodes[&n_id].edges_direction(direction).len() > 1 {
-                    if let Some(bubble_result) = self.double_bubble_remove_nodes(*direction, n_id, max_length){
+                    if let Some(bubble_result) = self.double_bubble_remove_nodes(*direction, n_id, max_length, max_number_nodes){
                         visited.extend(&bubble_result.remove_nodes);
                         //TODO
                         self.remove_edges(bubble_result.remove_edges);
-                        self.remove_nodes(&bubble_result.remove_nodes, true);
+                        self.remove_nodes(&bubble_result.remove_nodes, keep);
                         num_bubbles += 1;
                     }
                 }
@@ -961,14 +962,16 @@ impl UnitigGraph {
         direction: Direction, 
         n_id: NodeIndex,
         max_length: usize,
+        max_number_nodes: usize
     ) -> Option<BubblePopResult> {
 
-        let opt = self.get_bubble_remove_nodes(direction, n_id, max_length);
+        let opt = self.get_bubble_remove_nodes(direction, n_id, max_length, max_number_nodes);
         if let Some(bubble_result) = opt {
             if let Some(bubble_result_back) = self.get_bubble_remove_nodes(
                 bubble_result.end_direction,
                 bubble_result.sink_hash_id,
                 max_length,
+                max_number_nodes
             ) {
                 if bubble_result.remove_edges == bubble_result_back.remove_edges {
                     return Some(bubble_result);
@@ -984,6 +987,7 @@ impl UnitigGraph {
         right_direction: Direction,
         n_id: NodeIndex,
         max_length: usize,
+        max_number_nodes: usize
     ) -> Option<BubblePopResult> {
         let mut seen_vertices = FxHashSet::default();
         let mut seen_edges = FxHashSet::default();
@@ -1003,6 +1007,11 @@ impl UnitigGraph {
         );
 
         while !stack.is_empty() {
+
+            // Includes end and beginning node. 
+            if distances.len() > max_number_nodes{
+                return None;
+            }
             let v = stack.pop().unwrap();
             let prev_score = if depth_length.contains_key(&v.0) {
                 depth_length[&v.0]
@@ -1102,7 +1111,7 @@ impl UnitigGraph {
                     let end_node_id = end_node.node_id;
                     let end_node_hash_id = end_node.node_hash_id;
                     log::debug!("Bubble found between {} and {}", start_node_id, end_node_id);
-                    log::debug!("{:?}", &seen_vertices);
+                    log::trace!("{:?}", &seen_vertices);
                     let mut path = vec![];
                     let mut debug_path = vec![];
 
@@ -1147,7 +1156,7 @@ impl UnitigGraph {
                         && debug_path.last().unwrap() == &start_node_id;
 
                     if !first_last_matching_c1 && !first_last_matching_c2 {
-                        log::debug!("ERROR: Path between {} and {} does not start and end at the correct nodes", start_node_id, end_node_id);
+                        log::trace!("Path between {} and {} does not start and end at the correct nodes", start_node_id, end_node_id);
                         return None;
                     }
                     return Some(
@@ -2249,7 +2258,7 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         // Test bubble detection from n0
-        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
         assert!(result.is_some());
         
         let nodes_to_remove = result.unwrap().remove_nodes;
@@ -2278,7 +2287,7 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         // Test bubble detection from n0
-        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
         assert!(result.is_some());
         
         let nodes_to_remove = result.unwrap().remove_nodes;
@@ -2308,7 +2317,7 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         // Test bubble detection from n0
-        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
         assert!(result.is_some());
         
         let nodes_to_remove = result.unwrap().remove_nodes;
@@ -2342,7 +2351,7 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         // Test bubble detection from n0
-        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
         assert!(result.is_some());
         
         let nodes_to_remove = result.unwrap().remove_nodes;
@@ -2375,9 +2384,9 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         //Should not be a bubble
-        let result1 = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
-        let result2 = graph.double_bubble_remove_nodes(Direction::Incoming, n3, 5000);
-        let result3 = graph.double_bubble_remove_nodes(Direction::Incoming, n4, 5000);
+        let result1 = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
+        let result2 = graph.double_bubble_remove_nodes(Direction::Incoming, n3, 5000, usize::MAX);
+        let result3 = graph.double_bubble_remove_nodes(Direction::Incoming, n4, 5000, usize::MAX);
         dbg!(&result1, &result2, &result3);
 
         assert!(result1.is_none());
@@ -2409,9 +2418,9 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         //Should not be a bubble
-        let result1 = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
-        let result2 = graph.double_bubble_remove_nodes(Direction::Incoming, n3, 5000);
-        let result3 = graph.double_bubble_remove_nodes(Direction::Incoming, n4, 5000);
+        let result1 = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
+        let result2 = graph.double_bubble_remove_nodes(Direction::Incoming, n3, 5000, usize::MAX);
+        let result3 = graph.double_bubble_remove_nodes(Direction::Incoming, n4, 5000, usize::MAX);
         dbg!(&result1, &result2, &result3);
 
         assert!(result1.is_none());
@@ -2442,7 +2451,7 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         // Test bubble detection from n0
-        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000);
+        let result = graph.double_bubble_remove_nodes(Direction::Outgoing, n0, 5000, usize::MAX);
         assert!(result.is_none());
     }
 
@@ -2472,7 +2481,7 @@ mod tests {
         let (graph, _reads) = builder.build();
         
         // Test bubble detection from n0
-        let result = graph.double_bubble_remove_nodes(Direction::Incoming, n5, 50000);
+        let result = graph.double_bubble_remove_nodes(Direction::Incoming, n5, 50000, usize::MAX);
         assert!(result.is_some());
         let nodes_to_remove = result.unwrap().remove_nodes;
         assert!(nodes_to_remove.len() == 2);

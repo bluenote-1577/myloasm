@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 needletail = "0.5.0"
 simple_logger=  { version = "3", features = ["stderr"] }
+flexi_logger = "0.29"
 log = "0"
 rayon = "1"
 smallvec = { version = "1", features = ["union","serde","write"] }

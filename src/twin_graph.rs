@@ -100,6 +100,7 @@ impl OverlapTwinGraph{
             edge.node1
         }
     }
+
     //Initial construction allowed lax overlaps, now prune if 
     //it doesn't cause tipping. Can look into more sophisticated heuristics later.
     pub fn prune_lax_overlaps(&mut self){
@@ -145,7 +146,7 @@ impl OverlapTwinGraph{
                 }
             }
 
-            if node1_good_found || node2_good_found{
+            if node1_good_found && node2_good_found{
                 edges_to_remove.insert(i);
                 self.edges[i] = None;
             }
@@ -153,6 +154,16 @@ impl OverlapTwinGraph{
 
         log::debug!("Pruning {} lax overlaps", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
+
+        let mut singleton_nodes_to_remove = vec![];
+        for (i, node) in self.nodes.iter(){
+            if node.both_edges().collect::<Vec<_>>().is_empty(){
+                log::trace!("Node {} has no edges after lax cuts", node.index);
+                singleton_nodes_to_remove.push(*i);
+            }
+        }
+
+        self.remove_nodes(&singleton_nodes_to_remove, false);
     }   
 
     pub fn transitive_reduction(&mut self) {
@@ -173,6 +184,11 @@ impl OverlapTwinGraph{
         // Step 2: Iterate over all edges, marking nodes and evaluating paths
         for (node_id, node_data) in self.nodes.iter() {
             let sorted_all_edges = self.get_edges_sorted_by_length(*node_id);
+
+            //Need this for singleton nodes; happens usually due to lax cuts
+            if sorted_all_edges.is_empty() {
+                continue;
+            }
 
             for &(_, edge_id, _) in sorted_all_edges.iter() {
                 let edge = self.edges[edge_id].as_ref().unwrap();
@@ -332,13 +348,7 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &[TwinRead], overlaps: &[Twi
         let read2 = &all_reads_cat[j];
 
         //check if end-to-end overlap
-        
         let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, args.c as u64);
-        let same_strain_lax = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
-
-        if !same_strain_lax {
-            continue;
-        }
 
         let aln_len1 = twlap.end1 - twlap.start1;
         let aln_len2 = twlap.end2 - twlap.start2;
@@ -473,19 +483,8 @@ pub fn read_graph_from_overlaps_twin(all_reads_cat: &[TwinRead], overlaps: &[Twi
 
     let mut graph = OverlapTwinGraph { nodes, edges };
 
-    graph.transitive_reduction();
-
-    //Prune lax overlaps if there are perfect overlaps. 
-    // It's actually important to do this after transitive reduction,
-    // As tenuous transitive overlaps can create a lax overlap
-    // That does not get pruned
-
-    //        ----------x 
-    //    --x-------       | first and third read should not connected after pruning 
-    //---------
-    //    --------x---
-    //        ----x----------
     graph.prune_lax_overlaps();
+    graph.transitive_reduction();
 
     return graph;
 }
@@ -592,7 +591,11 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
 
                 ).unwrap();
-                overlaps.lock().unwrap().push(twlap);
+
+                let same_strain_lax = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
+                if same_strain_lax{
+                    overlaps.lock().unwrap().push(twlap);
+                }
             }
         }
     });
@@ -766,7 +769,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
 
 
             //Can't be reflexive.
-            if ol_len as f64 + (30. * args.c as f64) > 0.95 * (read1.base_length as f64) && same_strain && read1.base_length < read2.base_length {
+            if r1_contained_r2(&twin_overlap, read1, read2, same_strain, args.c){
                 let comparing_time = start.elapsed();
                 writeln!(bufwriter_dbg.lock().unwrap(), "{} {} CONTAINED. Times {} {} {}", read1.id, read2.id, inverted_indexing_time.as_micros(), sorting_filtering_time.as_micros(), comparing_time.as_micros()).unwrap();
                 contained = true;
@@ -784,6 +787,15 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
     log::info!("{} reads are contained", contained_reads.lock().unwrap().len());
     log::info!("Time elapsed for removing contained reads is: {:?}", start.elapsed());
     return outer_reads.into_inner().unwrap();
+}
+
+#[inline]
+pub fn r1_contained_r2(twin_overlap: &TwinOverlap, read1: &TwinRead, read2: &TwinRead, same_strain: bool, c: usize) -> bool {
+    let ol_len = twin_overlap.end1 - twin_overlap.start1;
+    if ol_len as f64 + (30. * c as f64) > 0.95 * (read1.base_length as f64) && same_strain && read1.base_length < read2.base_length {
+        return true;
+    }
+    return false;
 }
 
 pub fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
