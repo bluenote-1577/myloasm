@@ -251,6 +251,7 @@ fn get_twin_reads_from_kmer_info(
             mapping::map_reads_to_outer_reads(&outer_read_indices_raw, &twin_reads_raw, &args);
 
         // Fourth: split chimeric twin reads based on mappings to outer reads
+        log::info!("Processing mappings...");
         let (split_twin_reads, split_outer_read_indices) =
             map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, &args);
         log::info!(
@@ -341,19 +342,21 @@ fn light_progressive_cleaning(
             let read_cutoff = args.tip_read_cutoff;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-            if output_temp {
-                unitig_graph.to_gfa(
-                    temp_dir.join(format!("{}-tip_unitig_graph.gfa", iteration)),
-                    true,
-                    true,
-                    &twin_reads,
-                    &args,
-                );
-            }
+            
             if unitig_graph.nodes.len() == size_graph {
                 break;
             }
             size_graph = unitig_graph.nodes.len();
+        }
+
+        if output_temp {
+            unitig_graph.to_gfa(
+                temp_dir.join(format!("{}-tip_unitig_graph.gfa", iteration)),
+                true,
+                true,
+                &twin_reads,
+                &args,
+            );
         }
 
         // Pop bubbles
@@ -541,7 +544,7 @@ fn heavy_cleaning(
     let ratio_length_thresholds = [0.25, 0.5, 0.75];
     let safety_edge_cov_score_thresholds = [100000000.];
 
-    let save_tips = true;
+    let save_tips = false;
     loop {
         let ind = counter.min(cov_score_thresholds.len() - 1);
         let ind_ratio = counter.min(ratio_length_thresholds.len() - 1);
@@ -675,9 +678,6 @@ fn progressive_coverage_contigs(
         log::debug!("Processing coverage {}", cov_thresh);
         let cov_thresh = cov_thresh as f64;
 
-        let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
-        std::fs::create_dir_all(&prog_dir_cov).unwrap();
-
         unitig_graph_with_threshold.cut_coverage(cov_thresh);
         unitig_graph_with_threshold
             .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
@@ -700,13 +700,18 @@ fn progressive_coverage_contigs(
         unitig_graph_with_threshold
             .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
 
-        unitig_graph_with_threshold.to_gfa(
-            prog_dir_cov.join("filtered_graph.gfa"),
-            true,
-            true,
-            &twin_reads,
-            &args,
-        );
+
+        if cov_thresh < 50.{
+            let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
+            std::fs::create_dir_all(&prog_dir_cov).unwrap();
+            unitig_graph_with_threshold.to_gfa(
+                prog_dir_cov.join("filtered_graph.gfa"),
+                true,
+                true,
+                &twin_reads,
+                &args,
+            );
+        }
 
         // Push contigs at this coverage level
         cov_to_graph_map.insert(cov_thresh as usize, unitig_graph_with_threshold.clone());

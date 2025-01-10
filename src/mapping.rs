@@ -970,8 +970,8 @@ pub fn map_reads_to_unitigs(
                 x.diff_snpmers,
                 x.shared_snpmers,
                 args.c.try_into().unwrap(),
-                args.snpmer_threshold,
-                args.snpmer_error_rate
+                args.snpmer_threshold_contain,
+                0.
             )).collect::<Vec<_>>();
 
         let mut retained_hits = vec![];

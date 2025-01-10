@@ -146,7 +146,7 @@ impl OverlapTwinGraph{
                 }
             }
 
-            if node1_good_found && node2_good_found{
+            if node1_good_found || node2_good_found{
                 edges_to_remove.insert(i);
                 self.edges[i] = None;
             }
