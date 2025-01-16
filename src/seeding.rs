@@ -459,6 +459,7 @@ pub fn get_twin_read_syncmer(
         est_id: seq_id,
         median_depth: None,
         min_depth: None,
+        split_chimera: false,
     })
 }
 
@@ -569,6 +570,7 @@ pub fn get_twin_read(
         est_id: seq_id,
         median_depth: None,
         min_depth: None,
+        split_chimera: false,
     });
 
 }

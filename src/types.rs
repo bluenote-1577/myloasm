@@ -186,6 +186,7 @@ pub struct TwinRead {
     pub est_id: Option<f64>,
     pub min_depth: Option<f64>,
     pub median_depth: Option<f64>,
+    pub split_chimera: bool,
 }
 
 
@@ -201,6 +202,7 @@ pub struct KmerGlobalInfo {
 pub struct TwinReadContainer {
     pub twin_reads: Vec<TwinRead>,
     pub outer_indices: Vec<usize>,
+    //Not implemented TODO
     pub tig_reads: Vec<TwinRead>,
 }
 

@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cli::Cli;
+use crate::constants::MIN_READ_LENGTH;
 use crate::twin_graph;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
@@ -11,7 +12,7 @@ use std::thread;
 use crate::types::*;
 use crate::seeding;
 use fishers_exact::fishers_exact;
-use std::path::{PathBuf, Path};
+use std::path::Path;
 
 
 fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
@@ -256,7 +257,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                 } else {
                     seq = rec.seq().to_vec();
                 }
-                if seq.len() < 1000{
+                if seq.len() < MIN_READ_LENGTH{
                     continue;
                 }
                 let id = String::from_utf8_lossy(rec.id()).to_string();

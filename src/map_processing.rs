@@ -1,5 +1,7 @@
 use crate::cli::Cli;
+use crate::constants::ENDPOINT_MAPPING_FUZZ;
 use crate::constants::MINIMIZER_END_NTH_COV;
+use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
 use crate::twin_graph;
 use std::io::Write;
@@ -136,7 +138,7 @@ where
         return vec![];
     }
     // <ooooo|-------
-    if depths[0].start > 100 {
+    if depths[0].start > ENDPOINT_MAPPING_FUZZ{
         breakpoints.push(Breakpoints {
             pos1: 0,
             pos2 : depths[0].start as usize,
@@ -145,14 +147,14 @@ where
     }
     //<xxxxx|--------
     //Cut bad left endpoints. 
-    let depth_start_right = if mapped.reference_length() > 100 + depths[0].stop as usize{
+    let depth_start_right = if mapped.reference_length() > (ENDPOINT_MAPPING_FUZZ as usize) + depths[0].stop as usize{
         mapped
             .mapping_boundaries()
-            .count(depths[0].stop + 99, depths[0].stop + 100)
+            .count(depths[0].stop + ENDPOINT_MAPPING_FUZZ - 1, depths[0].stop + ENDPOINT_MAPPING_FUZZ)
     } else {
         0
     };
-    if depths[0].stop > 100 && (depths[1].val > 3 || depth_start_right > 3) && depths[0].val == 1 {
+    if depths[0].stop > ENDPOINT_MAPPING_FUZZ && (depths[1].val > 3 || depth_start_right > 3) && depths[0].val == 1 {
         breakpoints.push(Breakpoints {
             pos1: depths[0].start as usize,
             pos2: depths[0].stop as usize,
@@ -190,10 +192,10 @@ where
     }
 
     // --------|xxxxx>
-    if depths[depths.len() - 1].start > 100 {
+    if depths[depths.len() - 1].start > ENDPOINT_MAPPING_FUZZ {
         let depth_stop_left = mapped.mapping_boundaries().count(
-            depths[depths.len() - 1].start - 100,
-            depths[depths.len() - 1].start - 99,
+            depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ,
+            depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ - 1,
         );
         if (depth_stop_left > 3 || depths[depths.len() - 2].val > 3)
             && depths[depths.len() - 1].val == 1
@@ -207,7 +209,7 @@ where
     }
 
     // -----|ooooo>
-    if depths[depths.len() - 1].stop as usize + 100 < mapped.reference_length() {
+    if depths[depths.len() - 1].stop as usize + (ENDPOINT_MAPPING_FUZZ as usize) < mapped.reference_length() {
         breakpoints.push(Breakpoints {
             pos1: depths[depths.len() - 1].stop as usize,
             pos2: mapped.reference_length(),
@@ -261,6 +263,7 @@ fn binomial_test_threshold_snpmers(twin_read: &mut TwinRead, mapping_info: &Twin
 fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, args: &Cli) -> Vec<TwinRead>{
 
     //Return the read, populate the depth from mapping_info
+    //TODO this doesn't do anything -- we add a BP and then populate it later down...
     if break_points.len() == 0{
         twin_read.median_depth = Some(mapping_info.median_mapping_depth());
         twin_read.min_depth = Some(mapping_info.min_mapping_depth());
@@ -272,21 +275,15 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
 
     let mut new_reads = vec![];
     break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
+
     let mut last_break = 0;
     let k = twin_read.k as usize;
     
     for (i,break_point) in break_points.iter().enumerate(){
         let bp_start = break_point.pos1;
         let bp_end = break_point.pos2;
-        if bp_start - last_break > 1000{
+        if bp_start - last_break > MIN_READ_LENGTH{
             let mut new_read = TwinRead::default();
-            let (first_mini, last_mini) = first_last_mini_in_range(last_break, bp_start, k, MINIMIZER_END_NTH_COV, &twin_read.minimizers);
-
-            //Get depth for split read, USING THE STRAIN SPECIFIC/MAXIMAL LAPPER
-            let (min_depth, median_depth) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini).unwrap();
-            new_read.min_depth = Some(min_depth);
-            new_read.median_depth = Some(median_depth);
-            
             //Repopulate minimizers and snpmers
             new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
@@ -295,11 +292,23 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             new_read.k = twin_read.k;
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
             new_read.base_length = new_read.dna_seq.len();
+            if break_points.len() > 1 {
+                new_read.split_chimera = true;
+            }
+            populate_depth_from_map_info(&mut new_read, mapping_info, last_break, bp_start);
             new_reads.push(new_read);
         }
         last_break = bp_end;
     }
     return new_reads;
+}
+
+#[inline]
+pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, start: usize, end: usize){
+    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizers);
+    let (min_depth, median_depth) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini).unwrap();
+    twin_read.min_depth = Some(min_depth);
+    twin_read.median_depth = Some(median_depth);
 }
 
 pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[(usize,u64)]) -> (usize, usize){
@@ -385,7 +394,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
 }
 
 pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: usize, len1: usize, len2: usize, reverse: bool) -> bool {
-    let edge_fuzz = 300;
+    let edge_fuzz = ENDPOINT_MAPPING_FUZZ as usize;
 
     //Can not extend to the left (cond1) and cannot extend to the right (cond2)
     //  ------->             OR          --------->

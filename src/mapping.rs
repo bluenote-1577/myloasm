@@ -1,6 +1,8 @@
 use crate::cli::Cli;
 use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MINIMIZER_END_NTH_COV;
+use crate::constants::MIN_CHAIN_SCORE_COMPARE;
+use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
 use std::io::Write;
 use std::io::BufWriter;
@@ -28,8 +30,8 @@ pub struct HitInfo {
 }
 
 pub struct Anchors {
-    anchors: Vec<Anchor>,
-    max_mult: usize,
+    pub anchors: Vec<Anchor>,
+    pub max_mult: usize,
 }
 
 fn _edit_distance(v1: &[u32], v2: &[u32]) -> usize {
@@ -142,7 +144,7 @@ fn _smith_waterman(
     (max_score as f64, aln1.len(), aln2.len())
 }
 
-fn find_exact_matches_with_full_index(
+pub fn find_exact_matches_with_full_index(
     seq1: &[(usize, u64)],
     index: &FxHashMap<u64, Vec<HitInfo>>,
 ) -> FxHashMap<u32, Anchors> {
@@ -464,7 +466,7 @@ pub fn compare_twin_reads(
     let k = seq1.k as usize;
     for mini_chain_info in mini_chain_infos{
         let mini_chain = mini_chain_info.chain;
-        if mini_chain_info.score < 50 {
+        if mini_chain_info.score < MIN_CHAIN_SCORE_COMPARE {
             continue;
         }
 
@@ -683,7 +685,7 @@ fn unitigs_to_tr(
 
 
 
-fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64, Vec<HitInfo>> {
+pub fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
     for (&id, tr) in twinreads.iter() {
         for (i, (pos, mini)) in tr.minimizers.iter().enumerate() {
@@ -698,7 +700,7 @@ fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64,
     mini_index
 }
 
-fn get_minimizer_index_ref(
+pub fn get_minimizer_index_ref(
     twinreads: &FxHashMap<usize, &TwinRead>,
 ) -> FxHashMap<u64, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
@@ -721,6 +723,8 @@ pub fn map_reads_to_outer_reads<'a>(
     args: &Cli,
 ) -> Vec<TwinReadMapping> {
     let mut ret = vec![];
+    // 0..outer_read_indices -- confusingly, I chose to renumber the indices in this step. Then 
+    // it's fixed in the index_of_outer_in_all. 
     let tr_outer = outer_read_indices
         .iter()
         .enumerate()
@@ -827,17 +831,6 @@ pub fn map_reads_to_outer_reads<'a>(
                     }
                 }
             }
-            //Populate kmer count map
-            // {
-            //     let mut kmer_map = kmer_count_map.lock().unwrap();
-            //     let index_of_outer_in_all = outer_read_indices[hit.i2];
-            //     let outer_read_minimizers_len = twin_reads[index_of_outer_in_all].minimizers.len();
-            //     let vec = kmer_map.entry(hit.i2).or_insert(vec![0; outer_read_minimizers_len]);
-            //     for anchor in hit.chain.iter() {
-            //         let reference_hit_kmer = anchor.j;
-            //         vec[reference_hit_kmer as usize] += 1;
-            //     }
-            // }
         }
         //println!("Anchor finding time: {}us", anchor_finding_time);
         //println!("Overlap time: {}us", overlap_time);
@@ -846,13 +839,16 @@ pub fn map_reads_to_outer_reads<'a>(
     //let kmer_count_map = kmer_count_map.into_inner().unwrap();
     let snpmer_relative_bases_map : Vec<FxHashMap<_,_>> = outer_read_to_snpmer_bases_map.into_iter().map(|x| x.into_inner().unwrap()).collect();
     for (outer_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
+
+        //TODO OLD: not used anymore
         let snpmer_bases = &snpmer_relative_bases_map[outer_id];
         let mut vec_snpmer_bases = snpmer_bases.iter().collect::<Vec<_>>();
         vec_snpmer_bases.retain(|x| x.1.len() > 1);
         vec_snpmer_bases.sort_by(|a, b| a.0.cmp(&b.0));
+        //println!("Contig {}, SNPMER_BASES {:?}", twin_reads[index_of_outer_in_all].id, vec_snpmer_bases);
+
         let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
-        //println!("Contig {}, SNPMER_BASES {:?}", twin_reads[index_of_outer_in_all].id, vec_snpmer_bases);
 
         let mut snpmer_to_major_minor_count = vec![];
         for (pos_and_base, count_map) in vec_snpmer_bases.iter(){
@@ -957,7 +953,7 @@ pub fn map_reads_to_unitigs(
                 *contig_id as usize,
                 true
             ) {
-                if twinol.end2 - twinol.start2 < 1000 {
+                if twinol.end2 - twinol.start2 < MIN_READ_LENGTH {
                     continue;
                 }
                 unitig_hits.push(twinol);
@@ -1061,3 +1057,5 @@ fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>()
 }
+
+

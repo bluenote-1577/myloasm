@@ -14,8 +14,8 @@ use myloasm::map_processing;
 use myloasm::mapping;
 use myloasm::seq_parse;
 use myloasm::twin_graph;
+use myloasm::twin_graph::OverlapConfig;
 use myloasm::types;
-use myloasm::types::TwinOverlap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
 use std::fs::File;
@@ -44,7 +44,7 @@ fn main() {
 
     // Step 4: Construct raw unitig graph
     let mut unitig_graph =
-        unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, &overlaps, &args);
+        unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, &args);
 
     // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
     light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir, true);
@@ -115,7 +115,7 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
 
     for file in &args.input_files {
         if !Path::new(file).exists() {
-            eprintln!("Input file {} does not exist. Exiting.", file);
+            eprintln!("ERROR [myloasm] Input file {} does not exist. Exiting.", file);
             std::process::exit(1);
         }
     }
@@ -128,7 +128,7 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
         std::fs::create_dir_all(output_dir.join("temp")).unwrap();
     } else {
         if !output_dir.is_dir() {
-            eprintln!("Output directory specified by `-o` exists and is not a directory.");
+            eprintln!("ERROR [myloasm] Output directory specified by `-o` exists and is not a directory.");
             std::process::exit(1);
         }
 
@@ -136,7 +136,7 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
             std::fs::create_dir_all(&temp_dir).unwrap();
         } else {
             if !temp_dir.is_dir() {
-                eprintln!("Could not create 'temp' directory within output directory.");
+                eprintln!("ERROR [myloasm] Could not create 'temp' directory within output directory.");
                 std::process::exit(1);
             }
         }
@@ -226,8 +226,8 @@ fn get_twin_reads_from_kmer_info(
     output_dir: &PathBuf,
 ) -> types::TwinReadContainer {
     let empty_input = args.input_files.len() == 0;
-
     let twin_read_container;
+
     if empty_input && output_dir.join("twin_reads.bin").exists() {
         twin_read_container = bincode::deserialize_from(BufReader::new(
             File::open(output_dir.join("twin_reads.bin")).unwrap(),
@@ -235,24 +235,24 @@ fn get_twin_reads_from_kmer_info(
         .unwrap();
         log::info!("Loaded twin reads from file.");
     } else {
+        // (1) read file, get twin reads
         log::info!("Getting twin reads from snpmers...");
-        // First: get twin reads from snpmers
         let twin_reads_raw = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
         let num_reads = twin_reads_raw.len();
 
-        // Second: removed contained reads
+        // (2): removed contained reads
         let outer_read_indices_raw =
             twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, &args);
 
-        // Third: map all reads to the outer (non-contained) reads
+        // (3): map all reads to the outer (non-contained) reads
         log::info!("Mapping reads to non-contained (outer) reads...");
         let start = Instant::now();
         let outer_mapping_info =
             mapping::map_reads_to_outer_reads(&outer_read_indices_raw, &twin_reads_raw, &args);
 
-        // Fourth: split chimeric twin reads based on mappings to outer reads
+        // (4): split chimeric twin reads based on mappings to outer reads
         log::info!("Processing mappings...");
-        let (split_twin_reads, split_outer_read_indices) =
+        let (mut split_twin_reads, split_outer_read_indices) =
             map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, &args);
         log::info!(
             "Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
@@ -260,12 +260,26 @@ fn get_twin_reads_from_kmer_info(
             start.elapsed()
         );
 
-        // Fifth: the splitted chimeric reads may be contained within the original reads, so we remove contained reads again
+        // (5): the splitted chimeric reads may be contained within the original reads, so we remove contained reads again
         let outer_read_indices = twin_graph::remove_contained_reads_twin(
             Some(split_outer_read_indices),
             &split_twin_reads,
             &args,
         );
+
+        // (6): map all reads to the outer, chimeric reads
+        let split_outer_read_indices_set = outer_read_indices.iter().cloned().collect::<FxHashSet<_>>();
+        let chimeric_read_indices = (0..split_twin_reads.len()).filter(|x| split_twin_reads[*x].split_chimera && split_outer_read_indices_set.contains(x)).collect::<Vec<_>>();
+        log::info!("Mapping reads to {} outer chimeric split reads...", chimeric_read_indices.len());
+        let chimeric_mapping_info =
+            mapping::map_reads_to_outer_reads(&chimeric_read_indices, &split_twin_reads, &args);
+
+        // (7): fix the depths of the chimeric reads
+        for mapping_info in chimeric_mapping_info.iter() {
+            let chimeric_index = mapping_info.tr_index;
+            let split_chimeric_read = &mut split_twin_reads[chimeric_index];
+            map_processing::populate_depth_from_map_info(split_chimeric_read, mapping_info, 0, split_chimeric_read.base_length);
+        }
 
         twin_read_container = types::TwinReadContainer {
             twin_reads: split_twin_reads,
@@ -286,7 +300,7 @@ fn get_overlaps_from_twin_reads(
     twin_read_container: &types::TwinReadContainer,
     args: &cli::Cli,
     output_dir: &PathBuf,
-) -> Vec<TwinOverlap> {
+) -> Vec<OverlapConfig> {
     let empty_input = args.input_files.len() == 0;
     let twin_reads = &twin_read_container.twin_reads;
     let outer_read_indices = &twin_read_container.outer_indices;

@@ -28,6 +28,9 @@ pub struct UnitigNode {
     pub unique_length: Option<usize>, // Length of the unitig that is not covered by any other unitig's overlap; can be 0
     pub read_min_depths: Vec<(f64, usize)>,
     pub read_median_depths: Vec<(f64, usize)>,
+
+    // If the unitig/contig is considered as an alternate; not implemented TODO
+    pub alternate: bool,
     base_info: BaseInfo,
     mapping_info: MappingInfo,
 }
@@ -283,6 +286,7 @@ impl UnitigGraph {
                 read_min_depths: min_read_depths,
                 read_median_depths: median_read_depths,
                 unique_length: None,
+                alternate: false,
             };
             new_unitig_graph
                 .nodes
@@ -383,8 +387,8 @@ impl UnitigGraph {
         *self = new_unitig_graph;
     }
     // Constructor that creates unitig graph from overlap graph
-    pub fn from_overlaps(reads: &[TwinRead], overlaps: &[TwinOverlap], args: &Cli) -> Self {
-        let overlap_graph = read_graph_from_overlaps_twin(reads, overlaps, args);
+    pub fn from_overlaps(reads: &[TwinRead], overlaps: Vec<OverlapConfig>, args: &Cli) -> Self {
+        let overlap_graph = read_graph_from_overlaps_twin(overlaps, args);
         // Start with empty graph
         let mut unitig_graph = UnitigGraph {
             nodes: FxHashMap::default(),
@@ -445,6 +449,7 @@ impl UnitigGraph {
                 read_median_depths: median_median_depth_vec,
                 read_min_depths: median_min_depth_vec,
                 unique_length: None,
+                alternate: false,
             };
             unitig_graph.nodes.insert(unitig_graph.nodes.len(), unitig);
         }
@@ -1848,7 +1853,8 @@ impl UnitigGraph {
         let mut to_search = VecDeque::new();
         let mut achieved_length = false;
 
-        to_search.push_back((unitig.node_hash_id, direction));
+        //Push_front for dfs
+        to_search.push_front((unitig.node_hash_id, direction));
         nodes_and_distances.insert(unitig.node_hash_id, 0);
         let mut iteration = 0;
 
@@ -2047,7 +2053,7 @@ impl UnitigGraph {
             }
             writeln!(
                 unitig_edge_file,
-                "u{}-u{}, {} {} snp_share:{}, snp_diff:{}, ol_length:{}, ol_score:{}, specific_score:{}",
+                "u{}-u{}, cut:{} safe:{} snp_share:{}, snp_diff:{}, ol_length:{}, ol_score:{}, specific_score:{}",
                 uni1.node_id,
                 uni2.node_id,
                 cut,
@@ -2124,6 +2130,7 @@ mod tests {
                     id: "na".to_string(),
                     min_depth: Some(min_depth),
                     median_depth: Some(2.*min_depth),
+                    split_chimera: false,
                 };
                 
                 self.corresponding_reads.push(generic_read);
@@ -2149,6 +2156,7 @@ mod tests {
                 mapping_info: MappingInfo::default(),
                 read_min_depths: vec![(min_depth, 1000);num_reads],
                 read_median_depths: vec![(min_depth, 1000); num_reads],
+                alternate: false,
             };
 
             self.nodes.insert(node_id, node);
