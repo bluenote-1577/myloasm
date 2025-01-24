@@ -580,7 +580,7 @@ fn heavy_clean_with_walk(
 ) {
     log::info!("Graph cleaning with walks...");
     let save_tips = false;
-    let temperatures = [2., 1.0, 0.5, 0.3];
+    let temperatures = [2., 1.0, 0.5, 0.3, 0.2];
     let ol_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5];
     let aggressive_multipliers = [5, 10, 15];
     let mut global_counter = 0;
@@ -610,13 +610,15 @@ fn heavy_clean_with_walk(
                 );
 
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-                unitig_graph.to_gfa(
-                    temp_dir.join(format!("heavy-{}-walkclean_unitig_graph.gfa", global_counter)),
-                    true,
-                    false,
-                    &twin_reads,
-                    &args,
-                );
+                if counter == 4{
+                    unitig_graph.to_gfa(
+                        temp_dir.join(format!("heavy-{}-walkclean_unitig_graph.gfa", global_counter)),
+                        true,
+                        false,
+                        &twin_reads,
+                        &args,
+                    );
+                }
                 
                 let ind = counter.min(ol_thresholds.len() - 1);
                 let ol_threshold = ol_thresholds[ind];

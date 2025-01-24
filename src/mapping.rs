@@ -813,7 +813,7 @@ pub fn map_reads_to_outer_reads<'a>(
                         //shared_snpmers: hit.shared_snpmers as u32,
                         //chain_reverse: hit.chain_reverse,
                     };
-                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh1));
+                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh2));
                 }
             }
         }
