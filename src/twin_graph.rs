@@ -630,9 +630,7 @@ pub fn print_graph_stdout<T>(graph: &OverlapTwinGraph, file: T) where T: AsRef<s
 }
 
 
-
-
-pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead],  args: &Cli) -> Vec<usize>{
+pub fn remove_contained_reads_twin<'a>(outer_indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead], rescue_contained_second_round: bool, args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
     log::info!("Building inverted index hashmap for all reads...");
@@ -654,19 +652,53 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
     //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
 
     //open file for writing
-    let name = if indices.is_none() { "all-cont.txt" } else { "subset-cont.txt" };
+    let name = if outer_indices.is_none() { "all-cont.txt" } else { "subset-cont.txt" };
     let output_path = Path::new(args.output_dir.as_str()).join(name);
     let bufwriter_dbg = Mutex::new(BufWriter::new(File::create(output_path).unwrap()));
     let contained_reads = Mutex::new(FxHashSet::default());
     let outer_reads = Mutex::new(vec![]);
+    let reads_with_contained_read = Mutex::new(FxHashSet::default());
 
-    let range = if let Some(indices) = indices {
-        indices
+    let range = if let Some(special_indices) = outer_indices {
+        special_indices
     } else {
         (0..twin_reads.len()).into_iter().collect::<Vec<_>>()
     };
 
     log::info!("Removing contained reads...");
+    parallel_remove_contained(range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, &reads_with_contained_read, downsample_factor, args);
+    let num_contained_reads = contained_reads.lock().unwrap().len();
+    log::info!("{} reads are contained; {} outer reads", num_contained_reads, outer_reads.lock().unwrap().len());
+
+    if rescue_contained_second_round{
+        let name = "rescue_cont.txt";
+        let output_path = Path::new(args.output_dir.as_str()).join(name);
+        let bufwriter_dbg = Mutex::new(BufWriter::new(File::create(output_path).unwrap()));
+
+        let mut rescue_range = reads_with_contained_read.lock().unwrap().iter().cloned().collect::<Vec<_>>();
+        let original_outer_reads_set = outer_reads.lock().unwrap().iter().cloned().collect::<FxHashSet<_>>();
+        rescue_range.retain(|x| !original_outer_reads_set.contains(x));
+        let num_outer_read_initial = original_outer_reads_set.len();
+
+        parallel_remove_contained(rescue_range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, &reads_with_contained_read, downsample_factor, args);
+        log::info!("{} reads rescued", original_outer_reads_set.len() as i64 - num_outer_read_initial as i64);
+    }
+
+    log::info!("Time elapsed for removing contained reads is: {:?}", start.elapsed());
+    return outer_reads.into_inner().unwrap();
+}
+
+fn parallel_remove_contained(
+    range: Vec<usize>,
+    twin_reads: &[TwinRead],
+    inverted_index_hashmap: &FxHashMap<u64, FxHashSet<usize>>,
+    bufwriter_dbg: &Mutex<BufWriter<File>>,
+    contained_reads: &Mutex<FxHashSet<usize>>,
+    outer_reads: &Mutex<Vec<usize>>,
+    reads_with_contained_read: &Mutex<FxHashSet<usize>>,
+    downsample_factor: u64,
+    args: &Cli,
+){
     range.into_par_iter().for_each(|i| {
         let mut contained = false;
         let read1 = &twin_reads[i];
@@ -803,6 +835,7 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
                 writeln!(bufwriter_dbg.lock().unwrap(), "{} {} CONTAINED. Times {} {} {}", read1.id, read2.id, inverted_indexing_time.as_micros(), sorting_filtering_time.as_micros(), comparing_time.as_micros()).unwrap();
                 contained = true;
                 contained_reads.lock().unwrap().insert(i);
+                reads_with_contained_read.lock().unwrap().insert(*index);
                 break;
             }
             
@@ -813,9 +846,6 @@ pub fn remove_contained_reads_twin<'a>(indices: Option<Vec<usize>>, twin_reads: 
             outer_reads.lock().unwrap().push(i);
         }
     });
-    log::info!("{} reads are contained", contained_reads.lock().unwrap().len());
-    log::info!("Time elapsed for removing contained reads is: {:?}", start.elapsed());
-    return outer_reads.into_inner().unwrap();
 }
 
 #[inline]

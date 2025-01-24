@@ -30,6 +30,7 @@ fastbloom = "0.8.0"
 crossbeam-channel = "0.5.13"
 flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false }
 gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"] }
+rand = "0.8.5"
 
 #crossbeam-utils = "*"
 

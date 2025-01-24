@@ -17,7 +17,7 @@ pub struct Cli {
     pub kmer_size: usize,
 
     /// Compression ratio
-    #[arg(short, long, default_value = "11")]
+    #[arg(short, long, default_value = "9")]
     pub c: usize,
 
     /// Number of threads to use for processing
@@ -64,7 +64,7 @@ pub struct Cli {
     #[arg(long, default_value_t=0.025, help_heading = "Overlap Parameters")]
     pub snpmer_error_rate: f64,
 
-    #[arg(long, default_value_t=25, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=30, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
     /// Maximum bubble length to pop; keep alternates
@@ -74,7 +74,6 @@ pub struct Cli {
     /// Small bubble length to pop; discard alternates
     #[arg(long, default_value_t=50000, help_heading = "Graph Parameters")]
     pub small_bubble_threshold: usize,
-
 
     /// Test SNPMER error correction
     #[arg(long, help_heading = "Graph Parameters")]

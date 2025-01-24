@@ -936,6 +936,7 @@ dependencies = [
  "memory-stats",
  "minimap2",
  "needletail 0.5.1",
+ "rand",
  "rayon",
  "rust-htslib",
  "rust-lapper",

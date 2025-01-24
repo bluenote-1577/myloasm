@@ -1,4 +1,4 @@
-use crate::types::*;
+use crate::{constants, types::*};
 use bio_seq::prelude::*;
 use std::panic;
 use crate::unitig::*;
@@ -160,7 +160,8 @@ pub fn median(v: &mut [f64]) -> Option<f64> {
 }
 
 #[inline]
-pub fn median_weight(v: &mut [(f64, usize)], quantile: f64) -> Option<f64> {
+pub fn median_weight(v: &[(f64, usize)], quantile: f64) -> Option<f64> {
+    let mut v = v.to_vec();
     if v.len() == 0 {
         return None;
     }
@@ -180,6 +181,28 @@ pub fn median_weight(v: &mut [(f64, usize)], quantile: f64) -> Option<f64> {
     Some(v[median_ind].0)
 }
 
+pub fn quantile_dist(v1: &[(f64, usize)], v2: &[(f64, usize)]) -> Option<f64> {
+    let quants = [0.25, 0.5, 0.75];
+    let quantiles_v1 = quants.iter().map(|x| median_weight(v1, *x)).collect::<Vec<_>>();
+    let quantiles_v2 = quants.iter().map(|x| median_weight(v2, *x)).collect::<Vec<_>>();
+    let mut minimum_distance = vec![];
+    for i in 0..quants.len() {
+        for j in 0..quants.len() {
+            if quantiles_v1[i].is_none() || quantiles_v2[j].is_none() {
+                continue;
+            }
+            //minimum_distance.push((quantiles_v2[j].unwrap() - quantiles_v1[i].unwrap()).abs());
+            let qvi = quantiles_v1[i].unwrap();
+            let qvj = quantiles_v2[j].unwrap();
+            minimum_distance.push(pseudocount_cov(qvi, qvj).abs() - 1.);
+        }
+    }
+    if minimum_distance.len() == 0 {
+        return None;
+    }
+    Some(*minimum_distance.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap())
+}
+
 #[inline]
 pub fn square_root_poisson_kl(cov1: f64, cov2: f64) -> f64 {
     let p_cov1 = cov1 + 1.;
@@ -191,7 +214,7 @@ pub fn square_root_poisson_kl(cov1: f64, cov2: f64) -> f64 {
 
 #[inline]
 pub fn pseudocount_cov(cov1: f64, cov2: f64) -> f64 {
-    let pcount = 5.;
+    let pcount = constants::PSEUDOCOUNT;
     let numerator = cov1.max(cov2) + pcount;
     let denominator = cov1.min(cov2) + pcount;
     return numerator / denominator;
@@ -200,6 +223,8 @@ pub fn pseudocount_cov(cov1: f64, cov2: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use constants::PSEUDOCOUNT;
+
     use super::*;
 
     #[test]
@@ -215,5 +240,20 @@ mod tests {
 
         let mut v = vec![];
         assert_eq!(median_weight(&mut v, 0.5), None);
+    }
+
+    #[test]
+    fn test_quantile_dist() {
+        let v1 = vec![(1.0, 1), (2.0, 2), (3.0, 3)];
+        let v2 = vec![(1.0, 1), (2.0, 2), (3.0, 3)];
+        assert_eq!(quantile_dist(&v1, &v2), Some(0.0));
+
+        let v1 = vec![(1.0, 1), (2.0, 1), (3.0, 1)];
+        let v2 = vec![(2.0, 10), (3.0, 10), (4.0, 10)];
+        assert_eq!(quantile_dist(&v1, &v2), Some(0.0));
+
+        let v1 = vec![(10.0, 5), (10.0, 6), (20.0, 5)];
+        let v2 = vec![(5.0, 1), (5.0, 3), (5.0, 5)];
+        assert_eq!(quantile_dist(&v1, &v2), Some((10. + PSEUDOCOUNT) / (5.0 + PSEUDOCOUNT) - 1.));
     }
 }

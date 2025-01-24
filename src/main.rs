@@ -1,13 +1,13 @@
 use bincode;
 use clap::Parser;
-use flexi_logger::{Duplicate, FileSpec, DeferredNow, Record};
+use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
 use myloasm::consensus;
 use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
-use myloasm::constants::TS_DASHES_BLANK_COLONS_DOT_BLANK;
 use myloasm::constants::MAX_BUBBLE_UNITIGS_FINAL_STAGE;
+use myloasm::constants::TS_DASHES_BLANK_COLONS_DOT_BLANK;
 use myloasm::graph::GraphNode;
 use myloasm::kmer_comp;
 use myloasm::map_processing;
@@ -50,7 +50,8 @@ fn main() {
     light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir, true);
 
     // Step 6: Second round of progressive cleaning; more aggressive.
-    heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
+    //heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
+    heavy_clean_with_walk(&mut unitig_graph, &twin_reads, &args, &temp_dir);
 
     // Step 7: Progressive coverage filter
     let mut contig_graph =
@@ -112,10 +113,12 @@ fn my_own_format(
 }
 
 fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
-
     for file in &args.input_files {
         if !Path::new(file).exists() {
-            eprintln!("ERROR [myloasm] Input file {} does not exist. Exiting.", file);
+            eprintln!(
+                "ERROR [myloasm] Input file {} does not exist. Exiting.",
+                file
+            );
             std::process::exit(1);
         }
     }
@@ -128,7 +131,9 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
         std::fs::create_dir_all(output_dir.join("temp")).unwrap();
     } else {
         if !output_dir.is_dir() {
-            eprintln!("ERROR [myloasm] Output directory specified by `-o` exists and is not a directory.");
+            eprintln!(
+                "ERROR [myloasm] Output directory specified by `-o` exists and is not a directory."
+            );
             std::process::exit(1);
         }
 
@@ -136,14 +141,18 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
             std::fs::create_dir_all(&temp_dir).unwrap();
         } else {
             if !temp_dir.is_dir() {
-                eprintln!("ERROR [myloasm] Could not create 'temp' directory within output directory.");
+                eprintln!(
+                    "ERROR [myloasm] Could not create 'temp' directory within output directory."
+                );
                 std::process::exit(1);
             }
         }
     }
 
     // Initialize logger with CLI-specified level
-    let filespec = FileSpec::default().directory(output_dir).basename("myloasm");
+    let filespec = FileSpec::default()
+        .directory(output_dir)
+        .basename("myloasm");
     flexi_logger::Logger::try_with_str(args.log_level_filter().to_string())
         .expect("Something went wrong with logging")
         .log_to_file(filespec) // write logs to file
@@ -155,7 +164,6 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
     let cli_args: Vec<String> = std::env::args().collect();
     log::info!("COMMAND: {}", cli_args.join(" "));
     log::info!("VERSION: {}", env!("CARGO_PKG_VERSION"));
-
 
     // Validate k-mer size
     if args.kmer_size % 2 == 0 {
@@ -242,7 +250,7 @@ fn get_twin_reads_from_kmer_info(
 
         // (2): removed contained reads
         let outer_read_indices_raw =
-            twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, &args);
+            twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, false, &args);
 
         // (3): map all reads to the outer (non-contained) reads
         log::info!("Mapping reads to non-contained (outer) reads...");
@@ -262,28 +270,48 @@ fn get_twin_reads_from_kmer_info(
 
         // (5): the splitted chimeric reads may be contained within the original reads, so we remove contained reads again
         let outer_read_indices = twin_graph::remove_contained_reads_twin(
-            Some(split_outer_read_indices),
+            //Some(split_outer_read_indices),
+            None,
             &split_twin_reads,
+            false,
             &args,
         );
 
-        // (6): map all reads to the outer, chimeric reads
-        let split_outer_read_indices_set = outer_read_indices.iter().cloned().collect::<FxHashSet<_>>();
-        let chimeric_read_indices = (0..split_twin_reads.len()).filter(|x| split_twin_reads[*x].split_chimera && split_outer_read_indices_set.contains(x)).collect::<Vec<_>>();
-        log::info!("Mapping reads to {} outer chimeric split reads...", chimeric_read_indices.len());
+        // (6): map all reads to the outer new reads, which may be rescued or split chimeric reads
+        let remap_indices = outer_read_indices
+            .iter()
+            .filter(|x| split_twin_reads[**x].min_depth.is_none())
+            .map(|x| *x)
+            .collect::<Vec<_>>();
+        log::info!(
+            "Mapping reads to {} outer (possibly) split reads...",
+            remap_indices.len()
+        );
         let chimeric_mapping_info =
-            mapping::map_reads_to_outer_reads(&chimeric_read_indices, &split_twin_reads, &args);
+            mapping::map_reads_to_outer_reads(&remap_indices, &split_twin_reads, &args);
 
         // (7): fix the depths of the chimeric reads
         for mapping_info in chimeric_mapping_info.iter() {
             let chimeric_index = mapping_info.tr_index;
             let split_chimeric_read = &mut split_twin_reads[chimeric_index];
-            map_processing::populate_depth_from_map_info(split_chimeric_read, mapping_info, 0, split_chimeric_read.base_length);
+            map_processing::populate_depth_from_map_info(
+                split_chimeric_read,
+                mapping_info,
+                0,
+                split_chimeric_read.base_length,
+            );
         }
+
+        // (8): remove bad reads that have nothing mapped to them (this can bug for a variety of reasons)
+        let outer_and_have_coverage_indices = outer_read_indices
+            .iter()
+            .filter(|x| split_twin_reads[**x].min_depth.is_some())
+            .map(|x| *x)
+            .collect::<Vec<_>>();
 
         twin_read_container = types::TwinReadContainer {
             twin_reads: split_twin_reads,
-            outer_indices: outer_read_indices,
+            outer_indices: outer_and_have_coverage_indices,
             tig_reads: vec![],
         };
 
@@ -356,7 +384,7 @@ fn light_progressive_cleaning(
             let read_cutoff = args.tip_read_cutoff;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-            
+
             if unitig_graph.nodes.len() == size_graph {
                 break;
             }
@@ -544,6 +572,103 @@ fn get_contigs_from_progressive_coverage(
     return final_unitig_graph;
 }
 
+fn heavy_clean_with_walk(
+    unitig_graph: &mut unitig::UnitigGraph,
+    twin_reads: &Vec<types::TwinRead>,
+    args: &cli::Cli,
+    temp_dir: &PathBuf,
+) {
+    log::info!("Graph cleaning with walks...");
+    let save_tips = false;
+    let temperatures = [2., 1.0, 0.5, 0.3];
+    let ol_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5];
+    let aggressive_multipliers = [5, 10, 15];
+    let mut global_counter = 0;
+    let mut size_graph = unitig_graph.nodes.len();
+    let samples = 20;
+    let steps = 8;
+
+    let get_seq_config = types::GetSequenceInfoConfig::default();
+
+    for multiplier in aggressive_multipliers{
+        for temperature in temperatures {
+            let mut counter = 0;
+            loop {
+                let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
+                let tip_read_cutoff_heavy = args.tip_read_cutoff * 5;
+                let bubble_threshold_heavy = args.small_bubble_threshold *5;
+                remove_tips_until_stable(
+                    unitig_graph,
+                    twin_reads,
+                    tip_length_cutoff_heavy,
+                    tip_read_cutoff_heavy,
+                    bubble_threshold_heavy,
+                    usize::MAX,
+                    temp_dir,
+                    save_tips,
+                    args,
+                );
+
+                unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+                unitig_graph.to_gfa(
+                    temp_dir.join(format!("heavy-{}-walkclean_unitig_graph.gfa", global_counter)),
+                    true,
+                    false,
+                    &twin_reads,
+                    &args,
+                );
+                
+                let ind = counter.min(ol_thresholds.len() - 1);
+                let ol_threshold = ol_thresholds[ind];
+                unitig_graph.random_walk_over_graph_and_cut(
+                    &args,
+                    samples,
+                    temperature,
+                    steps,
+                    temp_dir.join(format!("walk-edge-{}.txt", global_counter)),
+                    args.tip_length_cutoff * multiplier,
+                    args.tip_read_cutoff * multiplier,
+                    300_000,
+                    ol_threshold,
+                    2 * args.tip_length_cutoff * multiplier
+                );
+
+                unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+                remove_tips_until_stable(
+                    unitig_graph,
+                    twin_reads,
+                    tip_length_cutoff_heavy,
+                    tip_read_cutoff_heavy,
+                    bubble_threshold_heavy,
+                    usize::MAX,
+                    temp_dir,
+                    save_tips,
+                    args,
+                );
+                unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+                counter += 1;
+                global_counter += 1;
+
+                if unitig_graph.nodes.len() == size_graph && counter >= ol_thresholds.len() {
+                    break;
+                }
+                size_graph = unitig_graph.nodes.len();
+
+            }
+        }
+    }
+
+    unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+    unitig_graph.to_gfa(
+        temp_dir.join("after_walk.gfa"),
+        true,
+        true,
+        &twin_reads,
+        &args,
+    );
+}
+
 fn heavy_cleaning(
     unitig_graph: &mut unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
@@ -554,8 +679,10 @@ fn heavy_cleaning(
     let get_seq_config = types::GetSequenceInfoConfig::default();
     let mut size_graph = unitig_graph.nodes.len();
     let mut counter = 0;
-    let cov_score_thresholds = [20., 10., 5., 3., 2.];
-    let ratio_length_thresholds = [0.25, 0.5, 0.75];
+    //let cov_score_thresholds = [20., 10., 5., 3., 2.];
+    let cov_score_thresholds = [20., 10.];
+    //let ratio_length_thresholds = [0.25, 0.5, 0.75];
+    let ratio_length_thresholds = [0.25, 0.5];
     let safety_edge_cov_score_thresholds = [100000000.];
 
     let save_tips = false;
@@ -714,8 +841,7 @@ fn progressive_coverage_contigs(
         unitig_graph_with_threshold
             .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
 
-
-        if cov_thresh < 50.{
+        if cov_thresh < 50. {
             let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
             std::fs::create_dir_all(&prog_dir_cov).unwrap();
             unitig_graph_with_threshold.to_gfa(

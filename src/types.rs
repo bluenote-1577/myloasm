@@ -304,10 +304,6 @@ pub trait NodeMapping {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct SmallTwinOl{
     pub query_id: u32,
-    pub chain_reverse: bool,
-    pub query_range: (u32, u32),
-    pub shared_minimizers: u32,
-    pub shared_snpmers: u32,
     pub diff_snpmers: u32,
 }
 

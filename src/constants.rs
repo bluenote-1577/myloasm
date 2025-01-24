@@ -12,3 +12,6 @@ pub const TS_DASHES_BLANK_COLONS_DOT_BLANK: &str = "%Y-%m-%d %H:%M:%S%.3f";
 pub const MIN_CHAIN_SCORE_COMPARE: i32 = 50;
 pub const MIN_READ_LENGTH: usize = 1000;
 pub const ENDPOINT_MAPPING_FUZZ : u32 = 200;
+// seed with 42 and 31 0s
+pub const RNG_SEED: [u8; 32] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+pub const PSEUDOCOUNT: f64 = 3.;

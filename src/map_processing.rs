@@ -17,7 +17,6 @@ pub struct TwinReadMapping {
     pub tr_index: usize,
     pub mapping_info: MappingInfo,
     pub lapper_strain_max: Lapper<u32, bool>,
-    pub snpmer_alternate_counts: Vec<(u32, [u32;2])>
 }
 
 impl NodeMapping for TwinReadMapping {
@@ -173,15 +172,16 @@ where
         let cond2;
         if start > 200 && stop + 200 < mapped.reference_length() {
             let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
-            let right_count = mapped.mapping_boundaries().count(stop as u32 + 198, stop as u32 + 200);
+            let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
             cond2 = left_count > 3 && right_count > 3 && cov == 1;
         } else {
             cond2 = false;
         }
         let cond3 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov < 3;
+        let cond4 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov == 3;
         if start > 200
-            && stop + 200 < mapped.reference_length()
-            && (cond1 || cond2 || cond3)
+            && start as usize + 200 < mapped.reference_length()
+            && (cond1 || cond2 || cond3 || cond4)
         {
             breakpoints.push(Breakpoints {
                 pos1: start as usize,
@@ -220,46 +220,6 @@ where
     return breakpoints;
 }
 
-fn binomial_test_threshold_snpmers(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, args: &Cli){
-
-    //Remove SNPmers that are likely to be errors
-    let mut new_snpmers = vec![];
-    let mut counter = 0;
-    let mut ambiguous_pos_opt = mapping_info.snpmer_alternate_counts.get(counter);
-    for (pos, snpmer) in twin_read.snpmers.iter(){
-        if let Some(ambiguous_pos) = ambiguous_pos_opt{
-            if *pos as u32 == ambiguous_pos.0{
-                counter += 1;
-                ambiguous_pos_opt = mapping_info.snpmer_alternate_counts.get(counter);
-                
-                //do binomial test. if pass, push
-                let count1 = ambiguous_pos.1[0];
-                let count2 = ambiguous_pos.1[1];
-                let total = count1 + count2;
-                let p = args.snpmer_error_rate;
-                let n = total;
-                let k = count1.max(count2);
-
-                if count2.min(count1) == 1{
-                    continue;
-                }
-
-                let binom_p_val = 1.0 - twin_graph::binomial_test(n as u64, k as u64, 1.0 - p);
-
-                if binom_p_val < 0.01{
-                    new_snpmers.push((*pos, *snpmer));
-                }
-            }
-        }
-        else{
-            new_snpmers.push((*pos, *snpmer));
-        }
-    }
-
-    twin_read.snpmers = new_snpmers;
-
-}
-
 fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, args: &Cli) -> Vec<TwinRead>{
 
     //Return the read, populate the depth from mapping_info
@@ -267,10 +227,6 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
     if break_points.len() == 0{
         twin_read.median_depth = Some(mapping_info.median_mapping_depth());
         twin_read.min_depth = Some(mapping_info.min_mapping_depth());
-    }
-
-    if args.ec{
-        binomial_test_threshold_snpmers(&mut twin_read, mapping_info, args);
     }
 
     let mut new_reads = vec![];
@@ -295,7 +251,9 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             if break_points.len() > 1 {
                 new_read.split_chimera = true;
             }
-            populate_depth_from_map_info(&mut new_read, mapping_info, last_break, bp_start);
+            else{
+                populate_depth_from_map_info(&mut new_read, mapping_info, last_break, bp_start);
+            }
             new_reads.push(new_read);
         }
         last_break = bp_end;
