@@ -421,7 +421,7 @@ fn light_progressive_cleaning(
             [(iteration - 1).min(safety_edge_cov_score_thresholds.len() - 1)];
         unitig_graph.resolve_bridged_repeats(
             &args,
-            0.75 / (divider as f64) * iteration as f64,
+            0.50 / (divider as f64) * iteration as f64,
             None,
             Some(edge_safe_cov_threshold),
             prebridge_file,
@@ -579,10 +579,10 @@ fn heavy_clean_with_walk(
     temp_dir: &PathBuf,
 ) {
     log::info!("Graph cleaning with walks...");
-    let save_tips = false;
-    let temperatures = [2., 1.0, 0.5, 0.3, 0.2];
+    let mut save_removed = false;
+    let temperatures = [2., 1.0, 0.5, 0.3];
     let ol_thresholds = [0.1, 0.2, 0.3, 0.4, 0.5];
-    let aggressive_multipliers = [5, 10, 15];
+    let aggressive_multipliers = [5, 10, 15, 30];
     let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
     let samples = 20;
@@ -591,12 +591,15 @@ fn heavy_clean_with_walk(
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
     for multiplier in aggressive_multipliers{
+        if multiplier > 20{
+            save_removed = true;
+        }
         for temperature in temperatures {
             let mut counter = 0;
             loop {
                 let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
                 let tip_read_cutoff_heavy = args.tip_read_cutoff * 5;
-                let bubble_threshold_heavy = args.small_bubble_threshold *5;
+                let bubble_threshold_heavy = (args.small_bubble_threshold * multiplier).max(1_000_000);
                 remove_tips_until_stable(
                     unitig_graph,
                     twin_reads,
@@ -605,7 +608,7 @@ fn heavy_clean_with_walk(
                     bubble_threshold_heavy,
                     usize::MAX,
                     temp_dir,
-                    save_tips,
+                    save_removed,
                     args,
                 );
 
@@ -622,6 +625,7 @@ fn heavy_clean_with_walk(
                 
                 let ind = counter.min(ol_thresholds.len() - 1);
                 let ol_threshold = ol_thresholds[ind];
+                let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
                     &args,
                     samples,
@@ -634,6 +638,8 @@ fn heavy_clean_with_walk(
                     ol_threshold,
                     2 * args.tip_length_cutoff * multiplier
                 );
+                let length_after_cut = unitig_graph.nodes.len();
+                log::debug!("Cut {} nodes at multiplier {}, temperature {}, and threshold {}", length_before_cut - length_after_cut, multiplier, temperature, ol_threshold);
 
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
@@ -645,7 +651,7 @@ fn heavy_clean_with_walk(
                     bubble_threshold_heavy,
                     usize::MAX,
                     temp_dir,
-                    save_tips,
+                    save_removed,
                     args,
                 );
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
