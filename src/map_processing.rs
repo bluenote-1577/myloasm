@@ -89,7 +89,7 @@ where
     }
 
     if min_blocks.len() == 0{
-        log::debug!("No blocks found for depth calculation, start {} end {}", seq_start, seq_length);
+        log::trace!("No blocks found for depth calculation, start {} end {}", seq_start, seq_length);
         return Some((0.,0.))
     }
     

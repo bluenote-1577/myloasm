@@ -342,3 +342,12 @@ impl BubblePopResult{
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BeamSearchSoln{
+    pub path: Vec<EdgeIndex>,
+    pub coverages: Vec<(f64, usize)>, 
+    pub score: f64,
+    pub path_nodes: Vec<NodeIndex>,
+    pub depth: usize,
+}

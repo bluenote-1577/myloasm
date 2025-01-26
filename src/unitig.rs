@@ -7,7 +7,6 @@ use crate::types::*;
 use crate::unitig_utils::*;
 use rand::prelude::*;
 use bio_seq::prelude::*;
-use fishers_exact::fishers_exact;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rust_lapper::Lapper;
@@ -924,7 +923,7 @@ impl UnitigGraph {
             }
         }
 
-        log::debug!("Removing {} tips", unitigs_to_remove.len());
+        log::trace!("Removing {} tips", unitigs_to_remove.len());
         log::trace!("Unitigs to remove: {:?}", debug_ids);
         self.remove_nodes(&unitigs_to_remove, keep);
     }
@@ -959,7 +958,7 @@ impl UnitigGraph {
             }
         }
         log::debug!(
-            "Removed {} bubbles at max length {}",
+            "BUBBLE: Removed {} bubbles at max length {}",
             num_bubbles,
             max_length
         );
@@ -1119,7 +1118,7 @@ impl UnitigGraph {
                     let start_node_hash_id = self.nodes[&n_id].node_hash_id;
                     let end_node_id = end_node.node_id;
                     let end_node_hash_id = end_node.node_hash_id;
-                    log::debug!("Bubble found between {} and {}", start_node_id, end_node_id);
+                    log::trace!("Bubble found between {} and {}", start_node_id, end_node_id);
                     log::trace!("{:?}", &seen_vertices);
                     let mut path = vec![];
                     let mut debug_path = vec![];
@@ -1149,9 +1148,9 @@ impl UnitigGraph {
                         .map(|x| **x)
                         .collect::<FxHashSet<_>>();
 
-                    log::debug!("Best path {:?}", &debug_path);
+                    log::trace!("Best path {:?}", &debug_path);
                     if !debug_path.contains(&start_node_id) || !debug_path.contains(&end_node_id) {
-                        log::debug!(
+                        log::trace!(
                             "ERROR: Path between {} and {} does not contain start or end node",
                             start_node_id,
                             end_node_id
@@ -1464,7 +1463,7 @@ impl UnitigGraph {
                 self.nodes[&edge.to_unitig].node_id
             );
         }
-        log::debug!("Cut {} z-edges", edges_to_remove.len());
+        log::debug!("Z-EDGE: Cut {} z-edges", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
         self.re_unitig();
     }
@@ -1789,7 +1788,7 @@ impl UnitigGraph {
             );
         }
         log::debug!(
-            "Cutting {} edges that have low relative confidence ({})",
+            "BRIDGED: Cutting {} edges that have low relative confidence ({})",
             removed_edges.len(),
             ol_thresh
         );
@@ -2131,8 +2130,9 @@ impl UnitigGraph {
         direction: Direction,
         unitig_id: Option<NodeIndex>,
         temperature: f64,
+        _max_steps: usize,
         coverages: &mut Vec<(f64, usize)>,
-        rng: &mut StdRng
+        rng: &mut StdRng,
     ) -> Option<EdgeIndex> {
         let unitig_id = match unitig_id{
             Some(unitig_id) => unitig_id,
@@ -2201,7 +2201,7 @@ impl UnitigGraph {
 
     pub fn random_walk_over_graph_and_cut<T>(
         &mut self,
-        args: &Cli,
+        _args: &Cli,
         samples: usize,
         temperature: f64,
         steps: usize,
@@ -2214,7 +2214,6 @@ impl UnitigGraph {
 
     ) where T: AsRef<std::path::Path>,
     {
-        let count_threshold = 2*samples;
         let mut walk_file = BufWriter::new(std::fs::File::create(walk_file).unwrap());
         let total_edgecount = Mutex::new(FxHashMap::default());
         let keys = self.nodes.keys().collect::<Vec<_>>();
@@ -2222,7 +2221,7 @@ impl UnitigGraph {
             let edge_count = self.random_walk_sample(*node_id, samples, temperature, steps);
             for (edge, count) in edge_count{
                 let mut lockmap = total_edgecount.lock().unwrap();
-                let total_count = lockmap.entry(edge).or_insert(0);
+                let total_count = lockmap.entry(edge).or_insert(0.);
                 *total_count += count;
             }
         });
@@ -2236,14 +2235,14 @@ impl UnitigGraph {
             }
             let edge = self.edges[edge_id].as_ref().unwrap();
 
-            let node1_val = total_edgecount.get(&(edge_id, edge.from_unitig)).unwrap_or(&0);
-            let node2_val = total_edgecount.get(&(edge_id, edge.to_unitig)).unwrap_or(&0);
-            let min_val = node1_val.min(node2_val);
-            min_by_nodeid_edgemap.insert(edge_id, *min_val);
+            let node1_val = total_edgecount.get(&(edge_id, edge.from_unitig)).unwrap_or(&0.);
+            let node2_val = total_edgecount.get(&(edge_id, edge.to_unitig)).unwrap_or(&0.);
+            let min_val = node1_val.min(*node2_val);
+            min_by_nodeid_edgemap.insert(edge_id, min_val);
         }
 
         let mut sorted_edges = min_by_nodeid_edgemap.iter().collect::<Vec<_>>();
-        sorted_edges.sort_by(|a, b| a.1.cmp(&b.1));
+        sorted_edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
         for (edge_id, count) in sorted_edges.iter(){
             let edge = self.edges[**edge_id].as_ref().unwrap();
             writeln!(walk_file, "u{},u{} has count: {}", self.nodes[&edge.from_unitig].node_id, self.nodes[&edge.to_unitig].node_id, count).unwrap();
@@ -2260,9 +2259,9 @@ impl UnitigGraph {
             let to_edges = self.nodes[&edge.to_unitig].edges_direction(&to_direction);
 
             for (i,edge_id_adj) in from_edges.iter().chain(to_edges.iter()).enumerate(){
-                let mincount_adj = min_by_nodeid_edgemap.get(edge_id_adj).unwrap_or(&&0);
+                let mincount_adj = min_by_nodeid_edgemap.get(edge_id_adj).unwrap_or(&&0.);
 
-                if (**count as f64) / (*mincount_adj as f64) < ol_thresh {
+                if (**count as f64) / (*mincount_adj) < ol_thresh {
                     self.safely_cut_edge(**edge_id, &mut removed_edges, always_cut_ol_thresh, None, None, max_forward, max_reads_forward, safe_length_back, &mut std::io::empty());
 
                     //Check tip condition
@@ -2292,35 +2291,184 @@ impl UnitigGraph {
 
     }
 
+    fn log_probability_ol_cov(
+        &self, 
+        edge_id: EdgeIndex,
+        start_unitig_id: NodeIndex,
+        temperature: f64,
+        coverages: &[(f64, usize)],
+    ) -> f64 {
+        let edge = self.edges[edge_id].as_ref().unwrap();
+        let other_node = edge.other_node(start_unitig_id);
+        let other_unitig = &self.nodes[&other_node];
+
+        let other_covs = &other_unitig.read_min_depths;
+        let cov_different = quantile_dist(coverages, other_covs);
+
+        let start_unitig = &self.nodes[&start_unitig_id];
+        let same_dir_edges = start_unitig.edges_direction(&edge.node_edge_direction(&start_unitig_id));
+        let max_ol = same_dir_edges.iter().map(|x| self.edges[*x].as_ref().unwrap().overlap.overlap_len_bases).max().unwrap();
+        let ol = edge.overlap.overlap_len_bases;
+        let ol_ratio = ol as f64 / max_ol as f64;
+
+        let cov1;
+        let cov2;
+
+        if edge.f1{
+            cov1 = self.nodes[&edge.from_unitig].read_min_depths.last().unwrap();
+        }
+        else{
+            cov1 = self.nodes[&edge.from_unitig].read_min_depths.first().unwrap();
+        }
+
+        if edge.f2{
+            cov2 = self.nodes[&edge.to_unitig].read_min_depths.first().unwrap();
+        }
+        else{
+            cov2 = self.nodes[&edge.to_unitig].read_min_depths.last().unwrap();
+        }
+
+        let cov_ratio_weight = 1.0 - PSEUDOCOUNT / ((cov1.0.min(cov2.0)).max(1.0) + PSEUDOCOUNT);
+
+        if let Some(cov_different) = cov_different{
+            let edge_prob = ((cov_ratio_weight * (ol_ratio - 1.) - cov_different) / temperature).min(100.0);
+            return edge_prob;
+        }
+        else{
+            return -100.;
+        }
+    }
+
+    fn beam_search_path_prob(
+        &self,
+        starting_node_id: NodeIndex,
+        temperature: f64,
+        _min_num_soln: usize,
+        max_num_soln: usize,
+        _min_prob_soln: f64,
+        depth: usize,
+    )  -> FxHashMap<(EdgeIndex, NodeIndex), f64> {
+        let mut edge_count = FxHashMap::default();
+        let starting_weight = (self.nodes[&starting_node_id].read_indices_ori.len() as f64).sqrt();
+
+        for direction in [Direction::Incoming, Direction::Outgoing]{
+
+            let mut edges_to_search = vec![];
+            let starting_edges = self.nodes[&starting_node_id].edges_direction(&direction);
+            if starting_edges.len() == 0{
+                continue;
+            }   
+
+            let mut starting_soln = BeamSearchSoln::default();
+            starting_soln.coverages = self.nodes[&starting_node_id].read_min_depths.clone();
+            starting_soln.path_nodes = vec![starting_node_id];
+            starting_soln.depth = 0;
+
+            edges_to_search.push((starting_soln, starting_edges));
+            let mut current_depth = 0;
+            let mut solutions = vec![];
+
+            while current_depth < depth{
+                current_depth += 1;
+                let mut candidate_soln = vec![];
+                for (soln, edges) in edges_to_search.iter(){
+                    for edge_id in edges.iter(){
+                        let prob = self.log_probability_ol_cov(*edge_id, *soln.path_nodes.last().unwrap(), temperature, &soln.coverages);
+                        let new_score = prob + soln.score;
+                        candidate_soln.push((edge_id, new_score, soln));
+                    }
+
+                    if edges.len() == 0{
+                        solutions.push(soln.clone());
+                    }
+                }
+                candidate_soln.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+                if candidate_soln.len() > max_num_soln{
+                    candidate_soln.truncate(max_num_soln);
+                }
+
+                let mut new_edges_to_search = vec![];
+
+                for (edge_id, new_score, soln) in candidate_soln{
+                    let mut new_soln = soln.clone();
+                    new_soln.score = new_score;
+                    new_soln.path.push(*edge_id);
+                    new_soln.depth += 1;
+
+                    let other_node = self.edges[*edge_id].as_ref().unwrap().other_node(*soln.path_nodes.last().unwrap());
+                    new_soln.path_nodes.push(other_node);
+                    new_soln.coverages.extend(self.nodes[&other_node].read_min_depths.clone());
+
+                    let other_unitig = &self.nodes[&other_node];
+                    let edge = &self.edges[*edge_id].as_ref().unwrap();
+                    let new_edges = other_unitig.edges_direction(&edge.node_edge_direction(&other_node).reverse());
+                    new_edges_to_search.push((new_soln, new_edges));
+                }
+
+                edges_to_search = new_edges_to_search;
+            }
+
+            for (soln, _) in edges_to_search{
+                solutions.push(soln);
+            }
+
+            let max_absolute_score = solutions.iter().map(|x| x.score).min_by(
+                |a, b| a.partial_cmp(b).unwrap(),
+            ).unwrap();
+            let lse = solutions.iter().map(|x| (x.score - max_absolute_score).exp()).sum::<f64>().ln();
+            let normalized_log_prob = solutions.iter().map(|x| (x.score - max_absolute_score) - lse).collect::<Vec<_>>();
+            let probabilities = normalized_log_prob.iter().map(|x| x.exp()).collect::<Vec<_>>();
+
+            for (i, soln) in solutions.iter().enumerate(){
+                let weight = starting_weight * probabilities[i];
+                for (j, edge_id) in soln.path.iter().enumerate(){
+                    let count = edge_count.entry((*edge_id, soln.path_nodes[j])).or_insert(0.);
+                    *count += weight;
+                }
+            }
+        }
+        return edge_count;
+    }
+
     fn random_walk_sample(
         &self,
         starting_node_id: NodeIndex,
         samples: usize,
         temperature: f64,
         steps: usize,
-    ) -> FxHashMap<(EdgeIndex, NodeIndex), usize> {
+    ) -> FxHashMap<(EdgeIndex, NodeIndex), f64> {
+        let max_steps = 20;
         let mut edge_count = FxHashMap::default();
         let mut rng_seed = [0; 32];
         rng_seed[0] = (starting_node_id % 256) as u8;
         let mut rng = rand::rngs::StdRng::from_seed(rng_seed);
+        let starting_weight = (self.nodes[&starting_node_id].read_indices_ori.len() as f64).sqrt();
         for _ in 0..samples{
-            let mut used_edges = FxHashSet::default();
+            let mut used_edges = vec![];
             let mut coverages = self.nodes[&starting_node_id].read_min_depths.clone();
             let mut left_unitig = Some(starting_node_id);
             let mut right_unitig = Some(starting_node_id);
             let mut left_direction = Direction::Incoming;
             let mut right_direction = Direction::Outgoing;
+            let mut seen_edges = FxHashSet::default();
             for _ in 0..steps{
                 // Get edge based on random traversal criteria if it exists
-                let left_traverse = self.traverse_walk_probabilistic(left_direction, left_unitig, temperature, &mut coverages, &mut rng);
-                let right_traverse = self.traverse_walk_probabilistic(right_direction, right_unitig, temperature, &mut coverages, &mut rng);
+                let left_traverse = self.traverse_walk_probabilistic(left_direction, left_unitig, temperature, max_steps, &mut coverages, &mut rng);
+                let right_traverse = self.traverse_walk_probabilistic(right_direction, right_unitig, temperature, max_steps, &mut coverages, &mut rng);
 
                 if left_traverse.is_none() && right_traverse.is_none(){
                     break;
                 }
 
                 if let Some(left_edge_id) = left_traverse{
-                    used_edges.insert((left_edge_id, left_unitig.unwrap()));
+                    if seen_edges.contains(&left_edge_id){
+                        break;
+                    }
+                    else{
+                        seen_edges.insert(left_edge_id);
+                    }
+                    used_edges.push((left_edge_id, left_unitig.unwrap()));
                     let left_edge = self.edges[left_edge_id].as_ref().unwrap();
                     left_unitig = Some(left_edge.other_node(left_unitig.unwrap()));
                     left_direction = left_edge.node_edge_direction(&left_unitig.unwrap()).reverse();
@@ -2329,7 +2477,13 @@ impl UnitigGraph {
                     left_unitig = None;
                 }
                 if let Some(right_edge_id) = right_traverse{
-                    used_edges.insert((right_edge_id, right_unitig.unwrap()));
+                    if seen_edges.contains(&right_edge_id){
+                        break;
+                    }
+                    else{
+                        seen_edges.insert(right_edge_id);
+                    }
+                    used_edges.push((right_edge_id, right_unitig.unwrap()));
                     let right_edge = self.edges[right_edge_id].as_ref().unwrap();
                     right_unitig = Some(right_edge.other_node(right_unitig.unwrap()));
                     right_direction = right_edge.node_edge_direction(&right_unitig.unwrap()).reverse();
@@ -2339,10 +2493,11 @@ impl UnitigGraph {
                 }
             }
 
-            let median_weight = median_weight(&coverages, 0.5).unwrap();
-            for key in used_edges{
-                let count = edge_count.entry(key).or_insert(0);
-                *count += median_weight as usize;
+            let _median_weight = median_weight(&coverages, 0.5).unwrap();
+            for edge_and_node in used_edges{
+                let count = edge_count.entry(edge_and_node).or_insert(0.);
+                //*count += median_weight as f64 * starting_weight;
+                *count += starting_weight;
             }
         }
 
@@ -3123,7 +3278,34 @@ mod tests {
     }
 
     #[test]
-    fn random_walk_test_digraph(){
+    fn beam_test_simple(){
+        let mut builder = MockUnitigBuilder::new();
+
+        // 1 ---> 2
+        //  (1->4)    
+        // 3 ---> 4 (tip)
+        
+        let n1 = builder.add_node(10, 10.0);
+        let n2 = builder.add_node(10, 10.0);
+        let n3 = builder.add_node(10, 50.0);
+        let n4 = builder.add_node(10, 50.0);
+
+        builder.add_edge(n1, n2, 10000, true, true);
+        builder.add_edge(n3, n4, 10000, true, true);
+        builder.add_edge(n1, n4, 10000, true, true);
+        
+        let (graph, _reads) = builder.build();
+
+        let temp = 1.;
+
+        //This is fickle-- if RNG changes then we'll have to change this... 
+        let edge_counts = graph.beam_search_path_prob(n1, temp, 5, 10, 0.00001, 5);
+        dbg!(&edge_counts);
+        assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
+    }
+
+    #[test]
+    fn beam_walk_test_digraph(){
         let mut builder = MockUnitigBuilder::new();
 
         // 1 <---> 2
@@ -3146,6 +3328,10 @@ mod tests {
         let steps = 100;
 
         let edge_counts = graph.random_walk_sample(n1, samples, temp, steps);
+        dbg!(&edge_counts);
+        assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
+
+        let edge_counts = graph.beam_search_path_prob(n1, temp, 5, 10, 0.00001, 5);
         dbg!(&edge_counts);
         assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
     }
@@ -3172,12 +3358,12 @@ mod tests {
         let n10 = builder.add_node(10, 2.0);
         let n11 = builder.add_node(13, 25.0);
 
-        let _e1 = builder.add_edge(n1, n2, 10000, true, true);
-        let _e2 = builder.add_edge(n2, n3, 10000, true, true);
-        let _e3 = builder.add_edge(n3, n4, 10000, true, true);
-        let _e4 = builder.add_edge(n5, n6, 10000, true, true);
-        let _e5 = builder.add_edge(n6, n7, 10000, true, true);
-        let _e6 = builder.add_edge(n7, n8, 10000, true, true);
+        let e1 = builder.add_edge(n1, n2, 10000, true, true);
+        let e2 = builder.add_edge(n2, n3, 10000, true, true);
+        let e3 = builder.add_edge(n3, n4, 10000, true, true);
+        let e4 = builder.add_edge(n5, n6, 10000, true, true);
+        let e5 = builder.add_edge(n6, n7, 10000, true, true);
+        let e6 = builder.add_edge(n7, n8, 10000, true, true);
         let _e7 = builder.add_edge(n9, n10, 10000, true, true);
 
         let e8 = builder.add_edge(n10, n11, 10000, true, true); // 7
@@ -3192,28 +3378,100 @@ mod tests {
         let steps = 5;
 
 
-        let mut total_edgecounts = FxHashMap::default();
-        for nodeid in 0..10{
-            let edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
-            for (edge_id, count) in edge_counts{
-                let total_count = total_edgecounts.entry(edge_id).or_insert(0);
-                *total_count += count;
+        for j in 0..2{
+            let mut total_edgecounts = FxHashMap::default();
+            for nodeid in 0..10{
+                let edge_counts;
+                if j == 0{
+                    edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
+                }
+                else{
+                    edge_counts = graph.beam_search_path_prob(nodeid, temp, 5, 10, 0.00001, 5);
+                }
+                for (edge_id, count) in edge_counts{
+                    let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
+                    *total_count += count;
+                }
+            }
+            //print by sorted key
+            let mut keys: Vec<_> = total_edgecounts.keys().collect();
+            keys.sort();
+            for key in keys{
+                println!("Edge {:?} : {}", key, total_edgecounts[key]);
+            }
+
+            let bad_edge1 = (e11, n6);
+            let bad_edge2 = (e9, n1);
+            let bad_edge3 = (e10, n4);
+            let bad_edge4 = (e8, n10);
+            let good_edge = (e3, n3);
+
+            for bad_edge in [bad_edge1, bad_edge2, bad_edge3, bad_edge4].iter(){
+                assert!(*total_edgecounts.get(bad_edge).unwrap_or(&0.) < 
+                *total_edgecounts.get(&good_edge).unwrap_or(&0.) * 0.1);
+            }
+
+            let good_edges = vec![(e1, n1), (e2, n2), (e4, n5), (e5, n6), (e6, n7)];
+            for good_edge in good_edges{
+                assert!(*total_edgecounts.get(&good_edge).unwrap_or(&0.) > 0.01);
             }
         }
-        //print by sorted key
-        let mut keys: Vec<_> = total_edgecounts.keys().collect();
-        keys.sort();
-        for key in keys{
-            println!("Edge {:?} : {}", key, total_edgecounts[key]);
-        }
+    }
 
-        let bad_edge1 = (e11, n6);
-        let bad_edge2 = (e9, n1);
-        let bad_edge3 = (e10, n4);
-        let bad_edge4 = (e8, n10);
+    #[test]
+    fn beam_walk_test_circular(){
+        let mut builder = MockUnitigBuilder::new();
 
-        for bad_edge in [bad_edge1, bad_edge2, bad_edge3, bad_edge4].iter(){
-            assert!(total_edgecounts.get(bad_edge).unwrap_or(&0) < &100);
+        //0 >--> 1 >--> 0 
+        //0 >--< 1 
+        let n0 = builder.add_node(10, 20.0);
+        let n1 = builder.add_node(10, 20.0);
+
+        let e0 = builder.add_edge(n0, n1, 11000, true, true);
+        let e1 = builder.add_edge(n0, n1, 3500, true, false);
+        let _e2 = builder.add_edge(n1, n0, 6600, true, true);
+        
+        let (graph, _reads) = builder.build();
+
+        let temp = 0.30;
+        let samples = 10;
+        let steps = 10;
+
+
+        for j in 0..2{
+            let mut total_edgecounts = FxHashMap::default();
+            for nodeid in 0..2{
+                let edge_counts;
+                if j == 0{
+                    edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
+                }
+                else{
+                    edge_counts = graph.beam_search_path_prob(nodeid, temp, 5, 10, 0.00001, 5);
+                }
+                 
+                for (edge_id, count) in edge_counts{
+                    let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
+                    *total_count += count;
+                }
+            }
+            //print by sorted key
+            let mut keys: Vec<_> = total_edgecounts.keys().collect();
+            keys.sort();
+            for key in keys{
+                println!("Edge {:?} : {}", key, total_edgecounts[key]);
+            }
+
+            let bad_edge1 = (e1, n0);
+            let bad_edge2 = (e1, n1);
+            let good_edge = (e0, n0);
+
+            //1/5 = 20% chance
+            for bad_edge in [bad_edge1, bad_edge2].iter(){
+                let chance = steps as f64 * samples as f64 * 0.2;
+                let edge_count = total_edgecounts.get(bad_edge).unwrap_or(&0.);
+                let good_edge_count = total_edgecounts.get(&good_edge).unwrap_or(&0.);
+                assert!(edge_count / good_edge_count < chance);
+            }
         }
     }
 }

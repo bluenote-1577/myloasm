@@ -33,7 +33,7 @@ pub struct Cli {
     pub output_dir: String,
 
     /// Verbosity level. Written to the .log file in output directory.
-    #[arg(short, long, value_enum, default_value = "info")]
+    #[arg(short, long, value_enum, default_value = "debug")]
     pub log_level: LogLevel,
 
     /// Length of tip to remove
