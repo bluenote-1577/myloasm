@@ -28,6 +28,11 @@ pub trait GraphNode {
 
     fn in_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
     fn out_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
+
+    //Can break if in_edges[0] is a non-circular edge...
+    fn is_circular(&self) -> bool{
+        self.in_edges().len() == 1 && self.out_edges().len() == 1 && self.in_edges()[0] == self.out_edges()[0]
+    }
 }
 
 // Common edge trait - both ReadOverlapEdgeTwin and UnitigEdge share these
@@ -76,6 +81,8 @@ pub trait GraphEdge {
             panic!("Edge does not connect to node");
         }
     }
+
+    fn edge_id_est(&self, c: usize) -> f64;
 }
 
 // Base implementation of a bidirected graph that both can use

@@ -94,8 +94,6 @@ pub fn write_to_paf(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &Cli
             write_paf(&mut parz_paf, records.unwrap());
         }
     }).join().unwrap();
-
-
 }
 
 pub fn outer_consensus(final_graph: &UnitigGraph, reads: &Vec<TwinRead>, args: &Cli) {

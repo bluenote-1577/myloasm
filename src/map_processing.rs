@@ -1,9 +1,11 @@
 use crate::cli::Cli;
 use crate::constants::ENDPOINT_MAPPING_FUZZ;
+use crate::constants::IDENTITY_THRESHOLDS;
+use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MINIMIZER_END_NTH_COV;
+use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
-use crate::twin_graph;
 use std::io::Write;
 use std::io::BufWriter;
 use std::path::Path;
@@ -12,11 +14,13 @@ use fxhash::FxHashMap;
 use rayon::prelude::*;
 use rust_lapper::Lapper;
 use std::sync::Mutex;
+use ordered_float::OrderedFloat;
 
+type SnpmerIdentity = OrderedFloat<f64>;
 pub struct TwinReadMapping {
     pub tr_index: usize,
     pub mapping_info: MappingInfo,
-    pub lapper_strain_max: Lapper<u32, bool>,
+    pub lapper_strain_max: Lapper<u32, SnpmerIdentity>,
 }
 
 impl NodeMapping for TwinReadMapping {
@@ -43,24 +47,27 @@ impl NodeMapping for TwinReadMapping {
     }
 }
 
-pub fn median_and_min_depth_from_lapper<T>(lapper: &Lapper<u32, T>, sampling: usize, seq_start: usize, seq_length: usize) -> Option<(f64,f64)> 
-where
-    T: Eq + Clone + Send + Sync
+pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SnpmerIdentity>, sampling: usize, seq_start: usize, seq_length: usize, snpmer_identity_cutoff: f64) -> Option<(f64,f64)> 
+//where
+    //T: Eq + Clone + Send + Sync + Float
 {
     //TODO the block size should depend on read length
     let block_size = 20_000;
     let mut min_blocks = vec![];
     let mut median_blocks = vec![];
     let mut depths = vec![];
-    if sampling > sampling{
-        return None;
-    }
+    let intervals_cutoff = lapper
+        .iter()
+        .filter(|x| x.val >= OrderedFloat(snpmer_identity_cutoff))
+        .map (|x| x.clone())
+        .collect::<Vec<_>>();
+    let lapper_cutoff = Lapper::new(intervals_cutoff);
     
     //Sample depth every 'sampling' bases, pad by block_size.
     let mut next_block = block_size;
     for pos in ((seq_start + sampling)..(seq_length - sampling)).step_by(sampling)
     {
-        let depth = lapper.count(pos as u32, pos as u32 + 1);
+        let depth = lapper_cutoff.count(pos as u32, pos as u32 + 1);
         depths.push(depth);
         if pos > next_block && depths.len() > 0{
             depths.sort();
@@ -220,14 +227,7 @@ where
     return breakpoints;
 }
 
-fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, args: &Cli) -> Vec<TwinRead>{
-
-    //Return the read, populate the depth from mapping_info
-    //TODO this doesn't do anything -- we add a BP and then populate it later down...
-    if break_points.len() == 0{
-        twin_read.median_depth = Some(mapping_info.median_mapping_depth());
-        twin_read.min_depth = Some(mapping_info.min_mapping_depth());
-    }
+fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
 
     let mut new_reads = vec![];
     break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
@@ -264,8 +264,30 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
 #[inline]
 pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, start: usize, end: usize){
     let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizers);
-    let (min_depth, median_depth) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini).unwrap();
-    twin_read.min_depth = Some(min_depth);
+    let mut min_depths = [0.; ID_THRESHOLD_ITERS];
+    let mut median_depth = 0.;
+
+    for (i,id) in IDENTITY_THRESHOLDS.iter().enumerate() {
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+        median_depth = median_depth_t;
+        min_depths[i] = min_depth;
+    }
+
+    // Change snpmer id threshold based on coverage
+    if min_depths[0] >= MIN_COV_READ as f64 && min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64 {
+        //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
+        let mut try_id = min_depths[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
+        loop{
+            let (min_depth_try, _) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+            if min_depth_try >= MIN_COV_READ as f64 {
+                twin_read.snpmer_id_threshold = Some(try_id);
+                break;
+            }
+            try_id -= 0.05 / 100.;
+        }
+    }
+
+    twin_read.min_depth_multi = Some(min_depths);
     twin_read.median_depth = Some(median_depth);
 }
 

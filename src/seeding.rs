@@ -457,9 +457,11 @@ pub fn get_twin_read_syncmer(
         base_length: len,
         dna_seq: string.try_into().unwrap(),
         est_id: seq_id,
+        outer: false,
         median_depth: None,
-        min_depth: None,
+        min_depth_multi: None,
         split_chimera: false,
+        snpmer_id_threshold: None,
     })
 }
 
@@ -568,9 +570,11 @@ pub fn get_twin_read(
         base_length: len,
         dna_seq: string.try_into().unwrap(),
         est_id: seq_id,
+        outer: false,
         median_depth: None,
-        min_depth: None,
+        min_depth_multi: None,
         split_chimera: false,
+        snpmer_id_threshold: None,
     });
 
 }

@@ -30,6 +30,7 @@ pub struct OverlapConfig{
     pub read_id_j: String,
     pub read_length_i: usize,
     pub read_length_j: usize,
+    pub snpmer_hits: Vec<SnpmerHit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Hash, Eq)]
@@ -58,6 +59,68 @@ impl GraphNode for ReadData {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Default, Eq)]
+pub struct SnpmerOverlapConfig{
+    pub snpmer_overlap_set: FxHashSet<(u32, bool)>,
+    pub edge: EdgeIndex,
+    pub length: usize
+}
+
+impl SnpmerOverlapConfig{
+    pub fn greater_than(&self, other: &SnpmerOverlapConfig) -> bool {
+        if self.length > other.length {
+            for pos_match in other.snpmer_overlap_set.iter(){
+                if !self.snpmer_overlap_set.contains(pos_match){
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    pub fn soft_better_than(&self, other: &SnpmerOverlapConfig) -> bool {
+        if self.length > other.length {
+            for pos_match in self.snpmer_overlap_set.iter(){
+                // Is not better than if a mismatch in self is a match in other
+                if !pos_match.1{
+                    let pos_match_ideal = (pos_match.0, true);
+                    if other.snpmer_overlap_set.contains(&pos_match_ideal){
+                        return false;
+                    }
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    pub fn sort(to_sort: &mut Vec<SnpmerOverlapConfig>){
+        to_sort.sort_by(|a,b| (a.snpmer_overlap_set.len(), a.length).cmp(&(b.snpmer_overlap_set.len(), b.length)));
+    }
+
+    pub fn get_maximal(overlaps: &[SnpmerOverlapConfig]) -> Vec<usize> {
+        let mut maximal = vec![];
+        // look at largest first
+        for i in (0..overlaps.len()).rev(){
+            let mut is_maximal = true;
+            for j in (i..overlaps.len()).rev(){
+                if i == j{
+                    continue;
+                }
+                if overlaps[j].greater_than(&overlaps[i]){
+                    is_maximal = false;
+                    break;
+                }
+            }
+            if is_maximal{
+                maximal.push(i);
+            }
+        }
+        return maximal;
+    }
+}
+
 #[derive(Debug, Clone,PartialEq, Default, Hash, Eq, Serialize, Deserialize)]
 pub struct ReadOverlapEdgeTwin {
     pub node1: NodeIndex,
@@ -71,7 +134,8 @@ pub struct ReadOverlapEdgeTwin {
     pub overlap_len_bases: usize,
     pub shared_minimizers: usize,
     pub diff_snpmers: usize,
-    pub shared_snpmers: usize
+    pub shared_snpmers: usize,
+    pub snpmer_hits: Vec<SnpmerHit>
 }
 
 impl GraphEdge for ReadOverlapEdgeTwin {
@@ -82,6 +146,9 @@ impl GraphEdge for ReadOverlapEdgeTwin {
     }
     fn orientation2(&self) -> bool {
         self.forward2
+    }
+    fn edge_id_est(&self, c: usize) -> f64{
+        id_est(self.shared_minimizers, self.diff_snpmers, c as u64)
     }
 }
 
@@ -103,6 +170,117 @@ impl ReadOverlapEdgeTwin{
 pub type OverlapTwinGraph = BidirectedGraph<ReadData, ReadOverlapEdgeTwin>;
 
 impl OverlapTwinGraph{
+
+    fn get_snpmer_overlap_set_vec(&self, node: &ReadData, direction: &Direction) -> Vec<SnpmerOverlapConfig>{
+        let mut snpmer_overlap_set_vec = vec![];
+        let edges = node.edges_direction(&direction);
+        //Get snpmer_overlap_set_vec
+        for edge_id in edges.iter(){
+            let mut snpmer_overlap_set = FxHashSet::default();
+            let edge = self.edges[*edge_id].as_ref().unwrap();
+            let mut min_pos = u32::MAX;
+            let mut max_pos = 0;
+            for snpmer_hit in edge.snpmer_hits.iter(){
+                let equal = snpmer_hit.bases.0 == snpmer_hit.bases.1;
+                let pos;
+                if node.index == edge.node1(){
+                    pos = snpmer_hit.pos1;
+                }
+                else{
+                    pos = snpmer_hit.pos2;
+                }
+                snpmer_overlap_set.insert((pos, equal));
+                if pos < min_pos{
+                    min_pos = pos;
+                }
+                if pos > max_pos{
+                    max_pos = pos;
+                }
+            }
+            
+            let length = if min_pos == u32::MAX {0} else { max_pos - min_pos};
+            let config = SnpmerOverlapConfig{
+                snpmer_overlap_set,
+                edge: *edge_id,
+                length: length as usize
+            };
+            snpmer_overlap_set_vec.push(config);
+        }
+        SnpmerOverlapConfig::sort(&mut snpmer_overlap_set_vec);
+        return snpmer_overlap_set_vec;
+    }
+
+    pub fn get_maximal_overlaps(&mut self, args: &Cli){
+        log::info!("Getting maximal overlaps...");
+        let edges_to_remove = Mutex::new(FxHashSet::default());
+        self.nodes.iter().for_each(|(_, node)| {
+            for direction in [Direction::Incoming, Direction::Outgoing]{
+                let snpmer_overlap_set_vec = self.get_snpmer_overlap_set_vec(node, &direction);
+                let maximal = SnpmerOverlapConfig::get_maximal(&snpmer_overlap_set_vec);
+                let mut optimal_edge_ids = vec![];
+                let edges = node.edges_direction(&direction);
+                log::trace!("Read {} ({}), direction: {:?}", node.read_id, node.index, direction);
+                for i in 0..edges.len(){
+                    let edge_id = snpmer_overlap_set_vec[i].edge;
+                    let edge = &self.edges[edge_id].as_ref().unwrap();
+                    if maximal.contains(&i){
+                        log::trace!("MAXIMAL ({}-{}) snp_diff:{} snp_share:{} ol:{}", 
+                        &edge.node1(), edge.node2(), edge.diff_snpmers, edge.shared_snpmers, edge.overlap_len_bases);
+                    }
+                    else{
+                        log::trace!("MINIMAL ({}-{}) snp_diff:{} snp_share:{} ol:{}", 
+                        &edge.node1(), edge.node2(), edge.diff_snpmers, edge.shared_snpmers, edge.overlap_len_bases);
+                        edges_to_remove.lock().unwrap().insert(i);
+                    }
+                }
+                for index in maximal.iter(){
+                    let edge_id = snpmer_overlap_set_vec[*index].edge;
+                    let mut optimal = true;
+                    for index2 in maximal.iter(){
+                        if index == index2{
+                            continue;
+                        }
+                        if snpmer_overlap_set_vec[*index2].soft_better_than(&snpmer_overlap_set_vec[*index]){
+                            optimal = false;
+
+                            edges_to_remove.lock().unwrap().insert(edge_id);
+                            break;
+                        }
+                    }
+                    if optimal{
+                        let edge = &self.edges[edge_id].as_ref().unwrap();
+                        optimal_edge_ids.push(edge_id);
+                        let mut print_snpvec = snpmer_overlap_set_vec[*index].snpmer_overlap_set.iter().collect::<Vec<_>>();
+                        print_snpvec.sort();
+                        log::trace!("OPTIMAL ({}-{}) snp_diff:{} snp_share:{} ol:{} vec:{:?}", edge.node1(), edge.node2(), edge.diff_snpmers, edge.shared_snpmers, edge.overlap_len_bases, print_snpvec);
+                    }
+                }
+
+                if optimal_edge_ids.len() == 0{
+                    continue
+                }
+
+                let mut optimal_edges_with_fsv = optimal_edge_ids.iter().map(|x|{
+                     let edge = &self.edges[*x].as_ref().unwrap();
+                     let fsv = id_est(edge.shared_minimizers, edge.diff_snpmers, args.c as u64);
+                     (*x, fsv)
+                }).collect::<Vec<_>>();
+                
+                optimal_edges_with_fsv.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap());
+                let highest_fsv = optimal_edges_with_fsv[0].1;
+                for (edge_id, fsv) in optimal_edges_with_fsv{
+                    let edge = &self.edges[edge_id].as_ref().unwrap();
+                    if highest_fsv - fsv > 0.002{
+                        edges_to_remove.lock().unwrap().insert(edge_id);
+                        log::trace!("NON OPTIMAL ({}-{}) snp_diff:{} snp_share:{} ol:{}", edge.node1(), edge.node2(), edge.diff_snpmers, edge.shared_snpmers, edge.overlap_len_bases);
+                    }
+                }
+            }
+        });
+
+        self.remove_edges(edges_to_remove.into_inner().unwrap());
+    }
+
     pub fn other_node(&self, node: NodeIndex, edge: &ReadOverlapEdgeTwin) -> NodeIndex {
         if edge.node1 == node {
             edge.node2
@@ -113,7 +291,7 @@ impl OverlapTwinGraph{
 
     //Initial construction allowed lax overlaps, now prune if 
     //it doesn't cause tipping. Can look into more sophisticated heuristics later.
-    pub fn prune_lax_overlaps(&mut self){
+    pub fn prune_lax_overlaps(&mut self, c: usize, snpmer_threshold_strict: f64, snpmer_error_rate_strict: f64){
         let mut edges_to_remove = FxHashSet::default();
         for i in 0..self.edges.len(){
             let edge_opt = &self.edges[i];
@@ -123,7 +301,7 @@ impl OverlapTwinGraph{
 
             let edge = edge_opt.as_ref().unwrap();
             // Good overlap
-            if edge.diff_snpmers == 0{
+            if same_strain_edge(edge, c, snpmer_threshold_strict, snpmer_error_rate_strict){
                 continue;
             }
 
@@ -343,6 +521,9 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
     let bufwriter = Mutex::new(BufWriter::new(std::fs::File::create(overlaps_file).unwrap()));
     let outer_twin_reads = outer_read_indices.iter().map(|x| (*x, &twin_reads[*x])).collect::<FxHashMap<_,_>>();
 
+    // Contained reads may still lurk in the outer reads, remove again for sure.
+    let contained_reads_again = Mutex::new(FxHashSet::default());
+
     log::info!("Indexing outer reads for overlapping...");
     let inverted_index = get_minimizer_index_ref(&outer_twin_reads);
     
@@ -366,23 +547,51 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
             }
 
             let twlaps = compare_twin_reads(&read, &read2, Some(&anchors), None, i, outer_ref_id as usize, true);
-            let best_overlaps = comparison_to_overlap(&twlaps, &twin_reads, args, &bufwriter);
+
+            let mut possible_containment = false;
+            //Check for contained read
+            for twlap in twlaps.iter(){
+                let mut smaller_read_index = i;
+                if r1_contained_r2(&twlap, &read, &read2, true, args.c){
+                    possible_containment = true;
+                }
+                else if r1_contained_r2(&twlap, &read2, &read, true, args.c){
+                    possible_containment = true;
+                    smaller_read_index = outer_ref_id as usize;
+
+                }
+                if possible_containment{
+                    if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold_strict, args.snpmer_error_rate_strict){
+                        contained_reads_again.lock().unwrap().insert(smaller_read_index);
+                    }
+                }
+            }
+
+            if possible_containment{
+                continue
+            }
+
+            let best_overlaps = comparison_to_overlap(twlaps, &twin_reads, args, &bufwriter);
             for best_ol in best_overlaps{
                 overlaps.lock().unwrap().push(best_ol);
             }
         }
     });
 
-    return overlaps.into_inner().unwrap();
+    let contained_reads = contained_reads_again.into_inner().unwrap();
+    let mut ol = overlaps.into_inner().unwrap();
+    ol.retain(|x| !contained_reads.contains(&x.read_i) && !contained_reads.contains(&x.read_j));
+
+    return ol;
 
 }
 
-pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], args: &Cli, writer: &Mutex<BufWriter<File>>) -> Vec<OverlapConfig>{
+pub fn comparison_to_overlap(twlaps: Vec<TwinOverlap>, twin_reads: &[TwinRead], args: &Cli, writer: &Mutex<BufWriter<File>>) -> Vec<OverlapConfig>{
 
     let mut overlap_possibilites_out = vec![];
     let mut overlap_possibilites_in = vec![];
 
-    for twlap in twlaps.iter() {
+    for twlap in twlaps{
 
         let i = twlap.i1;
         let j = twlap.i2;
@@ -393,7 +602,7 @@ pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], ar
 
         //check if end-to-end overlap
         let identity = id_est(twlap.shared_minimizers, twlap.diff_snpmers, args.c as u64);
-        let same_strain_lax = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold, args.snpmer_error_rate);
+        let same_strain_lax = same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, args.snpmer_threshold_lax, args.snpmer_error_rate_lax);
 
         let aln_len1 = twlap.end1 - twlap.start1;
         let aln_len2 = twlap.end2 - twlap.start2;
@@ -420,6 +629,7 @@ pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], ar
                     read_id_j: read2.id.clone(),
                     read_length_i: read1.base_length,
                     read_length_j: read2.base_length,
+                    snpmer_hits: twlap.snpmer_relative_bases
                 };
                 if same_strain_lax{
                     overlap_possibilites_in.push(ol_config);
@@ -443,7 +653,8 @@ pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], ar
                     read_id_i: read1.id.clone(),
                     read_id_j: read2.id.clone(),
                     read_length_i: read1.base_length,
-                    read_length_j: read2.base_length
+                    read_length_j: read2.base_length,
+                    snpmer_hits: twlap.snpmer_relative_bases
                 };
                 if same_strain_lax{
                     overlap_possibilites_out.push(ol_config);
@@ -467,7 +678,8 @@ pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], ar
                     read_id_i: read1.id.clone(),
                     read_id_j: read2.id.clone(),
                     read_length_i: read1.base_length,
-                    read_length_j: read2.base_length
+                    read_length_j: read2.base_length,
+                    snpmer_hits: twlap.snpmer_relative_bases
                 };
                 if same_strain_lax{
                     overlap_possibilites_in.push(ol_config);
@@ -490,7 +702,8 @@ pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], ar
                     read_id_i: read1.id.clone(),
                     read_id_j: read2.id.clone(),
                     read_length_i: read1.base_length,
-                    read_length_j: read2.base_length
+                    read_length_j: read2.base_length,
+                    snpmer_hits: twlap.snpmer_relative_bases
                 };
                 if same_strain_lax{
                     overlap_possibilites_out.push(ol_config);
@@ -541,7 +754,7 @@ pub fn comparison_to_overlap(twlaps: &[TwinOverlap], twin_reads: &[TwinRead], ar
     return best_overlaps;
 }
 
-pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, _args: &Cli) -> OverlapTwinGraph
+pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, args: &Cli) -> OverlapTwinGraph
 {
     let mut nodes = FxHashMap::default();
     let mut edges = vec![];
@@ -561,7 +774,8 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, _args: &Cli) 
             overlap_len_bases: overlap.overlap1_len.max(overlap.overlap2_len),
             shared_minimizers: overlap.shared_mini,
             diff_snpmers: overlap.diff_snpmer,
-            shared_snpmers: overlap.shared_snpmer
+            shared_snpmers: overlap.shared_snpmer,
+            snpmer_hits: overlap.snpmer_hits
         };
 
         edges.push(Some(new_read_overlap));
@@ -592,7 +806,8 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, _args: &Cli) 
 
     let mut graph = OverlapTwinGraph { nodes, edges };
 
-    graph.prune_lax_overlaps();
+    //graph.get_maximal_overlaps(args);
+    graph.prune_lax_overlaps(args.c, args.snpmer_threshold_strict, args.snpmer_error_rate_strict);
     graph.transitive_reduction();
 
     return graph;
@@ -630,7 +845,7 @@ pub fn print_graph_stdout<T>(graph: &OverlapTwinGraph, file: T) where T: AsRef<s
 }
 
 
-pub fn remove_contained_reads_twin<'a>(outer_indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead], rescue_contained_second_round: bool, args: &Cli) -> Vec<usize>{
+pub fn remove_contained_reads_twin<'a>(outer_indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead], args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
     log::info!("Building inverted index hashmap for all reads...");
@@ -669,20 +884,6 @@ pub fn remove_contained_reads_twin<'a>(outer_indices: Option<Vec<usize>>, twin_r
     parallel_remove_contained(range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, &reads_with_contained_read, downsample_factor, args);
     let num_contained_reads = contained_reads.lock().unwrap().len();
     log::info!("{} reads are contained; {} outer reads", num_contained_reads, outer_reads.lock().unwrap().len());
-
-    if rescue_contained_second_round{
-        let name = "rescue_cont.txt";
-        let output_path = Path::new(args.output_dir.as_str()).join(name);
-        let bufwriter_dbg = Mutex::new(BufWriter::new(File::create(output_path).unwrap()));
-
-        let mut rescue_range = reads_with_contained_read.lock().unwrap().iter().cloned().collect::<Vec<_>>();
-        let original_outer_reads_set = outer_reads.lock().unwrap().iter().cloned().collect::<FxHashSet<_>>();
-        rescue_range.retain(|x| !original_outer_reads_set.contains(x));
-        let num_outer_read_initial = original_outer_reads_set.len();
-
-        parallel_remove_contained(rescue_range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, &reads_with_contained_read, downsample_factor, args);
-        log::info!("{} reads rescued", original_outer_reads_set.len() as i64 - num_outer_read_initial as i64);
-    }
 
     log::info!("Time elapsed for removing contained reads is: {:?}", start.elapsed());
     return outer_reads.into_inner().unwrap();
@@ -784,7 +985,8 @@ fn parallel_remove_contained(
             let diff_snpmers = twin_overlap.diff_snpmers;
 
             let identity = id_est(shared_minimizers, diff_snpmers, args.c as u64);
-            let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, args.c as u64, args.snpmer_threshold_contain, 0.);
+            let snpmer_threshold = read1.snpmer_id_threshold.unwrap_or(args.snpmer_threshold_strict);
+            let same_strain = same_strain(shared_minimizers, diff_snpmers, twin_overlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict);
 
             let len1 = twin_overlap.end1 - twin_overlap.start1;
             let len2 = twin_overlap.end2 - twin_overlap.start2;
@@ -869,6 +1071,10 @@ pub fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
     let p_value = 1.0 - binomial.cdf(k);
 
     p_value
+}
+
+pub fn same_strain_edge(edge: &ReadOverlapEdgeTwin, c: usize, snpmer_threshold: f64, snpmer_error_rate: f64) -> bool {
+    return same_strain(edge.shared_minimizers, edge.diff_snpmers, edge.shared_snpmers, c as u64, snpmer_threshold, snpmer_error_rate);
 }
 
 pub fn same_strain(minimizers: usize, snp_diff: usize, snp_shared: usize,  c: u64, snpmer_threshold: f64, snpmer_error_rate: f64) -> bool {
@@ -957,7 +1163,8 @@ mod tests {
                 overlap_len_bases: 2000,
                 shared_minimizers: 100,
                 diff_snpmers: edge.diff_snpmers,
-                shared_snpmers: 10
+                shared_snpmers: 10,
+                snpmer_hits: vec![],
             };
 
             edges.push(Some(new_edge));
@@ -1318,7 +1525,7 @@ mod tests {
         mock_edges1[0].diff_snpmers = 2;
 
         let mut graph = mock_graph_from_edges(mock_edges1);
-        graph.prune_lax_overlaps();
+        graph.prune_lax_overlaps(8, 100., 0.);
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
 
         assert_eq!(good_edges, 2);
@@ -1337,7 +1544,7 @@ mod tests {
         mock_edges1[1].diff_snpmers = 2;
 
         let mut graph = mock_graph_from_edges(mock_edges1);
-        graph.prune_lax_overlaps();
+        graph.prune_lax_overlaps(8, 100., 0.,);
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
 
         assert_eq!(good_edges, 2);
@@ -1357,7 +1564,7 @@ mod tests {
         mock_edges1[1].diff_snpmers = 5;
 
         let mut graph = mock_graph_from_edges(mock_edges1);
-        graph.prune_lax_overlaps();
+        graph.prune_lax_overlaps(8, 100., 0.);
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
 
         assert_eq!(good_edges, 2);
@@ -1375,7 +1582,7 @@ mod tests {
         mock_edges1[1].diff_snpmers = 5;
 
         let mut graph = mock_graph_from_edges(mock_edges1);
-        graph.prune_lax_overlaps();
+        graph.prune_lax_overlaps(8, 100., 0.);
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
 
         assert_eq!(good_edges, 2);
@@ -1397,7 +1604,7 @@ mod tests {
         mock_edges1[3].diff_snpmers = 5;
 
         let mut graph = mock_graph_from_edges(mock_edges1);
-        graph.prune_lax_overlaps();
+        graph.prune_lax_overlaps(8, 100., 0.);
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
 
         assert_eq!(good_edges, 2);
@@ -1417,10 +1624,146 @@ mod tests {
         mock_edges1[3].diff_snpmers = 5;
 
         let mut graph = mock_graph_from_edges(mock_edges1);
-        graph.prune_lax_overlaps();
+        graph.prune_lax_overlaps(8, 100., 0.);
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
 
         assert_eq!(good_edges, 2);
+    }
+
+    fn create_snpmer_config(positions: Vec<(u32, bool)>, edge: usize, length: usize) -> SnpmerOverlapConfig {
+        let mut config = SnpmerOverlapConfig::default();
+        config.snpmer_overlap_set = positions.into_iter().collect();
+        config.edge = edge;
+        config.length = length;
+        config
+    }
+
+    #[test]
+    fn test_greater_than_basic() {
+        // Test case 1: Clear superset with greater length
+        let config1 = create_snpmer_config(
+            vec![(1, true), (2, true), (3, false)],
+            0,
+            100
+        );
+        let config2 = create_snpmer_config(
+            vec![(1, true), (2, true)],
+            1,
+            50
+        );
+        assert!(config1.greater_than(&config2));
+        assert!(!config2.greater_than(&config1));
+    }
+
+    #[test]
+    fn test_greater_than_same_positions() {
+        // Test case where sets have same positions but different lengths
+        let config1 = create_snpmer_config(
+            vec![(1, true), (2, false)],
+            0,
+            100
+        );
+        let config2 = create_snpmer_config(
+            vec![(1, true), (2, false)],
+            1,
+            50
+        );
+        assert!(config1.greater_than(&config2));
+        assert!(!config2.greater_than(&config1));
+    }
+
+    #[test]
+    fn test_greater_than_length_requirement() {
+        // Test that greater_than requires strictly greater length
+        let config1 = create_snpmer_config(
+            vec![(1, true), (2, true), (3, false)],
+            0,
+            100
+        );
+        let config2 = create_snpmer_config(
+            vec![(1, true), (2, true)],
+            1,
+            100
+        );
+        assert!(!config1.greater_than(&config2));
+    }
+
+    #[test]
+    fn test_get_maximal_simple() {
+        let mut configs = vec![
+            create_snpmer_config(vec![(1, true), (2, true)], 0, 100),
+            create_snpmer_config(vec![(1, true)], 1, 50),
+            create_snpmer_config(vec![(2, true)], 2, 75)
+        ];
+
+
+        SnpmerOverlapConfig::sort(&mut configs);
+        
+        let maximal = SnpmerOverlapConfig::get_maximal(&configs);
+        assert_eq!(maximal, vec![2]);
+    }
+
+    #[test]
+    fn test_get_maximal_incomparable() {
+        // Test case where sets are incomparable
+        let mut configs = vec![
+            create_snpmer_config(vec![(1, true), (2, false)], 0, 100),
+            create_snpmer_config(vec![(2, true), (3, false)], 1, 100),
+            create_snpmer_config(vec![(1, true), (3, true)], 2, 100)
+        ];
+        SnpmerOverlapConfig::sort(&mut configs);
+        
+        let maximal = SnpmerOverlapConfig::get_maximal(&configs);
+        // All should be maximal as they're incomparable
+        assert_eq!(maximal.len(), 3);
+    }
+
+    #[test]
+    fn test_get_maximal_chain() {
+        // Test case with a chain of strict inclusions
+        let mut configs = vec![
+            create_snpmer_config(vec![(1, true)], 0, 50),
+            create_snpmer_config(vec![(1, true), (2, true)], 1, 75),
+            create_snpmer_config(vec![(1, true), (2, true), (3, true)], 2, 100)
+        ];
+
+        SnpmerOverlapConfig::sort(&mut configs);
+        
+        let maximal = SnpmerOverlapConfig::get_maximal(&configs);
+        assert_eq!(maximal, vec![2]);
+    }
+
+    #[test]
+    fn test_get_maximal_empty() {
+        let configs: Vec<SnpmerOverlapConfig> = vec![];
+        let maximal = SnpmerOverlapConfig::get_maximal(&configs);
+        assert!(maximal.is_empty());
+    }
+
+    #[test]
+    fn test_get_maximal_single() {
+        let configs = vec![
+            create_snpmer_config(vec![(1, true)], 0, 50)
+        ];
+        
+        let maximal = SnpmerOverlapConfig::get_maximal(&configs);
+        assert_eq!(maximal, vec![0]);
+    }
+
+    #[test]
+    fn test_get_maximal_mixed_matches() {
+        // Test with mixed matching and non-matching positions
+        let mut configs = vec![
+            create_snpmer_config(vec![(1, true), (2, false), (3, true)], 0, 100),
+            create_snpmer_config(vec![(1, true), (2, false)], 1, 75),
+            create_snpmer_config(vec![(1, true), (2, false), (3, false)], 2, 90)
+        ];
+
+        SnpmerOverlapConfig::sort(&mut configs);
+        dbg!(&configs);
+        
+        let maximal = SnpmerOverlapConfig::get_maximal(&configs);
+        assert_eq!(maximal, vec![2, 1]);
     }
 }
 

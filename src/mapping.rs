@@ -1,9 +1,9 @@
 use crate::cli::Cli;
+use ordered_float::OrderedFloat;
 use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MINIMIZER_END_NTH_COV;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
-use crate::constants::SAMPLING_RATE_COV;
 use std::io::Write;
 use std::io::BufWriter;
 use std::path::Path;
@@ -534,10 +534,9 @@ pub fn compare_twin_reads(
                         let base2 = ((seq2.snpmers[j as usize].1 & !mask) >> (k - 1)) as u8;
 
                         let snpmer_hit = SnpmerHit{
-                            pos1: seq1.snpmers[i as usize].0,
-                            pos2: seq2.snpmers[j as usize].0,
-                            base1: base1,
-                            base2: base2,
+                            pos1: seq1.snpmers[i as usize].0 as u32,
+                            pos2: seq2.snpmers[j as usize].0 as u32,
+                            bases: (base1, base2),
                         };
 
                         snpmer_relative_hits.push(snpmer_hit);
@@ -781,24 +780,27 @@ pub fn map_reads_to_outer_reads<'a>(
                     hit.chain_reverse,
                 );
 
+
+                let identity = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64);
+
                 //Used for EC
-                let strain_specific_thresh1 = same_strain(
+                let strain_specific_thresh_lax = same_strain(
                     hit.shared_minimizers,
                     hit.diff_snpmers,
                     hit.shared_snpmers,
                     args.c as u64,
-                    args.snpmer_threshold,
-                    args.snpmer_error_rate
+                    args.snpmer_threshold_lax,
+                    args.snpmer_error_rate_lax
                 );
                 
                 //Used for coverage
-                let strain_specific_thresh2 = same_strain(
+                let strain_specific_thresh_strict = same_strain(
                     hit.shared_minimizers,
                     hit.diff_snpmers,
                     hit.shared_snpmers,
                     args.c as u64,
-                    args.snpmer_threshold_contain,
-                    0.,
+                    args.snpmer_threshold_strict,
+                    args.snpmer_error_rate_strict,
                 );
 
                 //Populate mapping boundaries map
@@ -813,7 +815,7 @@ pub fn map_reads_to_outer_reads<'a>(
                         //shared_snpmers: hit.shared_snpmers as u32,
                         //chain_reverse: hit.chain_reverse,
                     };
-                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh2));
+                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh_lax, identity ));
                 }
             }
         }
@@ -839,9 +841,9 @@ pub fn map_reads_to_outer_reads<'a>(
             .map(|x| Interval {
                 start: x.0 as u32,
                 stop: x.1 as u32,
-                val: true,
+                val: OrderedFloat::from(x.4),
             })
-            .collect::<Vec<Interval<u32,bool>>>();
+            .collect::<Vec<Interval<u32,OrderedFloat<f64>>>>();
 
 
         let intervals = boundaries
@@ -854,17 +856,18 @@ pub fn map_reads_to_outer_reads<'a>(
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
 
 
-        let (outer_read_first_mini_pos, outer_read_last_mini_pos) = first_last_mini_in_range(0, outer_read_length, args.kmer_size, MINIMIZER_END_NTH_COV, twin_reads[index_of_outer_in_all].minimizers.as_slice());
+        //let (outer_read_first_mini_pos, outer_read_last_mini_pos) = first_last_mini_in_range(0, outer_read_length, args.kmer_size, MINIMIZER_END_NTH_COV, twin_reads[index_of_outer_in_all].minimizers.as_slice());
         
         let lapper = Lapper::new(intervals);
-        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, outer_read_first_mini_pos, outer_read_last_mini_pos).unwrap();
+        //let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, outer_read_first_mini_pos, outer_read_last_mini_pos).unwrap();
         //let mean_depth = map_vec.iter().sum::<usize>() as f64 / outer_read_length as f64;
 
         //let kmer_counts =  kmer_count_map.get(&contig_id).unwrap();
 
+        //TODO -1. for mapping depth for now.. we use members on the read directly
         let map_info = MappingInfo {
-            minimum_depth: min_depth,
-            median_depth: median_depth,
+            minimum_depth: -1.,
+            median_depth: -1.,
             mapping_boundaries: lapper,
             present: true,
             length: outer_read_length,
@@ -887,7 +890,7 @@ pub fn map_reads_to_unitigs(
     twin_reads: &[TwinRead],
     args: &Cli,
 ) {
-    let mapping_file = Path::new(args.output_dir.as_str()).join("map_to_unitigs.txt");
+    let mapping_file = Path::new(args.output_dir.as_str()).join("map_to_unitigs.paf");
     let mapping_file = Mutex::new(BufWriter::new(std::fs::File::create(mapping_file).unwrap()));
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
@@ -929,42 +932,68 @@ pub fn map_reads_to_unitigs(
                 //break;
             }
         }
-        let ss_hits = unitig_hits.into_iter().filter(|x| same_strain(
+        let mut ss_hits = unitig_hits.into_iter().filter(|x| same_strain(
                 x.shared_minimizers,
                 x.diff_snpmers,
                 x.shared_snpmers,
                 args.c.try_into().unwrap(),
-                args.snpmer_threshold_contain,
-                0.
+                args.snpmer_threshold_lax,
+                args.snpmer_error_rate_lax
             )).collect::<Vec<_>>();
 
         let mut retained_hits = vec![];
+        ss_hits.sort_by(|a, b| id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap()).
+        partial_cmp(&id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap())).unwrap());
 
+        let mut already_best_hit = false;
         for hit in ss_hits{
             let read_length = twin_reads[hit.i1].base_length;
             let unitig_length = tr_unitigs[&hit.i2].base_length;
-
             let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse);
+
+            if !retained{
+                continue;
+            }
+
+            // If this passes stringent standards, retain the hit. Otherwise, only retain the top hit. 
+            if !same_strain(
+                hit.shared_minimizers,
+                hit.diff_snpmers,
+                hit.shared_snpmers,
+                args.c.try_into().unwrap(),
+                args.snpmer_threshold_strict,
+                args.snpmer_error_rate_strict
+            ){
+                if already_best_hit{
+                    break;
+                }
+                else{
+                    already_best_hit = true;
+                }
+            }
 
             write!(
                 mapping_file.lock().unwrap(),
-                "{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\tretained:{}\treverse:{}\n",
+                "r{}\t{}\t{}\t{}\t{}\tu{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\tretained:{}\n",
                 twin_reads[hit.i1].id,
+                twin_reads[hit.i1].base_length,
                 hit.start1,
                 hit.end1,
+                if hit.chain_reverse { "-" } else { "+" },
                 tr_unitigs[&hit.i2].id,
+                tr_unitigs[&hit.i2].base_length,
                 hit.start2,
                 hit.end2,
+                hit.end2 - hit.start2,
+                hit.end2 - hit.start2,
+                255,
                 hit.shared_minimizers,
                 hit.diff_snpmers,
                 hit.shared_snpmers,
                 retained,
-                hit.chain_reverse
             ).unwrap();
 
-            if retained{
-                retained_hits.push(hit);
-            }
+            retained_hits.push(hit);
         }
 
         for hit in retained_hits {
@@ -1001,14 +1030,14 @@ pub fn map_reads_to_unitigs(
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
         let lapper = Lapper::new(intervals);
 
-        let (unitig_first_mini_pos, unitig_last_mini_pos) = first_last_mini_in_range(0, unitig_length, args.kmer_size, MINIMIZER_END_NTH_COV, tr_unitigs[&contig_id].minimizers.as_slice());
-        let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, unitig_first_mini_pos, unitig_last_mini_pos).unwrap();
+        //let (unitig_first_mini_pos, unitig_last_mini_pos) = first_last_mini_in_range(0, unitig_length, args.kmer_size, MINIMIZER_END_NTH_COV, tr_unitigs[&contig_id].minimizers.as_slice());
+        //let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, unitig_first_mini_pos, unitig_last_mini_pos).unwrap();
 
         // println!("Unitig id kmer counts: u{}", &unitig_graph.nodes.get(&contig_id).unwrap().node_id);
         //let median_kmer_count = sliding_window_kmer_coverages(&kmer_vec, 10, args.kmer_size as usize);
         let map_info = MappingInfo {
-            median_depth: median_depth,
-            minimum_depth: min_depth,
+            median_depth: -1.,
+            minimum_depth: -1.,
             mapping_boundaries: lapper,
             present: true,
             length: unitig_length,

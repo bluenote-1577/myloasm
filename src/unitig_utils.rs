@@ -1,4 +1,4 @@
-use crate::{constants, types::*};
+use crate::{constants::*, types::*};
 use bio_seq::prelude::*;
 use std::panic;
 use crate::unitig::*;
@@ -14,7 +14,7 @@ impl UnitigGraph{
                 let edge = &self.edges[*edge_id].as_ref().unwrap();
                 let uni1 = &self.nodes[&edge.from_unitig];
                 let uni2 = &self.nodes[&edge.to_unitig];
-                let pseudocov_ratio = pseudocount_cov(uni1.min_read_depth.unwrap(), uni2.min_read_depth.unwrap());
+                let pseudocov_ratio = pseudocount_cov_multi(uni1.min_read_depth_multi.unwrap(), uni2.min_read_depth_multi.unwrap());
                 cov_ratios.push(pseudocov_ratio);
             }
             let best_ratio = *cov_ratios.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
@@ -160,6 +160,34 @@ pub fn median(v: &mut [f64]) -> Option<f64> {
 }
 
 #[inline]
+pub fn median_weight_multi(v: &[(MultiCov, usize)], quantile: f64) -> Option<MultiCov> {
+    if v.len() == 0 {
+        return None;
+    }
+
+    let mut multi_depths = [0.; ID_THRESHOLD_ITERS];
+
+    for i in 0..ID_THRESHOLD_ITERS{
+        let mut v = v.iter().map(|x| (x.0[i], x.1)).collect::<Vec<_>>();
+        let len = v.len();
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut median_ind = 0;
+        let total_length = v.iter().map(|x| x.1).sum::<usize>();
+        let mut curr_sum = 0;
+        for i in 0..len {
+            curr_sum += v[i].1;
+            if curr_sum as f64 >= total_length as f64 * quantile {
+                median_ind = i;
+                break;
+            }
+        }
+        multi_depths[i] = v[median_ind].0
+    }
+
+    return Some(multi_depths);
+}
+
+#[inline]
 pub fn median_weight(v: &[(f64, usize)], quantile: f64) -> Option<f64> {
     let mut v = v.to_vec();
     if v.len() == 0 {
@@ -181,10 +209,10 @@ pub fn median_weight(v: &[(f64, usize)], quantile: f64) -> Option<f64> {
     Some(v[median_ind].0)
 }
 
-pub fn quantile_dist(v1: &[(f64, usize)], v2: &[(f64, usize)]) -> Option<f64> {
+pub fn quantile_dist(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v2: &[([f64;ID_THRESHOLD_ITERS], usize)]) -> Option<f64> {
     let quants = [0.25, 0.5, 0.75];
-    let quantiles_v1 = quants.iter().map(|x| median_weight(v1, *x)).collect::<Vec<_>>();
-    let quantiles_v2 = quants.iter().map(|x| median_weight(v2, *x)).collect::<Vec<_>>();
+    let quantiles_v1 = quants.iter().map(|x| median_weight_multi(v1, *x)).collect::<Vec<_>>();
+    let quantiles_v2 = quants.iter().map(|x| median_weight_multi(v2, *x)).collect::<Vec<_>>();
     let mut minimum_distance = vec![];
     for i in 0..quants.len() {
         for j in 0..quants.len() {
@@ -194,7 +222,7 @@ pub fn quantile_dist(v1: &[(f64, usize)], v2: &[(f64, usize)]) -> Option<f64> {
             //minimum_distance.push((quantiles_v2[j].unwrap() - quantiles_v1[i].unwrap()).abs());
             let qvi = quantiles_v1[i].unwrap();
             let qvj = quantiles_v2[j].unwrap();
-            minimum_distance.push(pseudocount_cov(qvi, qvj).abs() - 1.);
+            minimum_distance.push(pseudocount_cov_multi(qvi, qvj).abs() - 1.);
         }
     }
     if minimum_distance.len() == 0 {
@@ -214,17 +242,26 @@ pub fn square_root_poisson_kl(cov1: f64, cov2: f64) -> f64 {
 
 #[inline]
 pub fn pseudocount_cov(cov1: f64, cov2: f64) -> f64 {
-    let pcount = constants::PSEUDOCOUNT;
+    let pcount = PSEUDOCOUNT;
     let numerator = cov1.max(cov2) + pcount;
     let denominator = cov1.min(cov2) + pcount;
     return numerator / denominator;
 }
 
+#[inline]
+pub fn pseudocount_cov_multi(cov1: [f64;ID_THRESHOLD_ITERS], cov2: [f64;ID_THRESHOLD_ITERS]) -> f64 {
+    let weights = COV_MULTI_WEIGHTS;
+    assert!(weights.len() == ID_THRESHOLD_ITERS);
+    let mut cumulative_pcov = 0.;
+    for (i,weight) in weights.iter().enumerate(){
+        cumulative_pcov += pseudocount_cov(cov1[i], cov2[i]) * weight;
+    }
+    return cumulative_pcov;
+}
+
 
 #[cfg(test)]
 mod tests {
-    use constants::PSEUDOCOUNT;
-
     use super::*;
 
     #[test]
@@ -244,16 +281,16 @@ mod tests {
 
     #[test]
     fn test_quantile_dist() {
-        let v1 = vec![(1.0, 1), (2.0, 2), (3.0, 3)];
-        let v2 = vec![(1.0, 1), (2.0, 2), (3.0, 3)];
+        let v1 = vec![([1.0, 1.0, 1.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
+        let v2 = vec![([1.0, 1.0, 1.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
         assert_eq!(quantile_dist(&v1, &v2), Some(0.0));
 
-        let v1 = vec![(1.0, 1), (2.0, 1), (3.0, 1)];
-        let v2 = vec![(2.0, 10), (3.0, 10), (4.0, 10)];
+        let v1 = vec![([1.0, 1.0, 1.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
+        let v2 = vec![([2.0, 2.0, 2.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
         assert_eq!(quantile_dist(&v1, &v2), Some(0.0));
 
-        let v1 = vec![(10.0, 5), (10.0, 6), (20.0, 5)];
-        let v2 = vec![(5.0, 1), (5.0, 3), (5.0, 5)];
-        assert_eq!(quantile_dist(&v1, &v2), Some((10. + PSEUDOCOUNT) / (5.0 + PSEUDOCOUNT) - 1.));
+        let v1 = vec![([5.0;3], 1), ([10.0;3], 2), ([3.0;3], 3)];
+        let v2 = vec![([2.0, 2.0, 2.0], 1), ([2.0, 2.0, 2.0], 2), ([4.0, 4.0, 4.0], 3)];
+        assert_eq!(quantile_dist(&v1, &v2), Some((4.0 + PSEUDOCOUNT) / (3.0 + PSEUDOCOUNT) - 1.));
     }
 }

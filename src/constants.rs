@@ -15,3 +15,8 @@ pub const ENDPOINT_MAPPING_FUZZ : u32 = 200;
 // seed with 42 and 31 0s
 pub const RNG_SEED: [u8; 32] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 pub const PSEUDOCOUNT: f64 = 3.;
+pub const ID_THRESHOLD_ITERS: usize = 3;
+pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.995, 0.9975, 1.0];
+//pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.0, 0.0, 1.0];
+pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.333, 0.333, 0.333];
+pub const MIN_COV_READ: usize = 4;

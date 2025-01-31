@@ -35,12 +35,15 @@ use std::path::PathBuf;
 use bio_seq::prelude::*;
 use rust_lapper::Lapper;
 
+use crate::constants::ID_THRESHOLD_ITERS;
+
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
 pub type KmerHash64 = u64;
 pub type KmerHash32 = u32;
 pub type Snpmer64 = u64;
 pub type Splitmer64 = u64;
+pub type MultiCov = [f64; ID_THRESHOLD_ITERS];
 
 pub const BYTE_TO_SEQ: [u8; 256] = [
     0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -184,9 +187,11 @@ pub struct TwinRead {
     pub base_length: usize,
     pub dna_seq: Seq<Dna>,
     pub est_id: Option<f64>,
-    pub min_depth: Option<f64>,
+    pub min_depth_multi: Option<MultiCov>,
     pub median_depth: Option<f64>,
     pub split_chimera: bool,
+    pub outer: bool,
+    pub snpmer_id_threshold: Option<f64>,
 }
 
 
@@ -234,10 +239,9 @@ pub struct TwinOverlap{
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct SnpmerHit {
-    pub pos1: usize,
-    pub pos2: usize,
-    pub base1: u8,
-    pub base2: u8,
+    pub pos1: u32,
+    pub pos2: u32,
+    pub bases: (u8, u8)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
@@ -343,10 +347,11 @@ impl BubblePopResult{
     }
 }
 
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BeamSearchSoln{
     pub path: Vec<EdgeIndex>,
-    pub coverages: Vec<(f64, usize)>, 
+    pub coverages: Vec<(MultiCov, usize)>, 
     pub score: f64,
     pub path_nodes: Vec<NodeIndex>,
     pub depth: usize,

@@ -54,15 +54,20 @@ pub struct Cli {
 
     /// Snpmer identity threshold for containment
     #[arg(long, default_value_t=100.00, help_heading = "Overlap Parameters")]
-    pub snpmer_threshold_contain: f64,
+    pub snpmer_threshold_strict: f64,
 
     /// Mininum snpmer identity threshold for overlaps
-    #[arg(long, default_value_t=99.9, help_heading = "Overlap Parameters")]
-    pub snpmer_threshold: f64,
+    #[arg(long, default_value_t=99.5, help_heading = "Overlap Parameters")]
+    pub snpmer_threshold_lax: f64,
 
     /// Error rate for snpmers for binomial test
     #[arg(long, default_value_t=0.025, help_heading = "Overlap Parameters")]
-    pub snpmer_error_rate: f64,
+    pub snpmer_error_rate_lax: f64,
+
+    /// Error rate for snpmers for binomial test
+    #[arg(long, default_value_t=0.00, help_heading = "Overlap Parameters")]
+    pub snpmer_error_rate_strict: f64,
+
 
     #[arg(long, default_value_t=30, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,

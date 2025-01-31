@@ -6,6 +6,7 @@ use fxhash::FxHashSet;
 use myloasm::cli;
 use myloasm::consensus;
 use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
+use myloasm::constants::ID_THRESHOLD_ITERS;
 use myloasm::constants::MAX_BUBBLE_UNITIGS_FINAL_STAGE;
 use myloasm::constants::TS_DASHES_BLANK_COLONS_DOT_BLANK;
 use myloasm::graph::GraphNode;
@@ -51,7 +52,7 @@ fn main() {
 
     // Step 6: Second round of progressive cleaning; more aggressive.
     //heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
-    heavy_clean_with_walk(&mut unitig_graph, &twin_reads, &args, &temp_dir);
+    heavy_clean_with_walk(&mut unitig_graph, &twin_reads, &args, &temp_dir, &output_dir);
 
     // Step 7: Progressive coverage filter
     let mut contig_graph =
@@ -69,13 +70,6 @@ fn main() {
     log::info!(
         "Time elapsed for aligning reads to graph is {:?}",
         start.elapsed()
-    );
-    contig_graph.to_gfa(
-        output_dir.join("final_contig_graph.gfa"),
-        true,
-        true,
-        &twin_reads,
-        &args,
     );
     contig_graph.to_gfa(
         output_dir.join("final_contig_graph_noseq.gfa"),
@@ -177,11 +171,11 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
         .unwrap();
 
     if args.hifi {
-        args.snpmer_error_rate = 0.001;
-        args.snpmer_threshold = 100.;
+        args.snpmer_error_rate_lax = 0.001;
+        args.snpmer_threshold_lax = 100.;
     }
     if args.r941 {
-        args.snpmer_error_rate = 0.05;
+        args.snpmer_error_rate_lax = 0.05;
         args.contain_subsample_rate = 20;
     }
 
@@ -250,7 +244,7 @@ fn get_twin_reads_from_kmer_info(
 
         // (2): removed contained reads
         let outer_read_indices_raw =
-            twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, false, &args);
+            twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, &args);
 
         // (3): map all reads to the outer (non-contained) reads
         log::info!("Mapping reads to non-contained (outer) reads...");
@@ -260,7 +254,7 @@ fn get_twin_reads_from_kmer_info(
 
         // (4): split chimeric twin reads based on mappings to outer reads
         log::info!("Processing mappings...");
-        let (mut split_twin_reads, split_outer_read_indices) =
+        let (mut split_twin_reads, _split_outer_read_indices) =
             map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, &args);
         log::info!(
             "Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
@@ -273,14 +267,13 @@ fn get_twin_reads_from_kmer_info(
             //Some(split_outer_read_indices),
             None,
             &split_twin_reads,
-            false,
             &args,
         );
 
         // (6): map all reads to the outer new reads, which may be rescued or split chimeric reads
         let remap_indices = outer_read_indices
             .iter()
-            .filter(|x| split_twin_reads[**x].min_depth.is_none())
+            .filter(|x| split_twin_reads[**x].min_depth_multi.is_none())
             .map(|x| *x)
             .collect::<Vec<_>>();
         log::info!(
@@ -302,10 +295,16 @@ fn get_twin_reads_from_kmer_info(
             );
         }
 
+        split_twin_reads.iter_mut().for_each(|x| { 
+            if x.min_depth_multi.is_some(){
+                x.outer = true;
+            }
+        });
+
         // (8): remove bad reads that have nothing mapped to them (this can bug for a variety of reasons)
         let outer_and_have_coverage_indices = outer_read_indices
             .iter()
-            .filter(|x| split_twin_reads[**x].min_depth.is_some())
+            .filter(|x| split_twin_reads[**x].min_depth_multi.is_some())
             .map(|x| *x)
             .collect::<Vec<_>>();
 
@@ -369,7 +368,7 @@ fn light_progressive_cleaning(
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
     let mut iteration = 1;
-    let divider = 3;
+    let divider = 2;
 
     let safety_edge_cov_score_thresholds = [50., 25., 10.];
     //let safety_edge_cov_score_thresholds = [1000000.];
@@ -416,12 +415,13 @@ fn light_progressive_cleaning(
         }
 
         //Cut bridged repeats; "drop" cuts
+        log::debug!("LIGHT-CLEAN: Resolving bridged repeats...");
         let prebridge_file = temp_dir.join(format!("{}-pre_bridge_cuts.txt", iteration));
         let edge_safe_cov_threshold = safety_edge_cov_score_thresholds
             [(iteration - 1).min(safety_edge_cov_score_thresholds.len() - 1)];
         unitig_graph.resolve_bridged_repeats(
             &args,
-            0.75 / (divider as f64) * iteration as f64,
+            0.50 / (divider as f64) * iteration as f64,
             None,
             Some(edge_safe_cov_threshold),
             prebridge_file,
@@ -441,7 +441,7 @@ fn light_progressive_cleaning(
         }
 
         iteration += 1;
-        if iteration == 4 {
+        if iteration == divider + 1 {
             break;
         }
     }
@@ -484,7 +484,7 @@ fn get_contigs_from_progressive_coverage(
 
         // First pass: identify contigs to keep
         for contig in graph_per_coverage[&cov].nodes.values() {
-            if contig.min_read_depth.unwrap() >= cov as f64 * 1.5 {
+            if (contig.min_read_depth_multi.unwrap().iter().sum::<f64>() / (ID_THRESHOLD_ITERS as f64)) >= cov as f64 * 2.0 {
                 let mut unused = true;
 
                 for (read, _) in contig.read_indices_ori.iter() {
@@ -501,9 +501,9 @@ fn get_contigs_from_progressive_coverage(
                 contigs_to_keep.insert(contig.node_hash_id.clone());
 
                 log::debug!(
-                    "Keeping contig u{} with cov {} of size {} at threshold {}",
+                    "Keeping contig u{} with covs {:?} of size {} at threshold {}",
                     contig.node_id,
-                    contig.min_read_depth.unwrap(),
+                    contig.min_read_depth_multi.unwrap(),
                     contig.cut_length(),
                     cov
                 );
@@ -563,11 +563,25 @@ fn get_contigs_from_progressive_coverage(
         final_unitig_graph.edges.extend(std::mem::take(
             &mut graph_per_coverage.get_mut(&cov).unwrap().edges,
         ));
+
         for (_, node) in std::mem::take(&mut graph_per_coverage.get_mut(&cov).unwrap().nodes) {
             final_unitig_graph.nodes.insert(node.node_hash_id, node);
         }
     }
 
+    //Invalidate all non-circular edges -- otherwise we get weird joining artefacts.
+    let mut remove_edge_set = FxHashSet::default();
+    for (id, edge) in final_unitig_graph.edges.iter().enumerate() {
+        if edge.is_none() {
+            continue;
+        }
+        let edge = edge.as_ref().unwrap();
+        if !final_unitig_graph.nodes[&edge.from_unitig].is_circular() || !final_unitig_graph.nodes[&edge.to_unitig].is_circular() {
+            remove_edge_set.insert(id);
+        }
+    }
+
+    final_unitig_graph.remove_edges(remove_edge_set);
     final_unitig_graph.re_unitig();
     return final_unitig_graph;
 }
@@ -577,6 +591,7 @@ fn heavy_clean_with_walk(
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
     temp_dir: &PathBuf,
+    out_dir: &PathBuf, 
 ) {
     log::info!("Graph cleaning with walks...");
     let mut save_removed = false;
@@ -639,7 +654,8 @@ fn heavy_clean_with_walk(
                     args.tip_read_cutoff * multiplier,
                     300_000,
                     ol_threshold,
-                    args.tip_length_cutoff * multiplier
+                    args.tip_length_cutoff * multiplier,
+                    true,
                 );
                 let length_after_cut = unitig_graph.nodes.len();
                 log::debug!("WALK-CLEAN: Cut {} nodes at multiplier {}, temperature {}, and threshold {}", length_before_cut - length_after_cut, multiplier, temperature, ol_threshold);
@@ -660,7 +676,7 @@ fn heavy_clean_with_walk(
 
     unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
     unitig_graph.to_gfa(
-        temp_dir.join("after_walk.gfa"),
+        out_dir.join("after_walk.gfa"),
         true,
         true,
         &twin_reads,
@@ -668,7 +684,7 @@ fn heavy_clean_with_walk(
     );
 }
 
-fn heavy_cleaning(
+fn _heavy_cleaning(
     unitig_graph: &mut unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
@@ -797,7 +813,7 @@ fn progressive_coverage_contigs(
     let max_cov = unitig_graph
         .nodes
         .values()
-        .map(|x| x.min_read_depth.unwrap())
+        .map(|x| x.min_read_depth_multi.unwrap().iter().sum::<f64>() / ID_THRESHOLD_ITERS as f64)
         .max_by(|x, y| x.partial_cmp(y).unwrap())
         .unwrap_or(1.);
 
@@ -848,6 +864,7 @@ fn progressive_coverage_contigs(
             true,
             &args,
         );
+
         unitig_graph_with_threshold
             .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
 
