@@ -2138,15 +2138,16 @@ impl UnitigGraph {
             for &edge_id in non_cut_edges.iter() {
                 let edge = &self.edges[edge_id].as_ref().unwrap();
                 let ol = edge.overlap.overlap_len_bases;
-                overlaps.push(ol);
+                let fsv = edge.edge_id_est(c);
+                overlaps.push((ol, fsv));
             }
 
-            let max_ol = *overlaps.iter().max().unwrap();
+            let (max_ol, max_ols_fsv) = *overlaps.iter().max_by(|a, b| a.0.cmp(&b.0)).unwrap();
             let ol_score = edge.overlap.overlap_len_bases as f64 / max_ol as f64; // higher better
 
-            // Check if the edge is the highest fsv edge. For now, do not remove TODO, since erroneous edges can be longer, anyways. 
-            let highest_fsv = edges.iter().map(|x| self.edges[*x].as_ref().unwrap().edge_id_est(c)).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-            if edge.edge_id_est(c) < highest_fsv {
+            // We don't cut if the fsv of the cut edge is higher than the longest edge
+            let fsv_edge = edge.edge_id_est(c);
+            if fsv_edge < max_ols_fsv {
                 continue;
             }
 
