@@ -402,7 +402,7 @@ impl UnitigGraph {
     }
     // Constructor that creates unitig graph from overlap graph
     pub fn from_overlaps(reads: &[TwinRead], overlaps: Vec<OverlapConfig>, args: &Cli) -> Self {
-        let overlap_graph = read_graph_from_overlaps_twin(overlaps, args);
+        let overlap_graph = read_graph_from_overlaps_twin(overlaps, reads, args);
         // Start with empty graph
         let mut unitig_graph = UnitigGraph {
             nodes: FxHashMap::default(),
@@ -1878,6 +1878,7 @@ impl UnitigGraph {
                 ol_thresh,
                 unitig_cov_ratio_cut,
                 safety_cov_edge_ratio,
+                true,
                 max_forward,
                 max_reads_forward,
                 safe_length_back,
@@ -2095,6 +2096,7 @@ impl UnitigGraph {
         ol_thresh: f64,
         unitig_cov_ratio_cut: Option<f64>,
         safety_cov_edge_ratio: Option<f64>,
+        snpmer_id_est_safety: bool,
         max_forward: usize,
         max_reads_forward: usize,
         safe_length_back: usize,
@@ -2147,7 +2149,7 @@ impl UnitigGraph {
 
             // We don't cut if the fsv of the cut edge is higher than the longest edge
             let fsv_edge = edge.edge_id_est(c);
-            if fsv_edge < max_ols_fsv {
+            if fsv_edge > max_ols_fsv && snpmer_id_est_safety{
                 continue;
             }
 
@@ -2426,6 +2428,7 @@ impl UnitigGraph {
                         always_cut_ol_thresh,
                         None,
                         None,
+                        false,
                         max_forward,
                         max_reads_forward,
                         safe_length_back,
@@ -3278,6 +3281,7 @@ mod tests {
                 0.5,
                 None,
                 None,
+                false,
                 2000,
                 5,
                 1000,
@@ -3288,6 +3292,74 @@ mod tests {
 
         assert!(removed_edges.contains(&0));
         assert!(!removed_edges.contains(&3));
+    }
+
+    #[test]
+    fn safely_cut_edge_test_basic_x_fsv_safety() {
+        let mut builder = MockUnitigBuilder::new();
+
+        // Make sure not to cut the safe edge after multiple iterations
+        //   1k
+        // 1 ---> 2
+        //    X    (3->2 : 10k), (3->2 : 1k)
+        // 3 ---> 4
+        //   10k
+
+        let n1 = builder.add_node(100, 10.0);
+        let n2 = builder.add_node(100, 10.0);
+        let n3 = builder.add_node(100, 10.0);
+        let n4 = builder.add_node(100, 10.0);
+
+        let e1 = builder.add_edge(n1, n2, 10000, true, true);
+        builder.add_edge(n1, n4, 2000, true, true);
+        builder.add_edge(n3, n2, 2000, true, true);
+        let e4 = builder.add_edge(n3, n4, 10000, true, true);
+        builder.edges[e1].as_mut().unwrap().overlap.diff_snpmers = 10;
+        builder.edges[e4].as_mut().unwrap().overlap.diff_snpmers = 10;
+
+        let (graph, _reads) = builder.build();
+
+        let mut removed_edges = FxHashSet::default();
+        let mut unitig_edge_file = BufWriter::new(std::io::sink());
+
+        let edge_order = vec![0, 3, 2, 1];
+
+        for edge_id in edge_order.iter() {
+            graph.safely_cut_edge(
+                *edge_id,
+                &mut removed_edges,
+                0.5,
+                None,
+                None,
+                true,
+                2000,
+                5,
+                1000,
+                &mut unitig_edge_file,
+                9
+            );
+        }
+
+        assert!(removed_edges.len() == 0);
+
+
+        for edge_id in edge_order {
+            graph.safely_cut_edge(
+                edge_id,
+                &mut removed_edges,
+                0.5,
+                None,
+                None,
+                false,
+                2000,
+                5,
+                1000,
+                &mut unitig_edge_file,
+                9
+            );
+        }
+
+        assert!(removed_edges.len() == 2);
     }
 
     #[test]
@@ -3328,6 +3400,7 @@ mod tests {
                 0.5,
                 Some(3.),
                 None,
+                false,
                 2000,
                 5,
                 1000,
@@ -3351,6 +3424,7 @@ mod tests {
                 0.5,
                 Some(3.),
                 None,
+                false,
                 2000,
                 5,
                 1000,
@@ -3404,6 +3478,7 @@ mod tests {
                 0.5,
                 Some(3.),
                 None,
+                false,
                 2000,
                 5,
                 1000,
@@ -3448,6 +3523,7 @@ mod tests {
                 0.5,
                 Some(3.),
                 None,
+                false,
                 2000,
                 5,
                 1000,
@@ -3497,6 +3573,7 @@ mod tests {
                 0.5,
                 Some(3.),
                 None,
+                false,
                 20000,
                 20,
                 1000,

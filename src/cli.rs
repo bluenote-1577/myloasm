@@ -1,5 +1,7 @@
 use clap::{Parser, ValueEnum};
 
+use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
+
 #[derive(Parser, Debug)]
 #[command(
     name = "myloasm",
@@ -53,11 +55,11 @@ pub struct Cli {
     pub quality_value_cutoff: f64,
 
     /// Snpmer identity threshold for containment
-    #[arg(long, default_value_t=100.00, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100., help_heading = "Overlap Parameters")]
     pub snpmer_threshold_strict: f64,
 
     /// Mininum snpmer identity threshold for overlaps
-    #[arg(long, default_value_t=99.5, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=IDENTITY_THRESHOLDS[0] * 100., help_heading = "Overlap Parameters")]
     pub snpmer_threshold_lax: f64,
 
     /// Error rate for snpmers for binomial test

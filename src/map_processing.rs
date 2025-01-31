@@ -274,16 +274,22 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     }
 
     // Change snpmer id threshold based on coverage
-    if min_depths[0] >= MIN_COV_READ as f64 && min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64 {
-        //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
-        let mut try_id = min_depths[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
-        loop{
-            let (min_depth_try, _) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
-            if min_depth_try >= MIN_COV_READ as f64 {
-                twin_read.snpmer_id_threshold = Some(try_id);
-                break;
+    if twin_read.snpmer_id_threshold.is_none(){
+        if min_depths[0] >= MIN_COV_READ as f64 && min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64 {
+            //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
+            let mut try_id = min_depths[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
+            loop{
+                let (min_depth_try, _) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+                if min_depth_try >= MIN_COV_READ as f64 {
+                    log::debug!("Read {} min_depth_identity:{} cov:{}", twin_read.id, try_id * 100., min_depth_try);
+                    twin_read.snpmer_id_threshold = Some(try_id);
+                    break;
+                }
+                try_id -= 0.05 / 100.;
             }
-            try_id -= 0.05 / 100.;
+        }
+        else{
+            twin_read.snpmer_id_threshold = Some(IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1]);
         }
     }
 
