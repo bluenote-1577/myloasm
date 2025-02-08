@@ -30,6 +30,7 @@ use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::HashSet;
+use fxhash::FxHashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::PathBuf;
 use bio_seq::prelude::*;
@@ -183,6 +184,7 @@ pub struct TwinRead {
     pub minimizers: Vec<(usize, u64)>,
     pub snpmers: Vec<(usize, u64)>,
     pub id: String,
+    pub base_id: String,
     pub k: u8,
     pub base_length: usize,
     pub dna_seq: Seq<Dna>,
@@ -190,8 +192,16 @@ pub struct TwinRead {
     pub min_depth_multi: Option<MultiCov>,
     pub median_depth: Option<f64>,
     pub split_chimera: bool,
+    pub split_start: u32,
     pub outer: bool,
     pub snpmer_id_threshold: Option<f64>,
+}
+
+impl TwinRead{
+    pub fn clear(&mut self){
+        self.minimizers.clear();
+        self.snpmers.clear();
+    }
 }
 
 
@@ -234,7 +244,6 @@ pub struct TwinOverlap{
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
     pub chain_score: i32,
-    pub snpmer_relative_bases: Vec<SnpmerHit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -309,6 +318,8 @@ pub trait NodeMapping {
 pub struct SmallTwinOl{
     pub query_id: u32,
     pub diff_snpmers: u32,
+    pub query_range: (u32, u32),
+    pub reverse: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -355,4 +366,9 @@ pub struct BeamSearchSoln{
     pub score: f64,
     pub path_nodes: Vec<NodeIndex>,
     pub depth: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OverlapAdjMap {
+    pub adj_map: FxHashMap<NodeIndex, Vec<NodeIndex>>,
 }

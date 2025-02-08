@@ -15,7 +15,7 @@ use fishers_exact::fishers_exact;
 use std::path::Path;
 
 
-fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
+pub fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     let mut compressed_seq = vec![];
     let mut last_base = seq[0];
     let mut _count = 1;
@@ -362,7 +362,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
     let mut solid_kmers = HashSet::default();
-    let paths_to_files = args.input_files.iter().map(|x| Path::new(x).to_path_buf()).collect::<Vec<_>>();
+    let paths_to_files = args.input_files.iter().map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap()).collect::<Vec<_>>();
 
     for pair in big_kmer_map.iter(){
         let counts = pair.1;

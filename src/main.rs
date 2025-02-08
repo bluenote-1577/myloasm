@@ -4,7 +4,7 @@ use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
-use myloasm::consensus;
+use myloasm::polishing_mod;
 use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
 use myloasm::constants::ID_THRESHOLD_ITERS;
 use myloasm::constants::MAX_BUBBLE_UNITIGS_FINAL_STAGE;
@@ -17,6 +17,7 @@ use myloasm::seq_parse;
 use myloasm::twin_graph;
 use myloasm::twin_graph::OverlapConfig;
 use myloasm::types;
+use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
 use std::fs::File;
@@ -44,7 +45,7 @@ fn main() {
     let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &output_dir);
 
     // Step 4: Construct raw unitig graph
-    let mut unitig_graph =
+    let (mut unitig_graph, overlap_adj_map) =
         unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, &args);
 
     // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
@@ -52,7 +53,7 @@ fn main() {
 
     // Step 6: Second round of progressive cleaning; more aggressive.
     //heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
-    heavy_clean_with_walk(&mut unitig_graph, &twin_reads, &args, &temp_dir, &output_dir);
+    heavy_clean_with_walk(&mut unitig_graph, &twin_reads, &overlap_adj_map, &args, &temp_dir, &output_dir);
 
     // Step 7: Progressive coverage filter
     let mut contig_graph =
@@ -62,6 +63,7 @@ fn main() {
     log::info!("Beginning final alignment of reads to graph...");
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
     get_seq_config.dna_seq_info = true;
+    get_seq_config.blunted = true;
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
     let start = Instant::now();
@@ -78,16 +80,22 @@ fn main() {
         &twin_reads,
         &args,
     );
-    contig_graph.to_fasta(output_dir.join("final_contigs.fa"), &args);
+    contig_graph.to_fasta(output_dir.join("final_contigs_nopolish.fa"), &args);
+    contig_graph.print_statistics(&args);
 
     // Step 8: TODO
     if !args.no_minimap2 {
         log::info!("Running minimap2...");
-        consensus::write_to_paf(&contig_graph, &twin_reads, &args);
+        polishing_mod::write_to_paf(&contig_graph, &twin_reads, &args);
         log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
     }
 
-    contig_graph.print_statistics(&args);
+    if args.polish{
+        log::info!("Polishing...");
+        polishing_mod::read_fastq_and_polish(contig_graph, twin_read_container.twin_reads, &args, &kmer_info.read_files);
+        log::info!("Time elapsed for polishing is {:?}", start.elapsed());
+    }
+
     log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
 }
 
@@ -243,11 +251,12 @@ fn get_twin_reads_from_kmer_info(
         let num_reads = twin_reads_raw.len();
 
         // (2): removed contained reads
+        log::info!("Removing contained reads - round 1...");
         let outer_read_indices_raw =
             twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, &args);
 
         // (3): map all reads to the outer (non-contained) reads
-        log::info!("Mapping reads to non-contained (outer) reads...");
+        log::info!("Mapping reads to non-contained (outer) reads - round 1...");
         let start = Instant::now();
         let outer_mapping_info =
             mapping::map_reads_to_outer_reads(&outer_read_indices_raw, &twin_reads_raw, &args);
@@ -263,6 +272,7 @@ fn get_twin_reads_from_kmer_info(
         );
 
         // (5): the splitted chimeric reads may be contained within the original reads, so we remove contained reads again
+        log::info!("Mapping reads to non-contained (outer) reads - round 2...");
         let outer_read_indices = twin_graph::remove_contained_reads_twin(
             //Some(split_outer_read_indices),
             None,
@@ -277,7 +287,7 @@ fn get_twin_reads_from_kmer_info(
             .map(|x| *x)
             .collect::<Vec<_>>();
         log::info!(
-            "Mapping reads to {} outer (possibly) split reads...",
+            "Mapping reads to {} candidate outer reads...",
             remap_indices.len()
         );
         let chimeric_mapping_info =
@@ -372,6 +382,7 @@ fn light_progressive_cleaning(
 
     let safety_edge_cov_score_thresholds = [50., 25., 10.];
     //let safety_edge_cov_score_thresholds = [1000000.];
+    let bubble_length_cutoff = args.small_bubble_threshold;
 
     loop {
         log::debug!("LIGHT-CLEAN: Cleaning graph iteration {}", iteration);
@@ -383,10 +394,13 @@ fn light_progressive_cleaning(
             let read_cutoff = args.tip_read_cutoff;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+            unitig_graph.pop_bubbles(bubble_length_cutoff, None, false);
+            unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
             if unitig_graph.nodes.len() == size_graph {
                 break;
             }
+
             size_graph = unitig_graph.nodes.len();
         }
 
@@ -401,7 +415,6 @@ fn light_progressive_cleaning(
         }
 
         // Pop bubbles
-        let bubble_length_cutoff = args.small_bubble_threshold;
         unitig_graph.pop_bubbles(bubble_length_cutoff, None, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if output_temp {
@@ -589,27 +602,29 @@ fn get_contigs_from_progressive_coverage(
 fn heavy_clean_with_walk(
     unitig_graph: &mut unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
+    overlap_adj_map: &OverlapAdjMap,
     args: &cli::Cli,
     temp_dir: &PathBuf,
     out_dir: &PathBuf, 
 ) {
     log::info!("Graph cleaning with walks...");
     let mut save_removed = false;
-    let temperatures = [2., 1.0, 0.5, 0.33];
+    let temperatures = [2., 1.5,  1.0, 0.5];
     let ol_thresholds = [0.125, 0.25, 0.5];
-    let aggressive_multipliers = [5, 10, 15, 30];
+    let aggressive_multipliers = [10, 15, 30];
     let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
     let samples = 20;
-    let steps = 8;
+    let steps = 10;
 
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
-    for multiplier in aggressive_multipliers{
-        if multiplier > 20{
-            save_removed = true;
-        }
-        for temperature in temperatures {
+    //Try switching temp/multiplier
+    for temperature in temperatures {
+        for multiplier in aggressive_multipliers{
+            if multiplier > 20{
+                save_removed = true;
+            }
             let mut counter = 0;
             loop {
                 let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
@@ -628,7 +643,6 @@ fn heavy_clean_with_walk(
                     args,
                 );
 
-
                 let ind = counter.min(ol_thresholds.len() - 1);
                 let ol_threshold = ol_thresholds[ind];
 
@@ -642,6 +656,11 @@ fn heavy_clean_with_walk(
                         &args,
                     );
                 }
+
+                let strain_repeats = unitig_graph.get_strain_repeats(
+                    &overlap_adj_map,
+                    &args,
+                );
                 
                 let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
@@ -655,11 +674,12 @@ fn heavy_clean_with_walk(
                     300_000,
                     ol_threshold,
                     args.tip_length_cutoff * multiplier,
+                    Some(&strain_repeats),
                     true,
                 );
+
                 let length_after_cut = unitig_graph.nodes.len();
                 log::debug!("WALK-CLEAN: Cut {} nodes at multiplier {}, temperature {}, and threshold {}", length_before_cut - length_after_cut, multiplier, temperature, ol_threshold);
-
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
                 counter += 1;
@@ -819,7 +839,7 @@ fn progressive_coverage_contigs(
 
     let tip_length_cutoff_heavy = args.tip_length_cutoff * 15;
     let tip_read_cutoff_heavy = args.tip_read_cutoff;
-    let bubble_threshold_heavy = 1_500_000;
+    let bubble_threshold_heavy = 6_000_000;
 
     let mut cov_to_graph_map = FxHashMap::default();
     let mut unitig_graph_with_threshold = unitig_graph.clone();

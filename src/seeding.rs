@@ -349,6 +349,16 @@ pub fn get_twin_read_syncmer(
     let mut rolling_s_mer_f: MarkerBits = 0;
     let mut rolling_s_mer_r: MarkerBits = 0;
 
+    let mut read_with_all_equal_qualities = false;
+    if let Some(qualities) = qualities.as_ref(){
+        //Ensure that not all qualities are the same value. If they are, possibly it is an old pacbio run... ignore them
+        let mut q_iter = qualities.iter();
+        let first_q = q_iter.next().unwrap();
+        if q_iter.all(|q| q == first_q){
+            read_with_all_equal_qualities = true;
+        }
+    }
+
     // Initialize first k-1 bases for k-mer
     for i in 0..marker_k - 1 {
         let nuc_f = BYTE_TO_SEQ[string[i] as usize] as u64;
@@ -423,7 +433,7 @@ pub fn get_twin_read_syncmer(
                 60
             };
             
-            if mid_base_qval > MID_BASE_THRESHOLD_READ {
+            if mid_base_qval > MID_BASE_THRESHOLD_READ || read_with_all_equal_qualities {
                 snpmers_in_read.push((i + 1 - k, canonical_kmer_marker));
             }
             *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
@@ -447,11 +457,19 @@ pub fn get_twin_read_syncmer(
         }
     }
 
-    let seq_id = estimate_sequence_identity(qualities.as_ref());
+    let seq_id;
+    if read_with_all_equal_qualities{
+        seq_id = None;
+    }
+    else{
+        seq_id = estimate_sequence_identity(qualities.as_ref());
+    }
+
 
     Some(TwinRead{
         snpmers: no_dup_snpmers_in_read,
         minimizers: minimizers_in_read,
+        base_id: id.clone(),
         id,
         k: k as u8,
         base_length: len,
@@ -461,6 +479,7 @@ pub fn get_twin_read_syncmer(
         median_depth: None,
         min_depth_multi: None,
         split_chimera: false,
+        split_start: 0,
         snpmer_id_threshold: None,
     })
 }
@@ -495,6 +514,16 @@ pub fn get_twin_read(
     let len = string.len();
     let threshold = u64::MAX / (c as u64);
     let mid_k = k / 2;
+
+    let mut read_with_all_equal_qualities = false;
+    if let Some(qualities) = qualities.as_ref(){
+        //Ensure that not all qualities are the same value. If they are, possibly it is an old pacbio run... ignore them
+        let mut q_iter = qualities.iter();
+        let first_q = q_iter.next().unwrap();
+        if q_iter.all(|q| q == first_q){
+            read_with_all_equal_qualities = true;
+        }
+    }
 
     for i in 0..marker_k - 1 {
         let nuc_f = BYTE_TO_SEQ[string[i] as usize] as u64;
@@ -543,7 +572,7 @@ pub fn get_twin_read(
             else{
                 mid_base_qval = 60;
             }
-            if mid_base_qval > MID_BASE_THRESHOLD_READ{
+            if mid_base_qval > MID_BASE_THRESHOLD_READ || read_with_all_equal_qualities{
                 snpmers_in_read.push((i + 1 - k, canonical_kmer_marker));
             }
             *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
@@ -560,11 +589,18 @@ pub fn get_twin_read(
         }
     }
 
-    let seq_id = estimate_sequence_identity(qualities.as_ref());
+    let seq_id;
+    if read_with_all_equal_qualities {
+        seq_id = None;
+    }
+    else{
+        seq_id = estimate_sequence_identity(qualities.as_ref());
+    }
 
     return Some(TwinRead{
         snpmers: no_dup_snpmers_in_read,
         minimizers: minimizers_in_read,
+        base_id: id.clone(),
         id,
         k: k as u8,
         base_length: len,
@@ -574,6 +610,7 @@ pub fn get_twin_read(
         median_depth: None,
         min_depth_multi: None,
         split_chimera: false,
+        split_start: 0,
         snpmer_id_threshold: None,
     });
 
@@ -623,10 +660,15 @@ pub fn split_kmer_mid(
     let mid_k = k / 2;
     let mut positions_to_skip = FxHashSet::default();
     if let Some(qualities) = qualities.as_ref(){
-        for i in marker_k-1..qualities.len(){
-            let mid_pos = i + 1 + mid_k - k;
-            if qualities[mid_pos] - 33 < MID_BASE_THRESHOLD_INITIAL{
-                positions_to_skip.insert(i);
+        //Ensure that not all qualities are the same value. If they are, possibly it is an old pacbio run... ignore them
+        let mut q_iter = qualities.iter();
+        let first_q = q_iter.next().unwrap();
+        if !q_iter.all(|q| q == first_q){
+            for i in marker_k-1..qualities.len(){
+                let mid_pos = i + 1 + mid_k - k;
+                if qualities[mid_pos] - 33 < MID_BASE_THRESHOLD_INITIAL{
+                    positions_to_skip.insert(i);
+                }
             }
         }
         

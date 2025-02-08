@@ -8,10 +8,11 @@ pub mod unitig;
 pub mod cli;
 pub mod constants;
 pub mod cbloom;
-pub mod consensus;
+pub mod polishing_mod;
 pub mod seq_parse;
 pub mod map_processing;
 pub mod unitig_utils;
+pub mod polishing;
 
 #[cfg(target_arch = "x86_64")]
 pub mod avx2_seeding;

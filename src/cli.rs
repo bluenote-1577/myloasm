@@ -98,6 +98,9 @@ pub struct Cli {
     #[arg(long, default_value_t=false)]
     pub no_minimap2: bool,
 
+    #[arg(short, long, default_value_t=false)]
+    pub polish: bool,
+
     /// HiFi mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
     #[arg(long, help_heading = "Preset Parameters", hide=true)]
     pub hifi: bool,

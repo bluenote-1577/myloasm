@@ -227,7 +227,7 @@ where
     return breakpoints;
 }
 
-fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
+fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
 
     let mut new_reads = vec![];
     break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
@@ -244,10 +244,12 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.id = format!("{}+split{}", &twin_read.id, i);
+            new_read.split_start = last_break as u32;
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
             new_read.k = twin_read.k;
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
             new_read.base_length = new_read.dna_seq.len();
+            new_read.base_id = twin_read.base_id.clone();
             if break_points.len() > 1 {
                 new_read.split_chimera = true;
             }
@@ -275,13 +277,16 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
 
     // Change snpmer id threshold based on coverage
     if twin_read.snpmer_id_threshold.is_none(){
-        if min_depths[0] >= MIN_COV_READ as f64 && min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64 {
+        let sufficient_gap = min_depths[0] > 2.0 * min_depths[ID_THRESHOLD_ITERS - 1];
+        let small_specific_depth = min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64;
+        let sufficient_depth = min_depths[0] >= MIN_COV_READ as f64;
+        if sufficient_gap && small_specific_depth && sufficient_depth{
             //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
             let mut try_id = min_depths[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
             loop{
                 let (min_depth_try, _) = median_and_min_depth_from_lapper(&mapping_info.lapper_strain_max, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
                 if min_depth_try >= MIN_COV_READ as f64 {
-                    log::debug!("Read {} min_depth_identity:{} cov:{}", twin_read.id, try_id * 100., min_depth_try);
+                    log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, try_id * 100., min_depth_try);
                     twin_read.snpmer_id_threshold = Some(try_id);
                     break;
                 }
@@ -289,7 +294,7 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
             }
         }
         else{
-            twin_read.snpmer_id_threshold = Some(IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1]);
+            twin_read.snpmer_id_threshold = Some(IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100.);
         }
     }
 
@@ -354,12 +359,14 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 }
             }
             else{
-                let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
-                for breakpoint in breakpoints.iter(){
-                    read_id_and_breakpoint_string.push_str(format!("{}-{},", breakpoint.pos1, breakpoint.pos2).as_str());
+                if breakpoints.len() > 0{
+                    let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
+                    for breakpoint in breakpoints.iter(){
+                        read_id_and_breakpoint_string.push_str(format!("{}-{},", breakpoint.pos1, breakpoint.pos2).as_str());
+                    }
+                    let writer = &mut writer.lock().unwrap();
+                    writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
                 }
-                let writer = &mut writer.lock().unwrap();
-                writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
             }
 
             let splitted_reads = split_read_and_populate_depth(twin_read, map_info, breakpoints, args);
@@ -412,8 +419,76 @@ pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: us
     return false;
 }
 
+fn _get_min_depth_various_thresholds(lapper: &Lapper<u32, SnpmerIdentity>, seq_start: usize, seq_length: usize, snpmer_identity_cutoffs: &[f64]) -> Vec<f64>{
+
+    let intervals = &lapper.intervals;
+    let mut start_stop = vec![];
+    let mut counts = vec![0; snpmer_identity_cutoffs.len()];
+    let mut min_counts : Vec<Option<u32>>  = vec![None; snpmer_identity_cutoffs.len()];
+    for interval in intervals.iter(){
+        if interval.stop < seq_start as u32{
+            continue;
+        }
+        else if interval.start > seq_length as u32{
+            continue;
+        }
+        else{
+            start_stop.push((interval.start, false, interval.val));
+            start_stop.push((interval.stop, true, interval.val));
+        }
+    }
+    start_stop.sort();
+
+    for (pos, start, id) in start_stop.iter(){
+        let mut affected_indices = 0;
+        if pos > &(seq_length as u32){
+            break;
+        }
+        if !start{
+            for (i, cutoff) in snpmer_identity_cutoffs.iter().enumerate(){
+                if *id >= OrderedFloat(*cutoff){
+                    counts[i] += 1;
+                    affected_indices = i+1;
+                }
+                //Assume ordered
+                else{
+                    break;
+                }
+            }
+        }
+        else{
+            for (i, cutoff) in snpmer_identity_cutoffs.iter().enumerate(){
+                if *id >= OrderedFloat(*cutoff){
+                    counts[i] -= 1;
+                    affected_indices = i+1;
+                }
+            }
+        }
+        if pos < &(seq_start as u32) {
+            continue;
+        }
+        for i in 0..affected_indices{
+            if min_counts[i].is_none() || counts[i] < min_counts[i].unwrap(){
+                min_counts[i] = Some(counts[i]);
+            }
+        }
+    }
+
+    //If range contained in all intervals
+    for i in 0..snpmer_identity_cutoffs.len(){
+        if min_counts[i].is_none() || counts[i] < min_counts[i].unwrap(){
+            min_counts[i] = Some(counts[i]);
+        }
+    }
+
+    let min_counts = min_counts.into_iter().map(|x| x.unwrap_or(0) as f64).collect::<Vec<_>>();
+    return min_counts;
+} 
+
 #[cfg(test)]
 mod tests {
+
+    use rust_lapper::Interval;
     use super::*;
 
     #[test]
@@ -502,5 +577,80 @@ mod tests {
         let end2 = 1000;
         let reverse = true;
         assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), false);
+    }
+
+    fn test_get_min_depth_various_thresholds(){
+        let mut intervals = vec![];
+        for _ in 0..100{
+            intervals.push((0 as u32, 0 as u32 + 100, OrderedFloat(0.99)));
+        }
+
+        for _ in 0..100{
+            intervals.push((0 as u32, 0 as u32 + 100, OrderedFloat(1.00)));
+        }
+
+        for _ in 0..100{
+            intervals.push((0 as u32, 0 as u32 + 100, OrderedFloat(0.98)));
+        }
+        let intervals = intervals.into_iter().map(|x| Interval{start: x.0, stop: x.1, val: x.2}).collect::<Vec<_>>();
+        let lapper = Lapper::new(intervals);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 10, 50, &[0.97, 0.98, 0.99, 1.0]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 300.);
+        assert!(min_depths[1] == 300.);
+        assert!(min_depths[2] == 200.);
+        assert!(min_depths[3] == 100.);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 101, 120, &[0.97, 0.98, 0.99, 1.0]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 0.);
+        assert!(min_depths[1] == 0.);
+        assert!(min_depths[2] == 0.);
+        assert!(min_depths[3] == 0.);
+    }
+
+    #[test]
+    fn test_get_min_depth_various_thresholds_staggered(){
+        let mut intervals = vec![];
+        for i in 0..100{
+            intervals.push((i as u32, i as u32 + 100, OrderedFloat(0.995)));
+        }
+
+        for j in 0..100{
+            intervals.push((j as u32 + 500 , j as u32 + 500 + 100, OrderedFloat(1.00)));
+        }
+
+        for k in 0..100{
+            intervals.push((k as u32, k as u32 + 100, OrderedFloat(0.97)));
+        }
+        let intervals = intervals.into_iter().map(|x| Interval{start: x.0, stop: x.1, val: x.2}).collect::<Vec<_>>();
+        let lapper = Lapper::new(intervals);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 20, 30, &[0.99]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 21.);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 0, 1, &[0.99]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 1.);
+
+        //Closed/open [) intervals
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 100, 100, &[0.99]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 99.);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 50, 5000, &[0.99]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 0.);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 50, 120, &[0.99]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 51.);
+
+        let min_depths = _get_min_depth_various_thresholds(&lapper, 50, 120, &[0.95]);
+        dbg!(&min_depths);
+        assert!(min_depths[0] == 102.);
+
     }
 }

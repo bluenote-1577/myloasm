@@ -1,7 +1,7 @@
 use crate::cli::Cli;
+use rust_lapper::Interval;
 use ordered_float::OrderedFloat;
 use crate::constants::MAX_GAP_CHAINING;
-use crate::constants::MINIMIZER_END_NTH_COV;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
 use std::io::Write;
@@ -17,7 +17,6 @@ use bio_seq::codec::Codec;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rayon::prelude::*;
-use rust_lapper::Interval;
 use rust_lapper::Lapper;
 use std::sync::Mutex;
 use crate::map_processing::*;
@@ -475,7 +474,6 @@ pub fn compare_twin_reads(
 
         let mut intersect_split = 0;
         let mut intersection_snp = 0;
-        let mut snpmer_relative_hits = vec![];
 
         if compare_snpmers{
             shared_snpmer = 0;
@@ -530,16 +528,16 @@ pub fn compare_twin_reads(
                         let i = ind_redirect1[i as usize];
                         let j = anchor.j;
                         let j = ind_redirect2[j as usize];
-                        let base1 = ((seq1.snpmers[i as usize].1 & !mask) >> (k - 1)) as u8;
-                        let base2 = ((seq2.snpmers[j as usize].1 & !mask) >> (k - 1)) as u8;
+                        //let base1 = ((seq1.snpmers[i as usize].1 & !mask) >> (k - 1)) as u8;
+                        //let base2 = ((seq2.snpmers[j as usize].1 & !mask) >> (k - 1)) as u8;
 
-                        let snpmer_hit = SnpmerHit{
-                            pos1: seq1.snpmers[i as usize].0 as u32,
-                            pos2: seq2.snpmers[j as usize].0 as u32,
-                            bases: (base1, base2),
-                        };
+                        // let snpmer_hit = SnpmerHit{
+                        //     pos1: seq1.snpmers[i as usize].0 as u32,
+                        //     pos2: seq2.snpmers[j as usize].0 as u32,
+                        //     bases: (base1, base2),
+                        // };
 
-                        snpmer_relative_hits.push(snpmer_hit);
+                        // snpmer_relative_hits.push(snpmer_hit);
 
                         if seq1.snpmers[i as usize].1 == seq2.snpmers[j as usize].1 {
                             shared_snpmer += 1;
@@ -614,7 +612,6 @@ pub fn compare_twin_reads(
             chain_reverse: mini_chain_info.reverse,
             intersect: (intersect_split, intersection_snp),
             chain_score: mini_chain_info.score,
-            snpmer_relative_bases: snpmer_relative_hits,
         };
         twin_overlaps.push(twinol);
     }
@@ -793,16 +790,6 @@ pub fn map_reads_to_outer_reads<'a>(
                     args.snpmer_error_rate_lax
                 );
                 
-                //Used for coverage
-                let strain_specific_thresh_strict = same_strain(
-                    hit.shared_minimizers,
-                    hit.diff_snpmers,
-                    hit.shared_snpmers,
-                    args.c as u64,
-                    args.snpmer_threshold_strict,
-                    args.snpmer_error_rate_strict,
-                );
-
                 //Populate mapping boundaries map
                 {
                     let mut map = mapping_boundaries_map.lock().unwrap();
@@ -812,8 +799,9 @@ pub fn map_reads_to_outer_reads<'a>(
                         //query_range: (hit.start1 as u32, hit.end1 as u32),
                         //shared_minimizers: hit.shared_minimizers as u32,
                         diff_snpmers: hit.diff_snpmers as u32,
+                        query_range: (hit.start1 as u32, hit.end1 as u32),
                         //shared_snpmers: hit.shared_snpmers as u32,
-                        //chain_reverse: hit.chain_reverse,
+                        reverse: hit.chain_reverse,
                     };
                     vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh_lax, identity ));
                 }
@@ -1001,11 +989,11 @@ pub fn map_reads_to_unitigs(
             let vec = map.entry(hit.i2).or_insert(vec![]);
             let small_twin_ol = SmallTwinOl{
                 query_id: rid as u32,
-                //query_range: (hit.start1 as u32, hit.end1 as u32),
+                query_range: (hit.start1 as u32, hit.end1 as u32),
                 //shared_minimizers: hit.shared_minimizers as u32,
                 diff_snpmers: hit.diff_snpmers as u32,
                 //shared_snpmers: hit.shared_snpmers as u32,
-                //chain_reverse: hit.chain_reverse,
+                reverse: hit.chain_reverse,
             };
             vec.push((hit.start2, hit.end2, small_twin_ol));
         }

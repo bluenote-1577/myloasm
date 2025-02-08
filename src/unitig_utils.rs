@@ -231,6 +231,78 @@ pub fn quantile_dist(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v2: &[([f64;ID_TH
     Some(*minimum_distance.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap())
 }
 
+pub fn log_distribution_distance(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v2: &[([f64;ID_THRESHOLD_ITERS], usize)]) -> Option<f64> {
+    let quants = [0.25, 0.5, 0.75];
+    
+    // Transform into logs and ratios
+    let mut log_v1 = vec![];
+    let mut log_v2 = vec![];
+
+    for j in 0..2 {
+        let iterable = if j == 0 { v1 } else { v2 };
+        for tup in iterable.iter() {
+            let mut new_tup = [0.; ID_THRESHOLD_ITERS];
+            for i in 0..ID_THRESHOLD_ITERS {
+                if i == 0 {
+                    new_tup[i] = (tup.0[i] + PSEUDOCOUNT).ln();
+                } else {
+                    //new_tup[i] = ((tup.0[i] + PSEUDOCOUNT) / (tup.0[i - 1] + PSEUDOCOUNT)).ln();
+                    new_tup[i] = (tup.0[i] + PSEUDOCOUNT).ln();
+                }
+            }
+            if j == 0 {
+                log_v1.push((new_tup, tup.1));
+            } else {
+                log_v2.push((new_tup, tup.1));
+            }
+        }
+    }
+
+    let larger;
+    let smaller;
+
+    if log_v1.len() >= log_v2.len(){
+        larger = &log_v1;
+        smaller = &log_v2;
+    }
+    //TODO doesn't use larger/smaller
+    else{
+        larger = &log_v2;
+        smaller = &log_v1;
+    }
+
+    let quantiles_larger = quants.iter().map(|x| median_weight_multi(&larger, *x)).collect::<Vec<_>>();
+    let quantiles_smaller = quants.iter().map(|x| median_weight_multi(&smaller, *x)).collect::<Vec<_>>();
+
+    //median log ratios
+    let median_larger_3 = &quantiles_larger[1];
+    let median_smaller_3 = &quantiles_smaller[1];
+
+    let mut distances = vec![];
+    let mut weights = vec![];
+
+    for i in 0..ID_THRESHOLD_ITERS{
+        let d = (median_larger_3.unwrap()[i] - median_smaller_3.unwrap()[i]).abs();
+        distances.push(d);
+
+        let mut ratio_distribution = vec![];
+        let mut count = 0;
+        for (log_ratio, length) in larger.iter(){
+            let index = count % smaller.len();
+            let w = log_ratio[i] - smaller[index].0[i];
+            ratio_distribution.push((w, *length));
+            count += 1;
+        }
+
+        let iqr_weight  = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
+        weights.push(iqr_weight + 1.);
+    }
+    let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
+
+    return Some(weighted_distance);
+    
+}
+
 #[inline]
 pub fn square_root_poisson_kl(cov1: f64, cov2: f64) -> f64 {
     let p_cov1 = cov1 + 1.;
@@ -263,6 +335,7 @@ pub fn pseudocount_cov_multi(cov1: [f64;ID_THRESHOLD_ITERS], cov2: [f64;ID_THRES
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn test_median_weight() {
@@ -280,17 +353,22 @@ mod tests {
     }
 
     #[test]
-    fn test_quantile_dist() {
+    fn test_log_dist() {
         let v1 = vec![([1.0, 1.0, 1.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
         let v2 = vec![([1.0, 1.0, 1.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
-        assert_eq!(quantile_dist(&v1, &v2), Some(0.0));
+        assert_eq!(log_distribution_distance(&v1, &v2), Some(0.0));
 
         let v1 = vec![([1.0, 1.0, 1.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
-        let v2 = vec![([2.0, 2.0, 2.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 3)];
-        assert_eq!(quantile_dist(&v1, &v2), Some(0.0));
+        let v2 = vec![([2.0, 2.0, 2.0], 1), ([2.0, 2.0, 2.0], 2), ([3.0, 3.0, 3.0], 2)];
+        assert_eq!(log_distribution_distance(&v1, &v2), Some(0.0));
 
-        let v1 = vec![([5.0;3], 1), ([10.0;3], 2), ([3.0;3], 3)];
-        let v2 = vec![([2.0, 2.0, 2.0], 1), ([2.0, 2.0, 2.0], 2), ([4.0, 4.0, 4.0], 3)];
-        assert_eq!(quantile_dist(&v1, &v2), Some((4.0 + PSEUDOCOUNT) / (3.0 + PSEUDOCOUNT) - 1.));
+        // should be approximately log (2/1)
+        let v1 = vec![([10., 5.0, 5.0], 2)];
+        let v2 = vec![([10., 10.0, 10.0], 2)];
+        let num = (5.0 + PSEUDOCOUNT);
+        let denom = (10.0 + PSEUDOCOUNT);
+        dbg!(log_distribution_distance(&v1, &v2).unwrap());
+        assert!(log_distribution_distance(&v1, &v2).unwrap() - 2. * (num/denom).ln().abs() < 0.0001);
+
     }
 }

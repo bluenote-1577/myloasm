@@ -32,8 +32,15 @@ flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false 
 gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"] }
 rand = "0.8.5"
 ordered-float = { version = "4.0", default-features = false }
+rust-spoa = { path = "rust-spoa" }
 
 #crossbeam-utils = "*"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+block-aligner = { version = "0.5", features = ["simd_avx2"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+block-aligner = { version = "0.5", features = ["simd_neon"] }
 
 
 [target.'cfg(target_env = "musl")'.dependencies]

@@ -161,6 +161,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-aligner"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8986feb1596f749fdcf1046e1b8068dfe802fc45708e6e293b736e4c0bb3b3a5"
+
+[[package]]
 name = "buffer-redux"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -923,6 +929,7 @@ version = "0.0.1"
 dependencies = [
  "bincode",
  "bio-seq",
+ "block-aligner",
  "clap",
  "crossbeam-channel",
  "dashmap",
@@ -941,6 +948,7 @@ dependencies = [
  "rayon",
  "rust-htslib",
  "rust-lapper",
+ "rust-spoa",
  "serde",
  "smallvec",
  "spmc",
@@ -1315,6 +1323,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee43d8e721ac803031dbab6a944b957b49a3b11eadbc099880c8aaaebf23ed27"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "rust-spoa"
+version = "0.2.4"
+dependencies = [
+ "cc",
+ "cmake",
 ]
 
 [[package]]
