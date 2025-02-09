@@ -4,6 +4,8 @@ use crate::types::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use std::collections::VecDeque;
+use bio_seq::seq::Seq;
+use bio_seq::prelude::*;
 
 //create new alias kmer = u64
 pub type Kmer64 = u64;
@@ -465,6 +467,10 @@ pub fn get_twin_read_syncmer(
         seq_id = estimate_sequence_identity(qualities.as_ref());
     }
 
+    let mut qual_seq : Option<Seq<QualCompact3>> = None;
+    if let Some(qualities) = qualities{
+        qual_seq = Some(qualities.try_into().unwrap());
+    }
 
     Some(TwinRead{
         snpmers: no_dup_snpmers_in_read,
@@ -474,6 +480,7 @@ pub fn get_twin_read_syncmer(
         k: k as u8,
         base_length: len,
         dna_seq: string.try_into().unwrap(),
+        qual_seq: qual_seq,
         est_id: seq_id,
         outer: false,
         median_depth: None,
@@ -482,6 +489,7 @@ pub fn get_twin_read_syncmer(
         split_start: 0,
         snpmer_id_threshold: None,
     })
+
 }
 
 pub fn get_twin_read(
@@ -597,6 +605,11 @@ pub fn get_twin_read(
         seq_id = estimate_sequence_identity(qualities.as_ref());
     }
 
+    let mut qual_seq = None;
+    if let Some(qualities) = qualities{
+        qual_seq = Some(qualities.try_into().unwrap());
+    }
+
     return Some(TwinRead{
         snpmers: no_dup_snpmers_in_read,
         minimizers: minimizers_in_read,
@@ -605,6 +618,7 @@ pub fn get_twin_read(
         k: k as u8,
         base_length: len,
         dna_seq: string.try_into().unwrap(),
+        qual_seq,
         est_id: seq_id,
         outer: false,
         median_depth: None,

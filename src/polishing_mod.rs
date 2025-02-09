@@ -25,6 +25,35 @@ use std::path::Path;
 use std::io::Write;
 use std::path::PathBuf;
 
+pub fn polish_assembly(final_graph: UnitigGraph, mut twin_reads: Vec<TwinRead>, args: &Cli){
+    let fasta_out_path = Path::new(args.output_dir.as_str()).join("final_contigs_polished.fa");
+    let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
+
+    log::info!("Processing alignments...");
+    final_graph.nodes.iter().for_each(|(contig_index, contig)| {
+        let mut consensus_builder = consensus::ConsensusBuilder::new(contig.base_seq().len(), false);
+        contig.mapping_boundaries().iter().for_each(|interval| {
+            let ol = &interval.val;
+            let ar = &ol.alignment_result.as_ref().unwrap();
+            let query_seq;
+            let query_quals;
+            //TODO assume qualities exist
+            if ol.reverse{
+                query_seq = dna_seq_to_u8(&twin_reads[ol.query_id as usize].dna_seq.revcomp());
+                query_quals = quality_seq_to_u8(&twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap().revcomp());
+            }
+            else{
+                query_seq = dna_seq_to_u8(&twin_reads[ol.query_id as usize].dna_seq);
+                query_quals = quality_seq_to_u8(&twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap());
+            }
+            consensus_builder.process_alignment_nohpc(&ar.cigar, &query_seq, &query_quals, ar.r_start, ar.q_start);
+        });
+        let consensus_seq = consensus_builder.produce_consensus();
+        write!(&mut fasta_writer, ">u{}\n", contig.node_id).unwrap();
+        write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&consensus_seq).unwrap()).unwrap();
+    });
+}
+
 pub fn read_fastq_and_polish(final_graph: UnitigGraph, mut twin_reads: Vec<TwinRead>, args: &Cli, read_files: &Vec<PathBuf>){
     let fasta_out_path = Path::new(args.output_dir.as_str()).join("final_contigs.fa");
     let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
@@ -135,7 +164,9 @@ pub fn read_fastq_and_polish(final_graph: UnitigGraph, mut twin_reads: Vec<TwinR
                                     let query_u8_ref = &query_u8[start_read..stop_read+1];
                                     let query_qualities_ref = query_qualities_u8[start_read..stop_read+1].to_vec();
 
-                                    let cigar = alignment::align_seq_to_ref_slice(&contig_u8_ref, query_u8_ref, &GAPS);
+                                    let start = std::time::Instant::now();
+                                    let cigar = alignment::align_seq_to_ref_slice(&contig_u8_ref, query_u8_ref, &GAPS, None);
+                                    log::trace!("Alignment took: {:?}", start.elapsed());
                                     let seq_wrapper = HomopolymerCompressedSeq::new(&query_u8_ref, query_qualities_ref, false);
                                     let mut consensus_builder = consensus_builders.as_ref().get(contig_index).unwrap().lock().unwrap();
                                     consensus_builder.process_alignment(cigar, &seq_wrapper, *r_start as usize, 0);
@@ -168,19 +199,7 @@ pub fn read_fastq_and_polish(final_graph: UnitigGraph, mut twin_reads: Vec<TwinR
     }
 }
 
-fn dna_slice_to_u8(slice: &SeqSlice<Dna>) -> Vec<u8>{
-    slice.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect()
-}
 
-fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{
-    seq.iter().rev().map(|x| match x{
-        b'A' => b'T',
-        b'T' => b'A',
-        b'C' => b'G',
-        b'G' => b'C',
-        _ => b'N'
-    }).collect()
-}
 
 fn create_bam_header(sequences: Vec<(String, u32)>) -> Header {
     // Create a new header

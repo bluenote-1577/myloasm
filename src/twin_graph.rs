@@ -551,7 +551,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
                 continue;
             }
 
-            let twlaps = compare_twin_reads(&read, &read2, Some(&anchors), None, i, outer_ref_id as usize, true);
+            let twlaps = compare_twin_reads(&read, &read2, Some(&anchors), None, i, outer_ref_id as usize, true, false);
 
             let mut possible_containment = false;
             //Check for contained read
@@ -990,7 +990,7 @@ fn parallel_remove_contained(
                 break;
             }
             let read2 = &twin_reads[*index];
-            let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, *index, true);
+            let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, *index, true, false);
             if twin_overlaps.is_empty(){
                 continue;
             }

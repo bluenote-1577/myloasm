@@ -92,7 +92,8 @@ fn main() {
 
     if args.polish{
         log::info!("Polishing...");
-        polishing_mod::read_fastq_and_polish(contig_graph, twin_read_container.twin_reads, &args, &kmer_info.read_files);
+        //polishing_mod::read_fastq_and_polish(contig_graph, twin_read_container.twin_reads, &args, &kmer_info.read_files);
+        polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
         log::info!("Time elapsed for polishing is {:?}", start.elapsed());
     }
 

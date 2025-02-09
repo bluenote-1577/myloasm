@@ -264,11 +264,79 @@ impl ConsensusBuilder {
         return consensus_str;
     }
 
-    pub fn process_alignment(&mut self, cigar: Cigar, query_hpc_seq: &HomopolymerCompressedSeq, start_ref: usize, start_query: usize) {
+    pub fn process_alignment_nohpc(&mut self, cigar: &Vec<OpLen>, query_sequence: &[u8], query_qualities: &[u8], start_ref: usize, start_query: usize) {
         let mut ref_pos = start_ref;
         let mut query_pos = start_query;
-        let cigar_parser = CigarParser::new(&cigar);
-        let mut iter = cigar_parser.cigar.iter();
+        let mut iter = cigar.iter();
+        let mut prev_state = Operation::Sentinel;
+
+        while let Some(oplen) = iter.next() {
+            let prev_pos_query = if query_pos > 0 { query_pos - 1 } else { 0 };
+            match oplen.op {
+                Operation::Eq | Operation::X | Operation::M => {
+                    if prev_state == Operation::I{
+                        let quality_base = query_qualities[prev_pos_query];
+                        self.consensus[ref_pos].prev_ins_weight = self.consensus[ref_pos].prev_ins_weight.saturating_add(quality_base as u32);
+                    }
+                    else{
+                        let quality_base = query_qualities[prev_pos_query];
+                        self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_base as u32);
+                    }
+                    //1 Match or mismatch
+                    for ind in 0..oplen.len{
+                        if ind > 0{
+                            let quality_before = query_qualities[query_pos - 1];
+                            self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_before as u32);
+                        }
+
+                        let quality_base = query_qualities[query_pos];
+                        let query_base = query_sequence[query_pos];
+                        let hpc_length = None;
+                        self.consensus[ref_pos].increment_base(query_base, quality_base, hpc_length);
+                        ref_pos += 1;
+                        query_pos += 1;
+                    }
+                }
+                Operation::D => {
+                    let quality_base_before = query_qualities[prev_pos_query];
+                    if prev_state == Operation::I{
+                        self.consensus[ref_pos].prev_ins_weight = self.consensus[ref_pos].prev_ins_weight.saturating_add(quality_base_before as u32);
+                    }
+                    else{
+                        self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_base_before as u32);
+                    }
+                    // Deletion relative to reference
+                    for ind in 0..oplen.len {
+                        let quality_base_before = query_qualities[prev_pos_query];
+                        if ind > 0{
+                            self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_base_before as u32);
+                        }
+                        let query_pos = query_pos.min(query_qualities.len() - 1);
+                        let quality_base = query_qualities[query_pos];
+                        self.consensus[ref_pos].increment_deletion(quality_base);
+                        ref_pos += 1;
+                    }
+                }
+                Operation::I => {
+                    // Insertion relative to reference
+                    let insertion = &query_sequence[query_pos..query_pos + oplen.len];
+                    let qualities = &query_qualities[query_pos..query_pos + oplen.len];
+                    let hpc_lengths = None;
+                    self.consensus[ref_pos].add_insertion(insertion, qualities, hpc_lengths);
+                    query_pos += oplen.len;
+                }
+                _ => {
+                    // Skip other CIGAR operations
+                }
+            }
+            prev_state = oplen.op;
+        }
+    }
+
+    pub fn process_alignment(&mut self, cigar: Vec<OpLen>, query_hpc_seq: &HomopolymerCompressedSeq, start_ref: usize, start_query: usize) {
+        let mut ref_pos = start_ref;
+        let mut query_pos = start_query;
+        let mut iter = cigar.iter();
         let query_sequence = &query_hpc_seq.seq;
         let query_qualities = &query_hpc_seq.qualities;
         let query_hpc_lengths = &query_hpc_seq.homopolymer_lengths;
@@ -277,7 +345,7 @@ impl ConsensusBuilder {
         while let Some(oplen) = iter.next() {
             let prev_pos_query = if query_pos > 0 { query_pos - 1 } else { 0 };
             match oplen.op {
-                Operation::Eq | Operation::X => {
+                Operation::Eq | Operation::X | Operation::M => {
                     if prev_state == Operation::I{
                         let quality_base = query_qualities[prev_pos_query];
                         self.consensus[ref_pos].prev_ins_weight = self.consensus[ref_pos].prev_ins_weight.saturating_add(quality_base as u32);
@@ -335,16 +403,6 @@ impl ConsensusBuilder {
             }
             prev_state = oplen.op;
         }
-    }
-}
-
-struct CigarParser{
-    pub cigar: Vec<OpLen>,
-}
-
-impl CigarParser{
-    fn new(cigar: &Cigar) -> Self {
-        Self { cigar: cigar.to_vec()}
     }
 }
 

@@ -35,6 +35,7 @@ use std::hash::{BuildHasherDefault, Hasher};
 use std::path::PathBuf;
 use bio_seq::prelude::*;
 use rust_lapper::Lapper;
+use block_aligner::cigar::OpLen;
 
 use crate::constants::ID_THRESHOLD_ITERS;
 
@@ -188,6 +189,7 @@ pub struct TwinRead {
     pub k: u8,
     pub base_length: usize,
     pub dna_seq: Seq<Dna>,
+    pub qual_seq: Option<Seq<QualCompact3>>,
     pub est_id: Option<f64>,
     pub min_depth_multi: Option<MultiCov>,
     pub median_depth: Option<f64>,
@@ -195,6 +197,149 @@ pub struct TwinRead {
     pub split_start: u32,
     pub outer: bool,
     pub snpmer_id_threshold: Option<f64>,
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+pub enum QualCompact3{
+    Q33 = 0b0000,
+    Q36 = 0b0001,
+    Q39 = 0b0010,
+    Q42 = 0b0011,
+    Q45 = 0b0100,
+    Q48 = 0b0101,
+    Q51 = 0b0110,
+    Q54 = 0b0111,
+    Q57 = 0b1000,
+    Q60 = 0b1001,
+    Q63 = 0b1010,
+    Q66 = 0b1011,
+    Q69 = 0b1100,
+    Q72 = 0b1101,
+    Q75 = 0b1110,
+    Q78 = 0b1111,
+}
+
+impl Codec for QualCompact3{
+    const BITS: u8 = 4;
+
+    /// Take the two least significant bits of a `u8` and map them to the
+    /// corresponding nucleotides.
+    fn unsafe_from_bits(b: u8) -> Self {
+        unsafe { std::mem::transmute(b & 0b1111) }
+    }
+
+    /// We can efficient verify that a byte is a valid `Dna` value if it's
+    /// between 0 and 3.
+    fn try_from_bits(b: u8) -> Option<Self> {
+
+        // Round to nearest 3 and map to enum variant
+        let rounded = match b {
+            0..=34  => 0,  // Q33
+            35..=37 => 1,  // Q36
+            38..=40 => 2,  // Q39
+            41..=43 => 3,  // Q42
+            44..=46 => 4,  // Q45
+            47..=49 => 5,  // Q48
+            50..=52 => 6,  // Q51
+            53..=55 => 7,  // Q54
+            56..=58 => 8,  // Q57
+            59..=61 => 9,  // Q60
+            62..=64 => 10, // Q63
+            65..=67 => 11, // Q66
+            68..=70 => 12, // Q69
+            71..=73 => 13, // Q72
+            74..=76 => 14, // Q75
+            _ => 15,       // Q78 or higher
+        };
+
+        // Use match instead of transmute for safety
+        let m = match rounded {
+            0 => Some(Self::Q33),
+            1 => Some(Self::Q36),
+            2 => Some(Self::Q39),
+            3 => Some(Self::Q42),
+            4 => Some(Self::Q45),
+            5 => Some(Self::Q48),
+            6 => Some(Self::Q51),
+            7 => Some(Self::Q54),
+            8 => Some(Self::Q57),
+            9 => Some(Self::Q60),
+            10 => Some(Self::Q63),
+            11 => Some(Self::Q66),
+            12 => Some(Self::Q69),
+            13 => Some(Self::Q72),
+            14 => Some(Self::Q75),
+            15 => Some(Self::Q78),
+            _ => None,  // This case should never happen given our match above
+        };
+
+        return m
+    }
+
+    /// The ASCII values of 'A', 'C', 'G', and 'T' can be translated into
+    /// the numbers 0, 1, 2, and 3 using bitwise operations: `((b << 1) + b) >> 3`.
+    fn unsafe_from_ascii(b: u8) -> Self {
+        Self::unsafe_from_bits(b)
+    }
+
+    fn try_from_ascii(c: u8) -> Option<Self> {
+        Self::try_from_bits(c)
+    }
+
+    //Not -33
+    fn to_char(self) -> char {
+        match self {
+            QualCompact3::Q33 => '!',
+            QualCompact3::Q36 => '"',
+            QualCompact3::Q39 => '#',
+            QualCompact3::Q42 => '$',
+            QualCompact3::Q45 => '%',
+            QualCompact3::Q48 => '&',
+            QualCompact3::Q51 => '\'',
+            QualCompact3::Q54 => '(',
+            QualCompact3::Q57 => ')',
+            QualCompact3::Q60 => '*',
+            QualCompact3::Q63 => '+',
+            QualCompact3::Q66 => ',',
+            QualCompact3::Q69 => '-',
+            QualCompact3::Q72 => '.',
+            QualCompact3::Q75 => '/',
+            QualCompact3::Q78 => '0',
+        }
+    }
+
+    fn to_bits(self) -> u8 {
+        (self as u8)
+    }
+
+    fn items() -> impl Iterator<Item = Self> {
+        vec![
+            QualCompact3::Q33,
+            QualCompact3::Q36,
+            QualCompact3::Q39,
+            QualCompact3::Q42,
+            QualCompact3::Q45,
+            QualCompact3::Q48,
+            QualCompact3::Q51,
+            QualCompact3::Q54,
+            QualCompact3::Q57,
+            QualCompact3::Q60,
+            QualCompact3::Q63,
+            QualCompact3::Q66,
+            QualCompact3::Q69,
+            QualCompact3::Q72,
+            QualCompact3::Q75,
+            QualCompact3::Q78,
+        ].into_iter()
+    }
+}
+
+impl Complement for QualCompact3 {
+    fn comp(&self) -> Self {
+        return *self 
+    }
 }
 
 impl TwinRead{
@@ -244,6 +389,7 @@ pub struct TwinOverlap{
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
     pub chain_score: i32,
+    pub minimizer_chain: Option<Vec<Anchor>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -314,12 +460,22 @@ pub trait NodeMapping {
     fn mapped_indices(&self) -> Vec<usize>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone,  Default)]
 pub struct SmallTwinOl{
     pub query_id: u32,
     pub diff_snpmers: u32,
     pub query_range: (u32, u32),
     pub reverse: bool,
+    pub alignment_result: Option<AlignmentResult>
+}
+
+impl Eq for SmallTwinOl{}
+
+impl PartialEq for SmallTwinOl{
+    fn eq(&self, other: &Self) -> bool{
+        self.query_id == other.query_id && self.query_range == other.query_range 
+
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -371,4 +527,40 @@ pub struct BeamSearchSoln{
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OverlapAdjMap {
     pub adj_map: FxHashMap<NodeIndex, Vec<NodeIndex>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AlignmentResult{
+    pub cigar: Vec<OpLen>,
+    pub q_start: usize,
+    pub q_end: usize,
+    pub r_start: usize,
+    pub r_end: usize,
+}
+
+pub fn dna_seq_to_u8(slice: &Seq<Dna>) -> Vec<u8>{
+    slice.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect()
+}
+
+pub fn dna_slice_to_u8(slice: &SeqSlice<Dna>) -> Vec<u8>{
+    slice.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect()
+}
+
+
+pub fn quality_slice_to_u8(slice: &SeqSlice<QualCompact3>) -> Vec<u8>{
+    slice.iter().map(|x| x.to_bits() as u8).collect()
+}
+
+pub fn quality_seq_to_u8(slice: &Seq<QualCompact3>) -> Vec<u8>{
+    slice.iter().map(|x| x.to_bits() as u8 * 3).collect()
+}
+
+pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{
+    seq.iter().rev().map(|x| match x{
+        b'A' => b'T',
+        b'T' => b'A',
+        b'C' => b'G',
+        b'G' => b'C',
+        _ => b'N'
+    }).collect()
 }

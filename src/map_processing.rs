@@ -240,7 +240,7 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
         let bp_end = break_point.pos2;
         if bp_start - last_break > MIN_READ_LENGTH{
             let mut new_read = TwinRead::default();
-            //Repopulate minimizers and snpmers
+            //Repopulate minimizers and snpmers. This is kind of bad; should have a method that does this...
             new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.id = format!("{}+split{}", &twin_read.id, i);
@@ -248,6 +248,9 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
             new_read.k = twin_read.k;
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
+            if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
+                new_read.qual_seq = Some(qual_seq[last_break..bp_start].to_owned());
+            }
             new_read.base_length = new_read.dna_seq.len();
             new_read.base_id = twin_read.base_id.clone();
             if break_points.len() > 1 {
@@ -579,7 +582,7 @@ mod tests {
         assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), false);
     }
 
-    fn test_get_min_depth_various_thresholds(){
+    fn _test_get_min_depth_various_thresholds(){
         let mut intervals = vec![];
         for _ in 0..100{
             intervals.push((0 as u32, 0 as u32 + 100, OrderedFloat(0.99)));

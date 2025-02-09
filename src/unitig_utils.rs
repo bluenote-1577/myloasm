@@ -335,7 +335,6 @@ pub fn pseudocount_cov_multi(cov1: [f64;ID_THRESHOLD_ITERS], cov2: [f64;ID_THRES
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     #[test]
     fn test_median_weight() {
@@ -365,8 +364,8 @@ mod tests {
         // should be approximately log (2/1)
         let v1 = vec![([10., 5.0, 5.0], 2)];
         let v2 = vec![([10., 10.0, 10.0], 2)];
-        let num = (5.0 + PSEUDOCOUNT);
-        let denom = (10.0 + PSEUDOCOUNT);
+        let num = 5.0 + PSEUDOCOUNT;
+        let denom = 10.0 + PSEUDOCOUNT;
         dbg!(log_distribution_distance(&v1, &v2).unwrap());
         assert!(log_distribution_distance(&v1, &v2).unwrap() - 2. * (num/denom).ln().abs() < 0.0001);
 

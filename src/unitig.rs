@@ -2934,6 +2934,7 @@ mod tests {
                     minimizers: vec![],
                     snpmers: vec![],
                     dna_seq: Seq::new(),
+                    qual_seq: None,
                     base_length: 2000,
                     k: 21,
                     outer: false,
@@ -3388,7 +3389,7 @@ mod tests {
     }
 
     //TODO this fails and it's hard to amend the algorithm to make this work... 
-    fn test_safe_path_detection_circ_tipbubble_small() {
+    fn _test_safe_path_detection_circ_tipbubble_small() {
         // Create a graph with a safe path:
         // n1 --- >n2 --> n3
         //   |(safe cut)|

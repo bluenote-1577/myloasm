@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use crate::types::*;
 use crate::unitig;
 use crate::unitig::NodeSequence;
+use crate::polishing::alignment;
 use bio_seq::codec::Codec;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -365,17 +366,8 @@ fn find_optimal_chain(
 
     #[cfg(any(target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx2") && false {
-            use crate::avx2_chaining::dp_anchors_simd;
-            unsafe{
-                let vals = dp_anchors_simd(matches, false, gap_cost, match_score, band);
-                scores_and_chains_f.extend(vals);
-            }
-        }
-        else{
-            let vals = dp_anchors(matches, false, gap_cost, match_score, band);
-            scores_and_chains_f.extend(vals);
-        }
+        let vals = dp_anchors(matches, false, gap_cost, match_score, band);
+        scores_and_chains_f.extend(vals);
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -386,17 +378,8 @@ fn find_optimal_chain(
     let mut scores_and_chains_r = vec![];
     #[cfg(any(target_arch = "x86_64"))]
     {
-        if is_x86_feature_detected!("avx2") && false{
-            use crate::avx2_chaining::dp_anchors_simd;
-            unsafe{
-                let vals = dp_anchors_simd(matches, true, gap_cost, match_score, band);
-                scores_and_chains_r.extend(vals);
-            }
-        }
-        else{
-            let vals = dp_anchors(matches, true, gap_cost, match_score, band);
-            scores_and_chains_r.extend(vals);
-        }
+        let vals = dp_anchors(matches, true, gap_cost, match_score, band);
+        scores_and_chains_r.extend(vals);
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
@@ -447,7 +430,8 @@ pub fn compare_twin_reads(
     snpmer_anchors: Option<&Anchors>,
     i: usize,
     j: usize,
-    compare_snpmers: bool
+    compare_snpmers: bool,
+    retain_chain: bool,
 ) -> Vec<TwinOverlap> {
     let mini_chain_infos;
     if let Some(anchors) = mini_anchors {
@@ -464,7 +448,7 @@ pub fn compare_twin_reads(
     let mut twin_overlaps = vec![];
     let k = seq1.k as usize;
     for mini_chain_info in mini_chain_infos{
-        let mini_chain = mini_chain_info.chain;
+        let mini_chain = &mini_chain_info.chain;
         if mini_chain_info.score < MIN_CHAIN_SCORE_COMPARE {
             continue;
         }
@@ -598,6 +582,11 @@ pub fn compare_twin_reads(
         let end1 = l1.max(r1);
         let start2 = l2.min(r2);
         let end2 = l2.max(r2);
+        let shared_minimizers = mini_chain.len();
+        let mut mini_chain_return = None;
+        if retain_chain{
+            mini_chain_return = Some(mini_chain_info.chain);
+        }
         let twinol = TwinOverlap {
             i1: i,
             i2: j,
@@ -605,13 +594,14 @@ pub fn compare_twin_reads(
             end1,
             start2,
             end2,
-            shared_minimizers: mini_chain.len(),
+            shared_minimizers,
             shared_snpmers: shared_snpmer,
             diff_snpmers: diff_snpmer,
             snpmers_in_both: (seq1.snpmers.len(), seq2.snpmers.len()),
             chain_reverse: mini_chain_info.reverse,
             intersect: (intersect_split, intersection_snp),
             chain_score: mini_chain_info.score,
+            minimizer_chain: mini_chain_return,
         };
         twin_overlaps.push(twinol);
     }
@@ -756,7 +746,8 @@ pub fn map_reads_to_outer_reads<'a>(
                 None,
                 rid,
                 *contig_id as usize,
-                true
+                true,
+                false,
             ) {
                 if twin_ol.end2 - twin_ol.start2 < 500 {
                     continue;
@@ -802,6 +793,7 @@ pub fn map_reads_to_outer_reads<'a>(
                         query_range: (hit.start1 as u32, hit.end1 as u32),
                         //shared_snpmers: hit.shared_snpmers as u32,
                         reverse: hit.chain_reverse,
+                        alignment_result: None
                     };
                     vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh_lax, identity ));
                 }
@@ -910,14 +902,13 @@ pub fn map_reads_to_unitigs(
                 None,
                 rid,
                 *contig_id as usize,
+                true,
                 true
             ) {
                 if twinol.end2 - twinol.start2 < MIN_READ_LENGTH {
                     continue;
                 }
                 unitig_hits.push(twinol);
-                //Only take top hit for now, TODO
-                //break;
             }
         }
         let mut ss_hits = unitig_hits.into_iter().filter(|x| same_strain(
@@ -985,6 +976,14 @@ pub fn map_reads_to_unitigs(
         }
 
         for hit in retained_hits {
+            let start = std::time::Instant::now();
+            let alignment_result = alignment::get_full_alignment(
+                &twin_reads[hit.i1].dna_seq,
+                &tr_unitigs[&hit.i2].dna_seq,
+                &hit,
+                args,
+            );
+            log::trace!("Time elapsed {:?} sce", start.elapsed());
             let mut map = mapping_boundaries_map.lock().unwrap();
             let vec = map.entry(hit.i2).or_insert(vec![]);
             let small_twin_ol = SmallTwinOl{
@@ -994,6 +993,7 @@ pub fn map_reads_to_unitigs(
                 diff_snpmers: hit.diff_snpmers as u32,
                 //shared_snpmers: hit.shared_snpmers as u32,
                 reverse: hit.chain_reverse,
+                alignment_result: alignment_result
             };
             vec.push((hit.start2, hit.end2, small_twin_ol));
         }
