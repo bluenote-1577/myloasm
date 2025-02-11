@@ -1,0 +1,894 @@
+use crate::constants::*;
+use crate::polishing::alignment;
+use crate::types::SmallTwinOl;
+use crate::types::*;
+use bio_seq::prelude::*;
+use block_aligner::cigar::*;
+use fxhash::FxHashMap;
+use minimap2::ffi::_SC_NETWORKING;
+use rayon::prelude::*;
+use rust_lapper::Interval;
+use rust_spoa::poa_consensus;
+use std::sync::Mutex;
+
+#[derive(Debug, Default, Clone)]
+pub struct BaseConsensusSimple {
+    pub match_count: u32,
+    pub prev_ins_weight: u32,
+    pub prev_nonins_weight: u32,
+}
+
+pub struct PoaConsensusBuilder {
+    seq: Vec<Mutex<Vec<Vec<u8>>>>,
+    qual: Vec<Mutex<Vec<Vec<u8>>>>,
+    breakpoints: Vec<usize>,
+    genome_length: usize,
+    window_overlap_len: usize,
+    bp_len: usize,
+}
+
+impl PoaConsensusBuilder {
+    pub fn spoa_blocks(mut self) -> Vec<Vec<u8>> {
+        let consensus_max_length = 800;
+        let alignment_type = 1;
+        let match_score = 5;
+        let mismatch_score = -3;
+        let gap_open = -2;
+        let gap_extend = -1;
+
+        let consensuses = Mutex::new(vec![]);
+        //parallel iter over seq and qual
+        self.seq
+            .into_par_iter()
+            .enumerate()
+            .zip(self.qual.into_par_iter())
+            .for_each(|((i, seq), qual)| {
+                let mut seqs = seq.lock().unwrap();
+                let mut quals = qual.lock().unwrap();
+
+                let mut qual_map = FxHashMap::default();
+                for (i, qual) in quals.iter().enumerate() {
+                    qual_map.insert(i, -(qual.len() as i32));
+                }
+
+                //Sort seqs and quals by the qual_map
+                let mut sorted_indices = qual_map.into_iter().collect::<Vec<_>>();
+                sorted_indices.sort_by_key(|x| x.1);
+                let sorted_indices = sorted_indices.into_iter().map(|x| x.0).collect::<Vec<_>>();
+
+                let seqs = sorted_indices
+                    .iter()
+                    .map(|&i| std::mem::take(&mut seqs[i]))
+                    .collect::<Vec<_>>();
+                let quals = sorted_indices
+                    .iter()
+                    .map(|&i| std::mem::take(&mut quals[i]))
+                    .collect::<Vec<_>>();
+
+                log::debug!("Seqs for block: {}", i);
+                for seq in seqs.iter() {
+                    log::debug!("{:?}", String::from_utf8_lossy(&seq));
+                }
+
+                let cons = poa_consensus(
+                    &seqs,
+                    &quals,
+                    consensus_max_length,
+                    alignment_type,
+                    match_score,
+                    mismatch_score,
+                    gap_open,
+                    gap_extend,
+                );
+
+                log::debug!("Consensus for block: {}, len {} is {}", i, cons.len(), String::from_utf8_lossy(&cons));
+                consensuses.lock().unwrap().push((i, cons));
+            });
+
+        let mut consensuses = consensuses.into_inner().unwrap();
+        consensuses.sort_by_key(|x| x.0);
+        let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();
+        let consensuses =
+            PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len);
+        return consensuses;
+    }
+
+    pub fn modify_join_consensus(mut cons: Vec<Vec<u8>>, window_len: usize) -> Vec<Vec<u8>> {
+        if cons.len() == 0 {
+            return vec![];
+        }
+        let mut breakpoints = vec![];
+        for i in 0..cons.len() - 1 {
+            if cons[i].len() == 0 || cons[i + 1].len() == 0 {
+                breakpoints.push((0,0));
+                continue;
+            }
+            let ol_len = cons[i + 1].len().min(window_len);
+            let overhang_i = &cons[i][cons[i].len() - ol_len..];
+            let overhang_j = &cons[i + 1][0..ol_len];
+
+            //i is query
+            let (query_end, reference_end, alignment) = alignment::align_seq_to_ref_slice_local(overhang_j, overhang_i, &GAPS);
+
+            //Get the matching positions of bases near ol_len/2
+            let mut query_pos = 0;
+            let mut ref_pos = 0;
+            let mut num_i = 0;
+            let mut num_d = 0;
+            let mut num_m = 0;
+
+            //Scan through cigar, update
+            let mut mid_found = false;
+            for op_len in alignment.iter() {
+                match op_len.op {
+                    Operation::M | Operation::Eq | Operation::X => {
+                        num_m += op_len.len;
+                        for _ in 0..op_len.len {
+                            if query_pos >= ol_len/2{
+                                mid_found = true;
+                                break;
+                            }
+                            query_pos += 1;
+                            ref_pos += 1;
+                        }
+                    }
+                    Operation::I => {
+                        num_i += op_len.len;
+                        for _ in 0..op_len.len {
+                            query_pos += 1;
+                        }
+                    }
+                    Operation::D => {
+                        num_d += op_len.len;
+                        for _ in 0..op_len.len {
+                            ref_pos += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if mid_found {
+                //breakpoints.push((query_pos, ref_pos));
+                breakpoints.push((query_end, reference_end));
+            } else {
+                breakpoints.push((0,0));
+            }
+        }
+
+        let mut new_consensus = vec![];
+        let mut new_cons_i = std::mem::take(&mut cons[0]);
+        for (i, bp) in breakpoints.into_iter().enumerate() {
+            let mut new_cons_j = std::mem::take(&mut cons[i + 1]);
+            let ol_len = new_cons_j.len().min(window_len);
+
+            let break_pos_i = new_cons_i.len() - (ol_len - bp.0);
+            let break_pos_j = bp.1;
+            new_cons_i.truncate(break_pos_i);
+            new_cons_j = new_cons_j.split_off(break_pos_j);
+            new_consensus.push(new_cons_i);
+            new_cons_i = new_cons_j;
+        }
+        new_consensus.push(new_cons_i);
+
+        return new_consensus;
+    }
+
+    pub fn new(genome_length: usize) -> Self {
+        PoaConsensusBuilder {
+            seq: Vec::new(),
+            qual: Vec::new(),
+            breakpoints: Vec::new(),
+            genome_length,
+            bp_len: 0,
+            window_overlap_len: 0,
+        }
+    }
+
+    pub fn generate_breakpoints(&mut self, bp_length: usize, window_overlap_len: usize) {
+        self.bp_len = bp_length;
+        self.window_overlap_len = window_overlap_len;
+        let mut breakpoints = Vec::new();
+        let mut pos = bp_length;
+        while pos < self.genome_length {
+            breakpoints.push(pos);
+            pos += bp_length;
+        }
+        breakpoints.push(self.genome_length);
+        self.breakpoints = breakpoints;
+        self.seq = (0..self.breakpoints.len())
+            .map(|_| Mutex::new(vec![]))
+            .collect();
+        self.qual = (0..self.breakpoints.len())
+            .map(|_| Mutex::new(vec![]))
+            .collect();
+    }
+
+    fn populate_block(
+        &self,
+        seq: &[u8],
+        qual: &[u8],
+        current_block_string: &mut Vec<u8>,
+        current_block_qual: &mut Vec<u8>,
+        bp_i: usize,
+        current_position_q: usize,
+        breakpoint_q: usize,
+    ) {
+        current_block_string.push(0);
+        current_block_qual.push(0);
+        let mut seq_lock = self.seq[bp_i].lock().unwrap();
+        let mut qual_lock = self.qual[bp_i].lock().unwrap();
+        seq_lock.push(std::mem::take(current_block_string));
+        qual_lock.push(std::mem::take(current_block_qual));
+        current_block_string.extend(&seq[breakpoint_q..current_position_q]);
+        current_block_qual.extend(&qual[breakpoint_q..current_position_q]);
+    }
+
+    pub fn add_seq(
+        &self,
+        seq: Vec<u8>,
+        qual: Vec<u8>,
+        cigar: &Vec<OpLen>,
+        align_start_r: usize,
+        align_start_q: usize,
+    ) {
+        //Process CIGAR, store the aligned strings fore very breakpoint block
+        let start_bp_i = self.breakpoints.iter().position(|&x| x > align_start_r);
+        if start_bp_i.is_none() {
+            return;
+        }
+        let mut bp_i = start_bp_i.unwrap();
+
+        let mut current_block_string = vec![];
+        let mut current_block_qual = vec![];
+        let mut current_position_q = align_start_q;
+        let mut current_position_r = align_start_r;
+        let mut breakpoint = self.breakpoints[bp_i];
+        let mut breakpoint_q = align_start_q;
+        let mut window_breakpoint = self.breakpoints[bp_i] + self.window_overlap_len;
+        let mut past_breakpoint = false;
+        for oplen in cigar {
+            let op = oplen.op;
+            let len = oplen.len;
+
+            match op {
+                Operation::M | Operation::Eq | Operation::X => {
+                    for _ in 0..len {
+                        current_block_string.push(seq[current_position_q]);
+                        current_block_qual.push(qual[current_position_q]);
+                        current_position_q += 1;
+                        current_position_r += 1;
+
+                        if current_position_r >= breakpoint {
+                            breakpoint_q = current_position_q;
+                            bp_i += 1;
+                            if let Some(bp) = self.breakpoints.get(bp_i) {
+                                breakpoint = *bp;
+                            } else {
+                                return;
+                            }
+                            past_breakpoint = true;
+                        }
+                        if current_position_r >= window_breakpoint {
+                            self.populate_block(
+                                &seq,
+                                &qual,
+                                &mut current_block_string,
+                                &mut current_block_qual,
+                                bp_i-1,
+                                current_position_q,
+                                breakpoint_q,
+                            );
+                            window_breakpoint = breakpoint + self.window_overlap_len;
+                            past_breakpoint = false;
+                        }
+                    }
+                }
+                Operation::I => {
+                    for _ in 0..len {
+                        current_block_string.push(seq[current_position_q]);
+                        current_block_qual.push(qual[current_position_q]);
+                        current_position_q += 1;
+                    }
+                }
+                Operation::D => {
+                    for _ in 0..len {
+                        current_position_r += 1;
+                        if current_position_r >= breakpoint {
+                            breakpoint_q = current_position_q;
+                            bp_i += 1;
+                            if let Some(bp) = self.breakpoints.get(bp_i) {
+                                breakpoint = *bp;
+                            } else {
+                                return;
+                            }
+                            past_breakpoint = true;
+                        }
+                        if current_position_r >= window_breakpoint {
+                            self.populate_block(
+                                &seq,
+                                &qual,
+                                &mut current_block_string,
+                                &mut current_block_qual,
+                                bp_i - 1,
+                                current_position_q,
+                                breakpoint_q,
+                            );
+                            window_breakpoint = breakpoint + self.window_overlap_len;
+                            past_breakpoint = false;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let last_bp_i = if past_breakpoint { bp_i - 1 } else { bp_i };
+        if current_block_qual.len() > 0 {
+            self.populate_block(
+                &seq,
+                &qual,
+                &mut current_block_string,
+                &mut current_block_qual,
+                last_bp_i,
+                current_position_q,
+                current_position_q
+            );
+        }
+    }
+
+    pub fn process_mapping_boundaries(
+        &mut self,
+        mapping_boundaries: &[&Interval<u32, SmallTwinOl>],
+        twin_reads: &[TwinRead],
+    ) {
+        mapping_boundaries.par_iter().for_each(|interval| {
+            let ol = &interval.val;
+            let ar = &ol.alignment_result.as_ref().unwrap();
+            //TODO assume qualities exist
+            let start = std::time::Instant::now();
+            let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
+            let query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
+            let query_seq_u8: Vec<u8>;
+            let query_quals_u8: Vec<u8>;
+            if ol.reverse {
+                query_seq_u8 = query_seq
+                    .revcomp()
+                    .iter()
+                    .map(|x| x.to_char().to_ascii_uppercase() as u8)
+                    .collect();
+                query_quals_u8 = query_quals
+                    .revcomp()
+                    .iter()
+                    .map(|x| (x as u8) * 3 + 33)
+                    .collect();
+            } else {
+                query_seq_u8 = query_seq
+                    .iter()
+                    .map(|x| x.to_char().to_ascii_uppercase() as u8)
+                    .collect();
+                query_quals_u8 = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
+            }
+            log::trace!("Conversion took: {:?}", start.elapsed());
+            let start = std::time::Instant::now();
+            self.add_seq(
+                query_seq_u8,
+                query_quals_u8,
+                &ar.cigar,
+                ar.r_start,
+                ar.q_start,
+            );
+            log::trace!("Processing took: {:?}", start.elapsed());
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_breakpoints() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 0);
+        assert_eq!(
+            builder.breakpoints,
+            vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        );
+    }
+
+    #[test]
+    fn test_add_seq_1() {
+        let mut builder = PoaConsensusBuilder::new(10);
+        builder.generate_breakpoints(10, 0);
+        let seq = b"ACGTACGTACGT".to_vec();
+        let qual = vec![30; 12];
+        let cigar = vec![
+            OpLen {
+                op: Operation::M,
+                len: 4,
+            },
+            OpLen {
+                op: Operation::I,
+                len: 4,
+            },
+            OpLen {
+                op: Operation::M,
+                len: 4,
+            },
+        ];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        assert_eq!(builder.seq.len(), 1);
+        assert_eq!(builder.qual.len(), 1);
+        assert_eq!(
+            builder.seq[0].lock().unwrap()[0],
+            b"ACGTACGTACGT\0".to_vec()
+        );
+    }
+
+    #[test]
+    fn test_add_seq_2() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 0);
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTA".to_vec();
+        let qual = vec![30; 29];
+        let cigar = vec![OpLen {
+            op: Operation::M,
+            len: 29,
+        }];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        assert_eq!(builder.seq.len(), 10);
+        assert_eq!(builder.qual.len(), 10);
+        assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
+        assert_eq!(builder.seq[1].lock().unwrap()[0], b"GTACGTACGT\0".to_vec());
+        assert_eq!(builder.seq[2].lock().unwrap()[0], b"ACGTACGTA\0".to_vec());
+    }
+
+    #[test]
+    fn test_add_seq_2_window() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 2);
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTA".to_vec();
+        let qual = vec![30; 29];
+        let cigar = vec![OpLen {
+            op: Operation::M,
+            len: 29,
+        }];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        assert_eq!(builder.seq.len(), 10);
+        assert_eq!(builder.qual.len(), 10);
+        assert_eq!(
+            builder.seq[0].lock().unwrap()[0],
+            b"ACGTACGTACGT\0".to_vec()
+        );
+        assert_eq!(
+            builder.seq[1].lock().unwrap()[0],
+            b"GTACGTACGTAC\0".to_vec()
+        );
+        assert_eq!(builder.seq[2].lock().unwrap()[0], b"ACGTACGTA\0".to_vec());
+    }
+
+    #[test]
+    fn test_add_seq_3() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 0);
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
+        let qual = vec![30; 30];
+        let cigar = vec![OpLen {
+            op: Operation::M,
+            len: 30,
+        }];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        assert_eq!(builder.seq.len(), 10);
+        assert_eq!(builder.qual.len(), 10);
+        assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
+        assert_eq!(builder.seq[1].lock().unwrap()[0], b"GTACGTACGT\0".to_vec());
+        assert_eq!(builder.seq[2].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
+
+        //Only 3 of the 10 blocks are filled
+        assert_eq!(builder.seq[3].lock().unwrap().len(), 0);
+        assert_eq!(builder.seq[4].lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_add_seq_del() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 0);
+        let seq = b"ACCGTACGTACGTACGTACGTACGTAC".to_vec();
+        let qual = vec![30; 30];
+        let cigar = vec![
+            OpLen {
+                op: Operation::M,
+                len: 2,
+            },
+            OpLen {
+                op: Operation::D,
+                len: 3,
+            },
+            OpLen {
+                op: Operation::M,
+                len: 25,
+            },
+        ];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        assert_eq!(builder.seq.len(), 10);
+        assert_eq!(builder.qual.len(), 10);
+        assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACCGTAC\0".to_vec());
+        assert_eq!(builder.seq[1].lock().unwrap()[0], b"GTACGTACGT\0".to_vec());
+        assert_eq!(builder.seq[2].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
+
+        //Only 3 of the 10 blocks are filled
+        assert_eq!(builder.seq[3].lock().unwrap().len(), 0);
+        assert_eq!(builder.seq[4].lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_add_seq_ins() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 0);
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
+        let qual = vec![30; 32];
+        let cigar = vec![
+            OpLen {
+                op: Operation::M,
+                len: 29,
+            },
+            OpLen {
+                op: Operation::I,
+                len: 2,
+            },
+            OpLen {
+                op: Operation::M,
+                len: 1,
+            },
+        ];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        assert_eq!(builder.seq.len(), 10);
+        assert_eq!(builder.qual.len(), 10);
+        assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
+        assert_eq!(builder.seq[1].lock().unwrap()[0], b"GTACGTACGT\0".to_vec());
+        assert_eq!(
+            builder.seq[2].lock().unwrap()[0],
+            b"ACGTACGTATTC\0".to_vec()
+        );
+
+        //Only 3 of the 10 blocks are filled
+        assert_eq!(builder.seq[3].lock().unwrap().len(), 0);
+        assert_eq!(builder.seq[4].lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_poa_cons() {
+        for window_len in [0, 0] {
+            let mut builder = PoaConsensusBuilder::new(100);
+            builder.generate_breakpoints(10, window_len);
+            let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
+            let qual = vec![30; 32];
+            let cigar = vec![
+                OpLen {
+                    op: Operation::M,
+                    len: 29,
+                },
+                OpLen {
+                    op: Operation::I,
+                    len: 2,
+                },
+                OpLen {
+                    op: Operation::M,
+                    len: 1,
+                },
+            ];
+            builder.add_seq(seq, qual, &cigar, 0, 0);
+
+            let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
+            let qual = vec![30; 32];
+            let cigar = vec![
+                OpLen {
+                    op: Operation::M,
+                    len: 29,
+                },
+                OpLen {
+                    op: Operation::I,
+                    len: 2,
+                },
+                OpLen {
+                    op: Operation::M,
+                    len: 1,
+                },
+            ];
+            builder.add_seq(seq, qual, &cigar, 0, 0);
+
+            let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
+            let qual = vec![30; 32];
+            let cigar = vec![
+                OpLen {
+                    op: Operation::M,
+                    len: 29,
+                },
+                OpLen {
+                    op: Operation::M,
+                    len: 1,
+                },
+            ];
+            builder.add_seq(seq, qual, &cigar, 0, 0);
+
+            dbg!(&"HERE");
+
+            let consensuses = builder.spoa_blocks();
+            assert_eq!(consensuses.len(), 10);
+            assert_eq!(consensuses[0], b"ACGTACGTAC".to_vec());
+            assert_eq!(consensuses[1], b"GTACGTACGT".to_vec());
+            assert_eq!(consensuses[2], b"ACGTACGTATTC".to_vec());
+            assert_eq!(consensuses[3], b"".to_vec());
+        }
+    }
+
+    #[test]
+    fn test_poa_triplets() {
+        let mut builder = PoaConsensusBuilder::new(100);
+        builder.generate_breakpoints(10, 0);
+
+        let seq = b"ATCG".to_vec();
+        let qual = vec![50; 3];
+        let cigar = vec![OpLen {
+            op: Operation::M,
+            len: 3,
+        }];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+
+        let seq = b"ATG".to_vec();
+        let qual = vec![50; 3];
+        let cigar = vec![OpLen {
+            op: Operation::M,
+            len: 3,
+        }];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+
+        let seq = b"ATG".to_vec();
+        let qual = vec![50; 3];
+        let cigar = vec![OpLen {
+            op: Operation::M,
+            len: 3,
+        }];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+        let cons = builder.spoa_blocks();
+        dbg!(&cons[0]);
+    }
+
+    #[test]
+    fn test_poa_with_without_window() {
+        let window_lengths = [0, 3];
+        for window_length in window_lengths {
+            let mut builder = PoaConsensusBuilder::new(100);
+            builder.generate_breakpoints(5, window_length);
+
+            let seq = b"CCCCCTTTTTGGGGGAAAAA".to_vec();
+            let qual = vec![50; 20];
+            let cigar = vec![OpLen {
+                op: Operation::M,
+                len: 20,
+            }];
+            builder.add_seq(seq, qual, &cigar, 0, 0);
+
+            let seq = b"CCCCCATTTTTGGGGGAAAAA".to_vec();
+            let qual = vec![50; 21];
+            let cigar = vec![
+                OpLen {
+                    op: Operation::M,
+                    len: 3,
+                },
+                OpLen {
+                    op: Operation::I,
+                    len: 1,
+                },
+                OpLen {
+                    op: Operation::M,
+                    len: 7,
+                },
+                OpLen {
+                    op: Operation::M,
+                    len: 10,
+                },
+            ];
+            builder.add_seq(seq, qual, &cigar, 0, 0);
+
+            let seq = b"CCCCCTTTTTGGGGGAAAAA".to_vec();
+            let qual = vec![50; 20];
+            let cigar = vec![OpLen {
+                op: Operation::M,
+                len: 20,
+            }];
+            builder.add_seq(seq, qual, &cigar, 0, 0);
+            dbg!(&builder.seq[1].lock().unwrap());
+            let cons = builder.spoa_blocks();
+            for cons in cons.iter() {
+                if cons.len() != 0{
+                    println!("{:?}", String::from_utf8_lossy(&cons));
+                }
+            }
+
+            if window_length == 0 {
+                //insertion at border
+                assert!(cons[0].len() == 6);
+            } else {
+                //no insertion
+                assert!(cons.iter().map(|x| x.len()).sum::<usize>() == 20);
+            }
+        }
+    }
+
+    #[test]
+    fn test_poa_cons_quality() {
+        let mut builder = PoaConsensusBuilder::new(100);
+
+        builder.generate_breakpoints(10, 1);
+
+        let seq = b"ACGTTTACGTACGTACGTACGTACGTACGTAC".to_vec();
+        let qual = vec![60; 32];
+        let cigar = vec![
+            OpLen {
+                op: Operation::M,
+                len: 3,
+            },
+            OpLen {
+                op: Operation::I,
+                len: 2,
+            },
+            OpLen {
+                op: Operation::M,
+                len: 27,
+            },
+        ];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
+        let qual = vec![50; 32];
+        let cigar = vec![
+            OpLen {
+                op: Operation::M,
+                len: 29,
+            },
+            OpLen {
+                op: Operation::M,
+                len: 1,
+            },
+        ];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+
+        let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
+        let qual = vec![50; 32];
+        let cigar = vec![
+            OpLen {
+                op: Operation::M,
+                len: 29,
+            },
+            OpLen {
+                op: Operation::M,
+                len: 1,
+            },
+        ];
+        builder.add_seq(seq, qual, &cigar, 0, 0);
+
+        for x in builder.seq[2].lock().unwrap().iter() {
+            println!("{:?}", x.to_ascii_uppercase());
+        }
+        let consensuses = builder.spoa_blocks();
+        assert_eq!(consensuses.len(), 10);
+        // assert_eq!(consensuses[0], b"ACGTACGTAC".to_vec());
+        // assert_eq!(consensuses[1], b"GTACGTACGT".to_vec());
+        // assert_eq!(consensuses[2], b"ACGTACGTAC".to_vec());
+        // assert_eq!(consensuses[3], b"".to_vec());
+        assert_eq!(consensuses.iter().map(|x| x.len()).sum::<usize>(), 30);
+    }
+
+    #[test]
+    fn test_dna_consensus() {
+        let mut seqs = vec![];
+        let mut quals = vec![];
+
+        // generated each string by adding small tweaks to the expected consensus "AATGCCCGTT"
+        for seq in [
+            "ATTGCCCGTT\0",
+            "AATGCCGTT\0",
+            "AATGCCCGAT\0",
+            "AACGCCCGTC\0",
+            "AGTGCTCGTT\0",
+            "AATGCTCGTT\0",
+        ]
+        .iter()
+        {
+            seqs.push((*seq).bytes().map(|x| x as u8).collect::<Vec<u8>>());
+        }
+
+        //generate quality scores
+        for qual in vec![
+            "1111111111\0",
+            "111111111\0",
+            "1111111111\0",
+            "1111111111\0",
+            "1111111111\0",
+            "1111111111\0",
+        ]
+        .iter()
+        {
+            quals.push((*qual).bytes().map(|x| x as u8).collect::<Vec<u8>>());
+        }
+
+        let consensus = poa_consensus(&seqs, &quals, 20, 1, 5, -4, -3, -1);
+
+        let expected = "AATGCCCGTT".to_string().into_bytes();
+        assert_eq!(consensus, expected);
+    }
+
+    #[test]
+    fn test_poa_cons_real_quality() {
+        let mut builder = PoaConsensusBuilder::new(10000);
+
+        builder.generate_breakpoints(700, 50);
+
+        let seqs: Vec<Vec<u8>> = vec![b"CTGATAACTCTAAATCTTGCTGTCAGGCAT".to_vec(),
+        b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGGAAAAGTACAATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
+        b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAAGAAACAAGCAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
+        b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTCTGTTGCTTGAATACGATGTCACTCAATATAGACTGGTCCAGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACAAGAAAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGAAAAATATTCCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
+        b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
+        b"CATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATCAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTTCAGCGCCACAAAGTCCTGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCCATTCTGCACTTACAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),];
+        let mut quals = seqs.iter().map(|x| vec![50; x.len()]).collect::<Vec<_>>();
+        quals[0] = vec![100; 30];
+
+        let cigars = seqs
+            .iter()
+            .map(|x| {
+                vec![OpLen {
+                    op: Operation::M,
+                    len: x.len(),
+                }]
+            })
+            .collect::<Vec<_>>();
+
+        for i in 0..6 {
+            builder.add_seq(seqs[i].clone(), quals[i].clone(), &cigars[i], 0, 0);
+        }
+
+        let consensuses = builder.spoa_blocks();
+        println!("Consensuses: {:?}", consensuses[0]);
+        assert!(consensuses[0].len() > 480 && consensuses[0].len() < 520);
+    }
+    
+    #[test]
+    fn test_modify_new(){
+        let consensuses = vec![
+            b"GCAACGTACGTCC".to_vec(), // last C is error
+            b"TTACGTATGTGTGTGT".to_vec() // first T is errors
+        ];
+
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 6);
+
+        let mut final_consensus = vec![];
+        for cons in new_cons{
+            println!("{:?}", String::from_utf8_lossy(&cons));
+            final_consensus.extend(cons);
+        }
+
+        assert_eq!(final_consensus, b"GCAACGTACGTATGTGTGTGT".to_vec());
+
+    }
+
+    #[test]
+    fn test_modify_new_del(){
+        let consensuses = vec![
+            b"AAAAATTT".to_vec(), // last A is error
+            b"CCTTTGGGG".to_vec() // first T is errors
+        ];
+
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5);
+
+        let mut final_consensus = vec![];
+        for cons in new_cons{
+            println!("{:?}", String::from_utf8_lossy(&cons));
+            final_consensus.extend(cons);
+        }
+
+        assert_eq!(final_consensus, b"AAAAATTTGGGG".to_vec());
+
+    }
+}

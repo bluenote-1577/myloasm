@@ -548,11 +548,11 @@ pub fn dna_slice_to_u8(slice: &SeqSlice<Dna>) -> Vec<u8>{
 
 
 pub fn quality_slice_to_u8(slice: &SeqSlice<QualCompact3>) -> Vec<u8>{
-    slice.iter().map(|x| x.to_bits() as u8).collect()
+    slice.iter().map(|x| x as u8 * 3).collect()
 }
 
 pub fn quality_seq_to_u8(slice: &Seq<QualCompact3>) -> Vec<u8>{
-    slice.iter().map(|x| x.to_bits() as u8 * 3).collect()
+    slice.iter().map(|x| x as u8 * 3).collect()
 }
 
 pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{

@@ -2,6 +2,7 @@ use minimap2;
 use std::sync::Arc;
 use crate::constants::*;
 use crate::polishing::consensus::HomopolymerCompressedSeq;
+use crate::polishing::consensus2::PoaConsensusBuilder;
 use std::sync::Mutex;
 use std::thread;
 use gzp::{deflate::Gzip, ZBuilder};
@@ -13,6 +14,8 @@ use crate::cli::*;
 use crate::kmer_comp::*;
 use crate::polishing::alignment;
 use crate::polishing::consensus;
+use crate::polishing::consensus2;
+use rust_lapper::Interval;
 use minimap2::Aligner;
 use rust_htslib::bam::{Header, HeaderView};
 use rust_htslib::bam::header::HeaderRecord;
@@ -30,27 +33,21 @@ pub fn polish_assembly(final_graph: UnitigGraph, mut twin_reads: Vec<TwinRead>, 
     let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
 
     log::info!("Processing alignments...");
-    final_graph.nodes.iter().for_each(|(contig_index, contig)| {
-        let mut consensus_builder = consensus::ConsensusBuilder::new(contig.base_seq().len(), false);
-        contig.mapping_boundaries().iter().for_each(|interval| {
-            let ol = &interval.val;
-            let ar = &ol.alignment_result.as_ref().unwrap();
-            let query_seq;
-            let query_quals;
-            //TODO assume qualities exist
-            if ol.reverse{
-                query_seq = dna_seq_to_u8(&twin_reads[ol.query_id as usize].dna_seq.revcomp());
-                query_quals = quality_seq_to_u8(&twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap().revcomp());
-            }
-            else{
-                query_seq = dna_seq_to_u8(&twin_reads[ol.query_id as usize].dna_seq);
-                query_quals = quality_seq_to_u8(&twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap());
-            }
-            consensus_builder.process_alignment_nohpc(&ar.cigar, &query_seq, &query_quals, ar.r_start, ar.q_start);
-        });
-        let consensus_seq = consensus_builder.produce_consensus();
+    final_graph.nodes.iter().for_each(|(_, contig)| {
+        
+        let mut poa_cons_builder = PoaConsensusBuilder::new(contig.base_seq().len());
+        poa_cons_builder.generate_breakpoints(300, 100);
+        let mapping_boundaries = contig.mapping_boundaries().iter().collect::<Vec<&Interval<u32, SmallTwinOl>>>();
+        poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
+
+        log::info!("Starting POA consensus for u{} ...", contig.node_id);
+        let cons = poa_cons_builder.spoa_blocks();
+        let mut final_seq = Vec::new();
+        for consensus in cons{
+            final_seq.extend(consensus);
+        }
         write!(&mut fasta_writer, ">u{}\n", contig.node_id).unwrap();
-        write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&consensus_seq).unwrap()).unwrap();
+        write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&final_seq).unwrap()).unwrap();
     });
 }
 

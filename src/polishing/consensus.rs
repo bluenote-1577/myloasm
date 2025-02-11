@@ -3,6 +3,9 @@ use smallvec::SmallVec;
 use fxhash::FxHashMap;
 use block_aligner::cigar::*;
 use rust_spoa::poa_consensus;
+use bio_seq::prelude::*;
+
+use crate::types::QualCompact3;
 
 #[derive(Debug, Clone, Default)]
 pub struct HomopolymerCompressedSeq{
@@ -118,9 +121,14 @@ impl BaseConsensus {
         }
     }
 
+    #[inline]
     fn increment_base(&mut self, base: u8, quality: u8, hpc_length: Option<u16>) {
         let quality = quality as u32;
-        match base.to_ascii_uppercase() {
+        match base {
+            0 => self.a_count = self.a_count.saturating_add(quality),
+            1 => self.c_count = self.c_count.saturating_add(quality),
+            2 => self.g_count = self.g_count.saturating_add(quality),
+            3 => self.t_count = self.t_count.saturating_add(quality),
             b'A' => self.a_count = self.a_count.saturating_add(quality),
             b'C' => self.c_count = self.c_count.saturating_add(quality),
             b'G' => self.g_count = self.g_count.saturating_add(quality),
@@ -134,6 +142,7 @@ impl BaseConsensus {
         }
     }
 
+    #[inline]
     fn increment_deletion(&mut self, quality: u8) {
         self.deletion_count = self.deletion_count.saturating_add(quality as u32);
     }
@@ -264,41 +273,45 @@ impl ConsensusBuilder {
         return consensus_str;
     }
 
-    pub fn process_alignment_nohpc(&mut self, cigar: &Vec<OpLen>, query_sequence: &[u8], query_qualities: &[u8], start_ref: usize, start_query: usize) {
+    pub fn process_alignment_nohpc(&mut self, cigar: &Vec<OpLen>, query_sequence: &Seq<Dna>, query_qualities: &Seq<QualCompact3>, start_ref: usize, start_query: usize, reverse: bool) {
         let mut ref_pos = start_ref;
-        let mut query_pos = start_query;
+        let mut query_counter = start_query;
         let mut iter = cigar.iter();
         let mut prev_state = Operation::Sentinel;
+        let mut query_pos;
 
         while let Some(oplen) = iter.next() {
-            let prev_pos_query = if query_pos > 0 { query_pos - 1 } else { 0 };
+            let prev_pos_counter = if query_counter > 0 { query_counter - 1 } else { 0 };
+            let prev_pos_query = if reverse {query_sequence.len() - prev_pos_counter - 1} else {prev_pos_counter};
+            query_pos = if reverse {query_sequence.len() - query_counter - 1} else {query_counter};
             match oplen.op {
                 Operation::Eq | Operation::X | Operation::M => {
                     if prev_state == Operation::I{
-                        let quality_base = query_qualities[prev_pos_query];
+                        let quality_base = (query_qualities.get(prev_pos_query).unwrap() as u8) * 3;
                         self.consensus[ref_pos].prev_ins_weight = self.consensus[ref_pos].prev_ins_weight.saturating_add(quality_base as u32);
                     }
                     else{
-                        let quality_base = query_qualities[prev_pos_query];
+                        let quality_base = (query_qualities.get(prev_pos_query).unwrap() as u8) * 3;
                         self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_base as u32);
                     }
                     //1 Match or mismatch
                     for ind in 0..oplen.len{
+                        query_pos = if reverse {query_sequence.len() - query_counter - 1} else {query_counter};
                         if ind > 0{
-                            let quality_before = query_qualities[query_pos - 1];
+                            let quality_before = (query_qualities.get(prev_pos_query).unwrap() as u8) * 3;
                             self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_before as u32);
                         }
 
-                        let quality_base = query_qualities[query_pos];
-                        let query_base = query_sequence[query_pos];
+                        let quality_base = (query_qualities.get(query_pos).unwrap() as u8) * 3;
+                        let query_base = if reverse {query_sequence.get(query_pos).unwrap() as u8 ^ 0b11} else {query_sequence.get(query_pos).unwrap() as u8};
                         let hpc_length = None;
                         self.consensus[ref_pos].increment_base(query_base, quality_base, hpc_length);
                         ref_pos += 1;
-                        query_pos += 1;
+                        query_counter += 1;
                     }
                 }
                 Operation::D => {
-                    let quality_base_before = query_qualities[prev_pos_query];
+                    let quality_base_before = (query_qualities.get(prev_pos_query).unwrap() as u8) * 3;
                     if prev_state == Operation::I{
                         self.consensus[ref_pos].prev_ins_weight = self.consensus[ref_pos].prev_ins_weight.saturating_add(quality_base_before as u32);
                     }
@@ -307,23 +320,37 @@ impl ConsensusBuilder {
                     }
                     // Deletion relative to reference
                     for ind in 0..oplen.len {
-                        let quality_base_before = query_qualities[prev_pos_query];
+                        let quality_base_before = (query_qualities.get(prev_pos_query).unwrap() as u8) * 3;
                         if ind > 0{
                             self.consensus[ref_pos].prev_nonins_weight = self.consensus[ref_pos].prev_nonins_weight.saturating_add(quality_base_before as u32);
                         }
                         let query_pos = query_pos.min(query_qualities.len() - 1);
-                        let quality_base = query_qualities[query_pos];
+                        let quality_base = query_qualities.get(query_pos).unwrap() as u8;
                         self.consensus[ref_pos].increment_deletion(quality_base);
                         ref_pos += 1;
                     }
                 }
                 Operation::I => {
                     // Insertion relative to reference
-                    let insertion = &query_sequence[query_pos..query_pos + oplen.len];
-                    let qualities = &query_qualities[query_pos..query_pos + oplen.len];
+                    let insertion;
+                    let qualities;
+                    if reverse{
+                        let mut ins_vec = vec![];
+                        let mut qual_vec = vec![];
+                        for i in 0..oplen.len{
+                            ins_vec.push(query_sequence.get(query_pos - i).unwrap() as u8 ^ 0b11);
+                            qual_vec.push(query_qualities.get(query_pos - i).unwrap() as u8 * 3);
+                        }
+                        insertion = ins_vec;
+                        qualities = qual_vec;
+                    }
+                    else{
+                        insertion = query_sequence[query_pos..query_pos + oplen.len].iter().map(|x| x as u8).collect::<Vec<u8>>();
+                        qualities = query_qualities[query_pos..query_pos + oplen.len].iter().map(|x| x as u8 * 3).collect::<Vec<u8>>();
+                    }
                     let hpc_lengths = None;
-                    self.consensus[ref_pos].add_insertion(insertion, qualities, hpc_lengths);
-                    query_pos += oplen.len;
+                    self.consensus[ref_pos].add_insertion(&insertion, &qualities, hpc_lengths);
+                    query_counter += oplen.len;
                 }
                 _ => {
                     // Skip other CIGAR operations

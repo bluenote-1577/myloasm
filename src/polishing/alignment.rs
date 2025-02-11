@@ -294,3 +294,36 @@ pub fn align_seq_to_ref_slice(
     return cigar.to_vec();
 }
 
+
+
+pub fn align_seq_to_ref_slice_local(
+    reference_sliced: &[u8],
+    query_sliced: &[u8],
+    gaps: &Gaps,
+) -> (usize, usize, Vec<OpLen>) {
+    let mut cigar; 
+    let mut a = Block::<true, true, true>::new(query_sliced.len(), reference_sliced.len(), MAX_BLOCK_SIZE);
+    let score_mat = SUB_MATRIX;
+    let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, MAX_BLOCK_SIZE);
+    let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, MAX_BLOCK_SIZE);
+    a.align(
+        &query_pad,
+        &reference_pad,
+        &score_mat,
+        *gaps,
+        MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE,
+        i32::MAX,
+    );
+    let res = a.res();
+    cigar = Cigar::new(res.query_idx, res.reference_idx);
+    a.trace().cigar_eq(
+        &query_pad,
+        &reference_pad,
+        res.query_idx,
+        res.reference_idx,
+        &mut cigar,
+    );
+
+    
+    return (res.query_idx, res.reference_idx, cigar.to_vec());
+}

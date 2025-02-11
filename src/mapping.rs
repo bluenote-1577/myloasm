@@ -951,26 +951,7 @@ pub fn map_reads_to_unitigs(
                 }
             }
 
-            write!(
-                mapping_file.lock().unwrap(),
-                "r{}\t{}\t{}\t{}\t{}\tu{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\tretained:{}\n",
-                twin_reads[hit.i1].id,
-                twin_reads[hit.i1].base_length,
-                hit.start1,
-                hit.end1,
-                if hit.chain_reverse { "-" } else { "+" },
-                tr_unitigs[&hit.i2].id,
-                tr_unitigs[&hit.i2].base_length,
-                hit.start2,
-                hit.end2,
-                hit.end2 - hit.start2,
-                hit.end2 - hit.start2,
-                255,
-                hit.shared_minimizers,
-                hit.diff_snpmers,
-                hit.shared_snpmers,
-                retained,
-            ).unwrap();
+
 
             retained_hits.push(hit);
         }
@@ -983,6 +964,25 @@ pub fn map_reads_to_unitigs(
                 &hit,
                 args,
             );
+            write!(
+                mapping_file.lock().unwrap(),
+                "r{}\t{}\t{}\t{}\t{}\tu{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\n",
+                hit.i1,
+                twin_reads[hit.i1].base_length,
+                alignment_result.as_ref().unwrap().q_start,
+                alignment_result.as_ref().unwrap().q_end,
+                if hit.chain_reverse { "-" } else { "+" },
+                tr_unitigs[&hit.i2].id,
+                tr_unitigs[&hit.i2].base_length,
+                alignment_result.as_ref().unwrap().r_start,
+                alignment_result.as_ref().unwrap().r_end,
+                hit.end2 - hit.start2,
+                hit.end2 - hit.start2,
+                255,
+                hit.shared_minimizers,
+                hit.diff_snpmers,
+                hit.shared_snpmers,
+            ).unwrap();
             log::trace!("Time elapsed {:?} sce", start.elapsed());
             let mut map = mapping_boundaries_map.lock().unwrap();
             let vec = map.entry(hit.i2).or_insert(vec![]);
