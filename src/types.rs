@@ -463,9 +463,9 @@ pub trait NodeMapping {
 #[derive(Debug, Clone,  Default)]
 pub struct SmallTwinOl{
     pub query_id: u32,
-    pub diff_snpmers: u32,
-    pub query_range: (u32, u32),
+    pub snpmer_identity: f32,
     pub reverse: bool,
+    pub maximal_overlap: bool,
     pub alignment_result: Option<AlignmentResult>
 }
 
@@ -473,8 +473,7 @@ impl Eq for SmallTwinOl{}
 
 impl PartialEq for SmallTwinOl{
     fn eq(&self, other: &Self) -> bool{
-        self.query_id == other.query_id && self.query_range == other.query_range 
-
+        self.query_id == other.query_id && self.snpmer_identity == other.snpmer_identity && self.reverse == other.reverse && self.maximal_overlap == other.maximal_overlap
     }
 }
 

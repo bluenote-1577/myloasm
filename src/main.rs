@@ -20,6 +20,7 @@ use myloasm::types;
 use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
+use memory_stats::memory_stats;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
@@ -28,6 +29,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 fn main() {
+    
     let total_start_time = Instant::now();
     let mut args = cli::Cli::parse();
     let (output_dir, temp_dir) = initialize_setup(&mut args);
@@ -36,10 +38,12 @@ fn main() {
 
     // Step 1: Process k-mers, count k-mers, and get SNPmers
     let mut kmer_info = get_kmers_and_snpmers(&args, &output_dir);
+    log_memory_usage(true, "STAGE 1: Obtained SNPmers");
 
     // Step 2: Get twin reads using k-mer information
     let twin_read_container = get_twin_reads_from_kmer_info(&mut kmer_info, &args, &output_dir);
     let twin_reads = &twin_read_container.twin_reads;
+    log_memory_usage(true, "STAGE 2: Obtained twin reads");
 
     // Step 3: Get overlaps between outer twin reads and construct raw unitig graph
     let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &output_dir);
@@ -60,19 +64,23 @@ fn main() {
         progressive_coverage_contigs(unitig_graph, &twin_reads, &args, &temp_dir, &output_dir);
 
     // Step 8: Align reads back to graph. TODO consensus and etc.
-    log::info!("Beginning final alignment of reads to graph...");
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
     get_seq_config.dna_seq_info = true;
     get_seq_config.blunted = true;
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+    log_memory_usage(true, "STAGE 3: Obtained unpolished contigs");
+    contig_graph.print_statistics(&args);
 
+    log::info!("Beginning final alignment of reads to graph...");
     let start = Instant::now();
     mapping::map_reads_to_unitigs(&mut contig_graph, &kmer_info, &twin_reads, &args);
+    log_memory_usage(true, "STAGE 4: Mapped reads to contigs");
 
     log::info!(
         "Time elapsed for aligning reads to graph is {:?}",
         start.elapsed()
     );
+
     contig_graph.to_gfa(
         output_dir.join("final_contig_graph_noseq.gfa"),
         true,
@@ -81,21 +89,11 @@ fn main() {
         &args,
     );
     contig_graph.to_fasta(output_dir.join("final_contigs_nopolish.fa"), &args);
-    contig_graph.print_statistics(&args);
 
     // Step 8: TODO
-    if !args.no_minimap2 {
-        log::info!("Running minimap2...");
-        polishing_mod::write_to_paf(&contig_graph, &twin_reads, &args);
-        log::info!("Time elapsed for minimap2 is {:?}", start.elapsed());
-    }
-
-    if args.polish{
-        log::info!("Polishing...");
-        //polishing_mod::read_fastq_and_polish(contig_graph, twin_read_container.twin_reads, &args, &kmer_info.read_files);
-        polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
-        log::info!("Time elapsed for polishing is {:?}", start.elapsed());
-    }
+    log::info!("Polishing...");
+    polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
+    log::info!("Time elapsed for polishing is {:?}", start.elapsed());
 
     log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
 }
@@ -250,6 +248,7 @@ fn get_twin_reads_from_kmer_info(
         log::info!("Getting twin reads from snpmers...");
         let twin_reads_raw = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
         let num_reads = twin_reads_raw.len();
+        log_memory_usage(true, "STAGE 1.25: Initially obtained twin reads");
 
         // (2): removed contained reads
         log::info!("Removing contained reads - round 1...");
@@ -261,6 +260,7 @@ fn get_twin_reads_from_kmer_info(
         let start = Instant::now();
         let outer_mapping_info =
             mapping::map_reads_to_outer_reads(&outer_read_indices_raw, &twin_reads_raw, &args);
+        log_memory_usage(true, "STAGE 1.5: Finished mapping reads to outer reads");
 
         // (4): split chimeric twin reads based on mappings to outer reads
         log::info!("Processing mappings...");
@@ -395,6 +395,8 @@ fn light_progressive_cleaning(
             let read_cutoff = args.tip_read_cutoff;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+            //unitig_graph.remove_caps();
+            //unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
             unitig_graph.pop_bubbles(bubble_length_cutoff, None, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
@@ -514,7 +516,7 @@ fn get_contigs_from_progressive_coverage(
 
                 contigs_to_keep.insert(contig.node_hash_id.clone());
 
-                log::debug!(
+                log::trace!(
                     "Keeping contig u{} with covs {:?} of size {} at threshold {}",
                     contig.node_id,
                     contig.min_read_depth_multi.unwrap(),
@@ -918,4 +920,26 @@ fn progressive_coverage_contigs(
     );
 
     return unitig_graph;
+}
+
+fn log_memory_usage(info: bool, message: &str) {
+    if let Some(usage) = memory_stats() {
+        if info{
+            log::info!(
+                "{} --- Memory usage: {:.2} GB",
+                message,
+                usage.physical_mem as f64 / 1_000_000_000.
+            );
+        }
+        else{
+            log::debug!(
+                "{} --- Memory usage: {:.2} GB",
+                message,
+                usage.physical_mem as f64 / 1_000_000_000.
+            );
+        }
+    }
+    else{
+        log::info!("Memory usage: unknown (WARNING)");
+    }
 }

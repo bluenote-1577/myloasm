@@ -1,0 +1,14 @@
+[package]
+name = "rust-spoa"
+version = "0.2.4"
+authors = ["Peter Edge <edge.peterj@gmail.com>"]
+edition = "2018"
+license = "MIT"
+description = "This crate wraps the C++ SPOA library for generating DNA and protein consensus sequences."
+repository = "https://github.com/pjedge/rust-spoa.git"
+
+[dependencies]
+
+[build-dependencies]
+cc = "1.0"
+cmake = "0.1"

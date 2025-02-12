@@ -39,19 +39,19 @@ pub fn get_full_alignment(
     let k = args.kmer_size as u32;
     let chain = overlap.minimizer_chain.as_ref().unwrap();
     let q_seq;
-    let q_seq_rev;
+    let _q_seq_rev;
     let q_start;
     let r_start;
     let qlen = q_seq_redir.len() as u32;
     let end_ind = chain.len() - 1;
     if overlap.chain_reverse {
-        q_seq_rev = Some(q_seq_redir.revcomp());
-        q_seq = q_seq_rev.as_ref().unwrap();
+        _q_seq_rev = Some(q_seq_redir.revcomp());
+        q_seq = _q_seq_rev.as_ref().unwrap();
         q_start = (qlen - chain[end_ind].pos1 - k) as usize;
         r_start = chain[end_ind].pos2 as usize;
     } else {
         q_seq = q_seq_redir;
-        q_seq_rev = None;
+        _q_seq_rev = None;
         q_start = chain[0].pos1 as usize;
         r_start = chain[0].pos2 as usize;
     }
@@ -129,22 +129,6 @@ pub fn get_full_alignment(
             consecutive_r = true;
         }
         if consecutive_q || consecutive_r {
-            continue;
-            let diff = (q_pos - prev_q_pos) as i32 - (r_pos - prev_r_pos) as i32;
-
-            //Non diagonal overlapping k-mer match; skip
-            if diff == 0 {
-                if cigar_vec.last().unwrap().op == Operation::M {
-                    cigar_vec.last_mut().unwrap().len += (q_pos - prev_q_pos) as usize;
-                } else {
-                    cigar_vec.push(OpLen {
-                        op: Operation::M,
-                        len: (q_pos - prev_q_pos) as usize,
-                    });
-                }
-                prev_q_pos = q_pos;
-                prev_r_pos = r_pos;
-            }
             continue;
         }
 

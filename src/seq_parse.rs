@@ -305,3 +305,24 @@ fn second_iteration(
 
     return vec_maps;
 }
+
+// Intuitively I think this helps, not sure if we want to use it TODO
+pub fn quality_pool(qualities: Vec<u8>) -> Vec<u8>{
+    let pool_width = 5;
+    let mut pool = Vec::new();
+    for i in 0..qualities.len(){
+        if i > pool_width/2 && i < qualities.len() - pool_width/2{
+            let mut min = 255;
+            for j in i-pool_width/2..i+pool_width/2{
+                if qualities[j] < min{
+                    min = qualities[j];
+                }
+            }
+            pool.push(min);
+        }
+        else{
+            pool.push(qualities[i]);
+        }
+    }
+    return pool;
+}

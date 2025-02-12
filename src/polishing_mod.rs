@@ -1,7 +1,5 @@
 use minimap2;
-use std::sync::Arc;
-use crate::constants::*;
-use crate::polishing::consensus::HomopolymerCompressedSeq;
+//use crate::polishing::consensus::HomopolymerCompressedSeq;
 use crate::polishing::consensus2::PoaConsensusBuilder;
 use std::sync::Mutex;
 use std::thread;
@@ -11,36 +9,33 @@ use rayon::prelude::*;
 use crate::types::*;
 use crate::unitig::*;
 use crate::cli::*;
-use crate::kmer_comp::*;
-use crate::polishing::alignment;
-use crate::polishing::consensus;
-use crate::polishing::consensus2;
+//use crate::polishing::consensus;
 use rust_lapper::Interval;
 use minimap2::Aligner;
 use rust_htslib::bam::{Header, HeaderView};
 use rust_htslib::bam::header::HeaderRecord;
 use rust_htslib::bam::Writer;
 use bio_seq::prelude::*;
-use fxhash::FxHashMap;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::io::Write;
-use std::path::PathBuf;
 
-pub fn polish_assembly(final_graph: UnitigGraph, mut twin_reads: Vec<TwinRead>, args: &Cli){
+pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args: &Cli){
     let fasta_out_path = Path::new(args.output_dir.as_str()).join("final_contigs_polished.fa");
     let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
 
     log::info!("Processing alignments...");
     final_graph.nodes.iter().for_each(|(_, contig)| {
-        
+        if !UnitigGraph::unitig_pass_filter(contig, args){
+            return
+        }
         let mut poa_cons_builder = PoaConsensusBuilder::new(contig.base_seq().len());
         poa_cons_builder.generate_breakpoints(300, 100);
         let mapping_boundaries = contig.mapping_boundaries().iter().collect::<Vec<&Interval<u32, SmallTwinOl>>>();
         poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
 
-        log::info!("Starting POA consensus for u{} ...", contig.node_id);
+        log::debug!("Starting POA consensus for u{} ...", contig.node_id);
         let cons = poa_cons_builder.spoa_blocks();
         let mut final_seq = Vec::new();
         for consensus in cons{
@@ -50,152 +45,6 @@ pub fn polish_assembly(final_graph: UnitigGraph, mut twin_reads: Vec<TwinRead>, 
         write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&final_seq).unwrap()).unwrap();
     });
 }
-
-pub fn read_fastq_and_polish(final_graph: UnitigGraph, mut twin_reads: Vec<TwinRead>, args: &Cli, read_files: &Vec<PathBuf>){
-    let fasta_out_path = Path::new(args.output_dir.as_str()).join("final_contigs.fa");
-    let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
-    let mut read_id_to_map_loc: FxHashMap<String, Vec<(NodeIndex, u32, u32, u32, u32, bool)>> = FxHashMap::default();
-    let mut contig_index_to_base_seq: FxHashMap<NodeIndex, Seq<Dna>> = FxHashMap::default();
-    let mut contig_index_to_consensus_builders: FxHashMap<NodeIndex, Mutex<consensus::ConsensusBuilder>> = FxHashMap::default();
-
-    log::debug!("Clearing reads...");
-    for read in twin_reads.iter_mut(){
-        read.clear();
-    }
-
-    log::debug!("Setting up alignments...");
-    final_graph.nodes.iter().for_each(|(contig_index, contig)| {
-        contig.mapping_boundaries().iter().for_each(|interval| {
-            let ol = &interval.val;
-            let reference_tr = &twin_reads[ol.query_id as usize];
-            let read_base_id = reference_tr.base_id.clone();
-            let q_start = ol.query_range.0 + reference_tr.split_start;
-            let q_stop = ol.query_range.1 + reference_tr.split_start;
-            let r_start = interval.start;
-            let r_stop = interval.stop;
-            read_id_to_map_loc.entry(read_base_id).or_insert(Vec::new()).push((*contig_index, q_start, q_stop, r_start, r_stop,ol.reverse));
-            contig_index_to_base_seq.insert(*contig_index, contig.base_seq().clone());
-            if contig_index_to_consensus_builders.get(contig_index).is_none(){
-                let consensus_builder = consensus::ConsensusBuilder::new(contig.base_seq().len(), false);
-                contig_index_to_consensus_builders.insert(*contig_index, Mutex::new(consensus_builder));
-            }
-        });
-    });
-
-
-    let files_owned = read_files.clone();
-    let hpc = args.homopolymer_compression;
-    let arc_locations = Arc::new(read_id_to_map_loc);
-    let arc_contig_seqs = Arc::new(contig_index_to_base_seq);
-    let arc_consensus_builders = Arc::new(contig_index_to_consensus_builders);
-
-    log::debug!("Re-reading reads and aligning...");
-    for fastq_file in files_owned{
-        let (mut tx, rx) = spmc::channel();
-        thread::spawn(move || {
-            let mut reader = needletail::parse_fastx_file(fastq_file).expect("valid path");
-            while let Some(record) = reader.next() {
-                let rec = record.expect("Error reading record");
-                let seq;
-                if hpc{
-                    seq = homopolymer_compression(rec.seq().to_vec());
-                } else {
-                    seq = rec.seq().to_vec();
-                }
-                if seq.len() < MIN_READ_LENGTH{
-                    continue;
-                }
-                let id = String::from_utf8_lossy(rec.id()).to_string();
-                if let Some(qualities) = rec.qual(){
-                    tx.send((seq, Some(qualities.to_vec()), id)).unwrap();
-                }
-                else{
-                    tx.send((seq, None, id)).unwrap();
-                }
-            }
-        });
-
-        let mut handles = Vec::new();
-        for _ in 0..args.threads{
-            let rx = rx.clone();
-            let location_map = Arc::clone(&arc_locations);
-            let contig_seqs = Arc::clone(&arc_contig_seqs);
-            let consensus_builders = Arc::clone(&arc_consensus_builders);
-            handles.push(thread::spawn(move || {
-                loop{
-                    match rx.recv() {
-                        Ok(msg) => {
-                            let seq = msg.0;
-                            let seqlen = seq.len() as u32;
-                            let qualities = msg.1.unwrap();
-                            let qualities = quality_pool(qualities);
-                            //Take the quality as the minimum over the 3 left and 3 right bases
-                            let id = msg.2;
-                            let locations = location_map.as_ref().get(&id);
-                            if let Some(locations) = locations{
-                                for (contig_index, q_start, q_stop, r_start, r_stop, reverse) in locations.iter(){
-                                    let contig_seq = contig_seqs.as_ref().get(contig_index).unwrap();
-                                    let start_read;
-                                    let stop_read;
-                                    let query_u8;
-                                    let query_qualities_u8;
-                                    if *reverse{
-                                        //[0,1,2] -> [2,1,0]; seqlen - pos - 1
-                                        start_read = seqlen - *q_stop - 1;
-                                        stop_read = seqlen - *q_start - 1;
-                                        query_u8 = revcomp_u8(&seq);
-                                        query_qualities_u8 = qualities.iter().rev().cloned().collect();
-                                    }
-                                    else{
-                                        start_read = *q_start;
-                                        stop_read = *q_stop;
-                                        //for now... inefficent but it's probably fine
-                                        query_u8 = seq.clone();
-                                        query_qualities_u8 = qualities.clone();
-                                    }
-                                    let start_read = start_read as usize;
-                                    let stop_read = stop_read as usize;
-
-                                    let contig_slice = &contig_seq[*r_start as usize..*r_stop as usize];
-                                    let contig_u8_ref = dna_slice_to_u8(contig_slice);
-                                    let query_u8_ref = &query_u8[start_read..stop_read+1];
-                                    let query_qualities_ref = query_qualities_u8[start_read..stop_read+1].to_vec();
-
-                                    let start = std::time::Instant::now();
-                                    let cigar = alignment::align_seq_to_ref_slice(&contig_u8_ref, query_u8_ref, &GAPS, None);
-                                    log::trace!("Alignment took: {:?}", start.elapsed());
-                                    let seq_wrapper = HomopolymerCompressedSeq::new(&query_u8_ref, query_qualities_ref, false);
-                                    let mut consensus_builder = consensus_builders.as_ref().get(contig_index).unwrap().lock().unwrap();
-                                    consensus_builder.process_alignment(cigar, &seq_wrapper, *r_start as usize, 0);
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // When sender is dropped, recv will return an Err, and we can break the loop
-                            break;
-                        }
-                    }
-                }
-            }));
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-    }
-
-    log::info!("Finished alignments, generating consensus...");
-
-    let consensuses = Arc::try_unwrap(arc_consensus_builders).unwrap();
-    for (contig_index, consensus_builder) in consensuses{
-        let consensus_builder = consensus_builder.into_inner().unwrap();
-        let node_index = final_graph.nodes[&contig_index].node_id;
-        let consensus_seq = consensus_builder.produce_consensus();
-        write!(&mut fasta_writer, ">u{}\n", node_index).unwrap();
-        write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&consensus_seq).unwrap()).unwrap();
-    }
-}
-
 
 
 fn create_bam_header(sequences: Vec<(String, u32)>) -> Header {
@@ -338,22 +187,3 @@ where
     }
 }
 
-fn quality_pool(qualities: Vec<u8>) -> Vec<u8>{
-    let pool_width = 5;
-    let mut pool = Vec::new();
-    for i in 0..qualities.len(){
-        if i > pool_width/2 && i < qualities.len() - pool_width/2{
-            let mut min = 255;
-            for j in i-pool_width/2..i+pool_width/2{
-                if qualities[j] < min{
-                    min = qualities[j];
-                }
-            }
-            pool.push(min);
-        }
-        else{
-            pool.push(qualities[i]);
-        }
-    }
-    return pool;
-}

@@ -1,6 +1,5 @@
 use crate::cli::Cli;
 use rust_lapper::Interval;
-use ordered_float::OrderedFloat;
 use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
@@ -768,7 +767,6 @@ pub fn map_reads_to_outer_reads<'a>(
                     hit.chain_reverse,
                 );
 
-
                 let identity = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64);
 
                 //Used for EC
@@ -780,7 +778,7 @@ pub fn map_reads_to_outer_reads<'a>(
                     args.snpmer_threshold_lax,
                     args.snpmer_error_rate_lax
                 );
-                
+
                 //Populate mapping boundaries map
                 {
                     let mut map = mapping_boundaries_map.lock().unwrap();
@@ -789,13 +787,13 @@ pub fn map_reads_to_outer_reads<'a>(
                         query_id: rid as u32,
                         //query_range: (hit.start1 as u32, hit.end1 as u32),
                         //shared_minimizers: hit.shared_minimizers as u32,
-                        diff_snpmers: hit.diff_snpmers as u32,
-                        query_range: (hit.start1 as u32, hit.end1 as u32),
+                        snpmer_identity: identity as f32,
+                        maximal_overlap: max_overlap,
                         //shared_snpmers: hit.shared_snpmers as u32,
                         reverse: hit.chain_reverse,
                         alignment_result: None
                     };
-                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, max_overlap && strain_specific_thresh_lax, identity ));
+                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, strain_specific_thresh_lax, identity));
                 }
             }
         }
@@ -804,27 +802,11 @@ pub fn map_reads_to_outer_reads<'a>(
     });
 
     //let kmer_count_map = kmer_count_map.into_inner().unwrap();
+    let mut num_alignments = 0;
     for (outer_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
 
         let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
-
-        let mut map_vec = vec![];
-        for mapping in boundaries.iter() {
-            let map_len = mapping.1 - mapping.0;
-            map_vec.push(map_len);
-        }
-
-        let strain_specific_max_intervals = boundaries
-            .iter()
-            .filter(|x| x.3)
-            .map(|x| Interval {
-                start: x.0 as u32,
-                stop: x.1 as u32,
-                val: OrderedFloat::from(x.4),
-            })
-            .collect::<Vec<Interval<u32,OrderedFloat<f64>>>>();
-
 
         let intervals = boundaries
             .into_iter()
@@ -835,6 +817,8 @@ pub fn map_reads_to_outer_reads<'a>(
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
 
+        
+        num_alignments += intervals.len();
 
         //let (outer_read_first_mini_pos, outer_read_last_mini_pos) = first_last_mini_in_range(0, outer_read_length, args.kmer_size, MINIMIZER_END_NTH_COV, twin_reads[index_of_outer_in_all].minimizers.as_slice());
         
@@ -856,10 +840,10 @@ pub fn map_reads_to_outer_reads<'a>(
         let twinread_mapping = TwinReadMapping {
             tr_index: outer_read_indices[outer_id],
             mapping_info: map_info,
-            lapper_strain_max: Lapper::new(strain_specific_max_intervals),
         };
         ret.push(twinread_mapping);
     }
+    log::info!("Number of alignments to outer reads: {}", num_alignments);
 
     ret
 }
@@ -951,22 +935,23 @@ pub fn map_reads_to_unitigs(
                 }
             }
 
-
-
             retained_hits.push(hit);
         }
 
         for hit in retained_hits {
             let start = std::time::Instant::now();
-            let alignment_result = alignment::get_full_alignment(
+            let mut alignment_result = alignment::get_full_alignment(
                 &twin_reads[hit.i1].dna_seq,
                 &tr_unitigs[&hit.i2].dna_seq,
                 &hit,
                 args,
             );
+
+            alignment_result.as_mut().unwrap().cigar.shrink_to_fit();
+
             write!(
                 mapping_file.lock().unwrap(),
-                "r{}\t{}\t{}\t{}\t{}\tu{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\n",
+                "r{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\n",
                 hit.i1,
                 twin_reads[hit.i1].base_length,
                 alignment_result.as_ref().unwrap().q_start,
@@ -983,14 +968,16 @@ pub fn map_reads_to_unitigs(
                 hit.diff_snpmers,
                 hit.shared_snpmers,
             ).unwrap();
+
             log::trace!("Time elapsed {:?} sce", start.elapsed());
             let mut map = mapping_boundaries_map.lock().unwrap();
             let vec = map.entry(hit.i2).or_insert(vec![]);
             let small_twin_ol = SmallTwinOl{
                 query_id: rid as u32,
-                query_range: (hit.start1 as u32, hit.end1 as u32),
                 //shared_minimizers: hit.shared_minimizers as u32,
-                diff_snpmers: hit.diff_snpmers as u32,
+                //diff_snpmers: hit.diff_snpmers as u32,
+                snpmer_identity: id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64) as f32,
+                maximal_overlap: true,
                 //shared_snpmers: hit.shared_snpmers as u32,
                 reverse: hit.chain_reverse,
                 alignment_result: alignment_result
@@ -999,15 +986,12 @@ pub fn map_reads_to_unitigs(
         }
     });
 
+    drop(mini_index);
 
+    let mut number_of_alignments = 0;
+    let mut cigar_string_lengths = vec![];
     for (contig_id, boundaries_and_rid) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
         let unitig_length = unitig_graph.nodes.get(&contig_id).unwrap().cut_length();
-        let mut map_vec = vec![];
-        for mapping in boundaries_and_rid.iter() {
-            let map_len = mapping.1 - mapping.0;
-            map_vec.push(map_len);
-        }
-
         let intervals = boundaries_and_rid
             .into_iter()
             .map(|x| Interval {
@@ -1016,6 +1000,8 @@ pub fn map_reads_to_unitigs(
                 val: x.2,
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
+        number_of_alignments += intervals.len();
+        cigar_string_lengths.extend(intervals.iter().map(|x| x.val.alignment_result.as_ref().unwrap().cigar.len()));
         let lapper = Lapper::new(intervals);
 
         //let (unitig_first_mini_pos, unitig_last_mini_pos) = first_last_mini_in_range(0, unitig_length, args.kmer_size, MINIMIZER_END_NTH_COV, tr_unitigs[&contig_id].minimizers.as_slice());
@@ -1033,6 +1019,9 @@ pub fn map_reads_to_unitigs(
         let mut_node = unitig_graph.nodes.get_mut(&contig_id).unwrap();
         mut_node.set_mapping_info(map_info);
     }
+
+    log::info!("Number of alignments: {}", number_of_alignments);
+    log::info!("Average cigar string length: {}", cigar_string_lengths.iter().sum::<usize>() as f64 / cigar_string_lengths.len() as f64);
 }
 
 fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {

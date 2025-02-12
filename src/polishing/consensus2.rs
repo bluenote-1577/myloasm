@@ -5,7 +5,6 @@ use crate::types::*;
 use bio_seq::prelude::*;
 use block_aligner::cigar::*;
 use fxhash::FxHashMap;
-use minimap2::ffi::_SC_NETWORKING;
 use rayon::prelude::*;
 use rust_lapper::Interval;
 use rust_spoa::poa_consensus;
@@ -28,7 +27,7 @@ pub struct PoaConsensusBuilder {
 }
 
 impl PoaConsensusBuilder {
-    pub fn spoa_blocks(mut self) -> Vec<Vec<u8>> {
+    pub fn spoa_blocks(self) -> Vec<Vec<u8>> {
         let consensus_max_length = 800;
         let alignment_type = 1;
         let match_score = 5;
@@ -65,9 +64,9 @@ impl PoaConsensusBuilder {
                     .map(|&i| std::mem::take(&mut quals[i]))
                     .collect::<Vec<_>>();
 
-                log::debug!("Seqs for block: {}", i);
+                log::trace!("Seqs for block: {}", i);
                 for seq in seqs.iter() {
-                    log::debug!("{:?}", String::from_utf8_lossy(&seq));
+                    log::trace!("{:?}", String::from_utf8_lossy(&seq));
                 }
 
                 let cons = poa_consensus(
@@ -81,7 +80,6 @@ impl PoaConsensusBuilder {
                     gap_extend,
                 );
 
-                log::debug!("Consensus for block: {}, len {} is {}", i, cons.len(), String::from_utf8_lossy(&cons));
                 consensuses.lock().unwrap().push((i, cons));
             });
 
@@ -97,64 +95,25 @@ impl PoaConsensusBuilder {
         if cons.len() == 0 {
             return vec![];
         }
-        let mut breakpoints = vec![];
-        for i in 0..cons.len() - 1 {
+        let breakpoints = Mutex::new(vec![]);
+        (0..cons.len() - 1).into_par_iter().for_each(|i| {
             if cons[i].len() == 0 || cons[i + 1].len() == 0 {
-                breakpoints.push((0,0));
-                continue;
+                breakpoints.lock().unwrap().push((i, 0,0));
+                return;
             }
             let ol_len = cons[i + 1].len().min(window_len);
             let overhang_i = &cons[i][cons[i].len() - ol_len..];
             let overhang_j = &cons[i + 1][0..ol_len];
 
             //i is query
-            let (query_end, reference_end, alignment) = alignment::align_seq_to_ref_slice_local(overhang_j, overhang_i, &GAPS);
+            let (query_end, reference_end, _) = alignment::align_seq_to_ref_slice_local(overhang_j, overhang_i, &GAPS);
 
-            //Get the matching positions of bases near ol_len/2
-            let mut query_pos = 0;
-            let mut ref_pos = 0;
-            let mut num_i = 0;
-            let mut num_d = 0;
-            let mut num_m = 0;
-
-            //Scan through cigar, update
-            let mut mid_found = false;
-            for op_len in alignment.iter() {
-                match op_len.op {
-                    Operation::M | Operation::Eq | Operation::X => {
-                        num_m += op_len.len;
-                        for _ in 0..op_len.len {
-                            if query_pos >= ol_len/2{
-                                mid_found = true;
-                                break;
-                            }
-                            query_pos += 1;
-                            ref_pos += 1;
-                        }
-                    }
-                    Operation::I => {
-                        num_i += op_len.len;
-                        for _ in 0..op_len.len {
-                            query_pos += 1;
-                        }
-                    }
-                    Operation::D => {
-                        num_d += op_len.len;
-                        for _ in 0..op_len.len {
-                            ref_pos += 1;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if mid_found {
-                //breakpoints.push((query_pos, ref_pos));
-                breakpoints.push((query_end, reference_end));
-            } else {
-                breakpoints.push((0,0));
-            }
-        }
+            //breakpoints.push((query_pos, ref_pos));
+            breakpoints.lock().unwrap().push((i, query_end, reference_end));
+        });
+        let mut breakpoints = breakpoints.into_inner().unwrap();
+        breakpoints.sort_by_key(|x| x.0);
+        let breakpoints = breakpoints.into_iter().map(|x| (x.1, x.2)).collect::<Vec<_>>();
 
         let mut new_consensus = vec![];
         let mut new_cons_i = std::mem::take(&mut cons[0]);

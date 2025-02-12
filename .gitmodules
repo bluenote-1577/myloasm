@@ -1,0 +1,3 @@
+[submodule "src/rust-spoa"]
+    path = src/rust-spoa
+    url = https://github.com/pjedge/rust-spoa
