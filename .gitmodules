@@ -1,3 +1,5 @@
-[submodule "src/rust-spoa"]
+[submodule "rust-spoa"]
     path = src/rust-spoa
-    url = https://github.com/pjedge/rust-spoa
+    url = https://github.com/bluenote-1577/rust-spoa
+
+
