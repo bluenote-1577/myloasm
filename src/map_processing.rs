@@ -17,6 +17,8 @@ use fxhash::FxHashMap;
 use rayon::prelude::*;
 use rust_lapper::Lapper;
 use std::sync::Mutex;
+use std::collections::BTreeMap;
+use fxhash::FxHashSet;
 
 pub struct TwinReadMapping {
     pub tr_index: usize,
@@ -519,22 +521,40 @@ pub fn depths_at_points(lapper: &Lapper<u32, SmallTwinOl>, start: u32, end: u32,
     result.reserve(points as usize);
     
     let mut pos = start;
-    let mut active_intervals = Vec::new();
+    let mut active_intervals = FxHashSet::default();
     let mut next_interval_idx = 0;
+    let mut stops_of_active_intervals: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
 
     while pos <= end {
+        let mut toremove_intervals = vec![];
+        let mut toremove_stops = vec![];
+
         // Remove intervals that end before or at current position
-        active_intervals.retain(|&idx| {
-            let interval: &Interval<u32,SmallTwinOl> = &lapper.intervals[idx];
-            interval.stop > pos
-        });
+        for (stop,idsxs) in stops_of_active_intervals.iter(){
+            if *stop <= pos{
+                toremove_stops.push(*stop);
+                toremove_intervals.extend(idsxs.iter().cloned());
+            }
+            else{
+                break;
+            }
+        }
+
+        for idx in toremove_intervals.iter() {
+            active_intervals.remove(idx);
+        }
+
+        for stop in toremove_stops.iter() {
+            stops_of_active_intervals.remove(stop);
+        }
 
         // Add new intervals that start before or at current position
         while next_interval_idx < lapper.intervals.len() 
             && lapper.intervals[next_interval_idx].start <= pos 
         {
             if lapper.intervals[next_interval_idx].stop > pos {
-                active_intervals.push(next_interval_idx);
+                active_intervals.insert(next_interval_idx);
+                stops_of_active_intervals.entry(lapper.intervals[next_interval_idx].stop).or_insert(vec![]).push(next_interval_idx);
             }
             next_interval_idx += 1;
         }
@@ -1089,5 +1109,29 @@ mod tests {
             assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
             assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
         }
+    }
+
+    #[test]
+    fn timing_test_depth_over_points() {
+        let mut intervals = vec![];
+        for i in 0..1000{
+            intervals.push((i as u32, i as u32 + 100, create_small_twinol(1.0, true)));
+        }
+
+        for j in 0..1000{
+            intervals.push((j as u32 + 500 , j as u32 + 500 + 100, create_small_twinol(1.0, true)));
+
+        }
+
+        for k in 0..1000{
+            intervals.push((k as u32, k as u32 + 100, create_small_twinol(1.0, true)));
+        }
+
+        let intervals = intervals.into_iter().map(|x| Interval{start: x.0, stop: x.1, val: x.2}).collect::<Vec<_>>();
+        let lapper = Lapper::new(intervals);
+
+        let start = std::time::Instant::now();
+        let depths = depths_at_points(&lapper, 0, 1000, 1);
+        dbg!(start.elapsed());
     }
 }
