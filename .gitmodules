@@ -1,5 +1,3 @@
-[submodule "rust-spoa"]
-    path = src/rust-spoa
-    url = https://github.com/bluenote-1577/rust-spoa
-
-
+[submodule "src/rust-spoa"]
+	path = src/rust-spoa
+	url = https://github.com/bluenote-1577/rust-spoa
