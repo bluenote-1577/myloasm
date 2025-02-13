@@ -25,6 +25,7 @@
 //SOFTWARE.
 //******************************
 
+use block_aligner::cigar::Operation;
 use smallvec::SmallVec;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -521,6 +522,7 @@ pub struct BeamSearchSoln{
     pub score: f64,
     pub path_nodes: Vec<NodeIndex>,
     pub depth: usize,
+    pub current_length: usize
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -528,9 +530,55 @@ pub struct OverlapAdjMap {
     pub adj_map: FxHashMap<NodeIndex, Vec<NodeIndex>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct OpLenVec{
+    pub op_vec: Vec<Operation>,
+    pub len_vec: Vec<u32>,
+}
+
+impl OpLenVec{
+    pub fn new(cigar_vec: Vec<OpLen>) -> Self{
+        let mut op_vec = Vec::new();
+        let mut len_vec = Vec::new();
+        let mut last_op = Operation::Sentinel;
+        for op_len in cigar_vec{
+            if op_len.op == last_op{
+                *len_vec.last_mut().unwrap() += op_len.len as u32;
+            }
+            else if (op_len.op == Operation::X || op_len.op == Operation::Eq) && last_op == Operation::M{
+                *len_vec.last_mut().unwrap() += op_len.len as u32;
+            }
+            else{
+                op_vec.push(op_len.op);
+                len_vec.push(op_len.len as u32);
+                last_op = op_len.op;
+            }
+            if last_op == Operation::X || last_op == Operation::Eq{
+                last_op = Operation::M;
+            }
+        }
+        assert!(op_vec.len() == len_vec.len());
+        OpLenVec{
+            op_vec,
+            len_vec,
+        }
+    }
+
+    pub fn len(&self) -> usize{
+        return self.op_vec.len();
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (Operation, u32)> + '_ {
+        self.op_vec.iter()
+            .zip(self.len_vec.iter())
+            .map(|(op, len)| (*op, *len))
+    }
+}
+
+
 #[derive(Debug, Clone, Default)]
 pub struct AlignmentResult{
-    pub cigar: Vec<OpLen>,
+    pub cigar: OpLenVec,
     pub q_start: usize,
     pub q_end: usize,
     pub r_start: usize,

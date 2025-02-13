@@ -23,7 +23,7 @@ pub struct Cli {
     pub c: usize,
 
     /// Number of threads to use for processing
-    #[arg(short, long, default_value = "10")]
+    #[arg(short, long, default_value = "20")]
     pub threads: usize,
 
     /// Enable homopolymer compression
@@ -46,7 +46,10 @@ pub struct Cli {
     #[arg(long, default_value_t = 3, help_heading = "Graph Parameters")]
     pub tip_read_cutoff: usize,
 
-    /// Do not use snpmers; standard overlap assembly
+    // No polishing
+    #[arg(long, default_value_t=false, help_heading = "Overlap Parameters")]
+    pub no_polish: bool,
+
     #[arg(long, default_value_t=false, help_heading = "Overlap Parameters")]
     pub no_snpmers: bool,
 
@@ -91,16 +94,9 @@ pub struct Cli {
     pub bloom_filter_size: f64,
 
     /// Minimum number of reads in output contigs
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 4)]
     pub min_reads_contig: usize,
-
-    /// Don't map to reads minimap2 (TODO)
-    #[arg(long, default_value_t=false)]
-    pub no_minimap2: bool,
-
-    #[arg(short, long, default_value_t=false)]
-    pub polish: bool,
-
+    
     /// HiFi mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
     #[arg(long, help_heading = "Preset Parameters", hide=true)]
     pub hifi: bool,

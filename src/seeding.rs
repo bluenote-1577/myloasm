@@ -610,6 +610,9 @@ pub fn get_twin_read(
         qual_seq = Some(qualities.try_into().unwrap());
     }
 
+    no_dup_snpmers_in_read.shrink_to_fit();
+    minimizers_in_read.shrink_to_fit();
+
     return Some(TwinRead{
         snpmers: no_dup_snpmers_in_read,
         minimizers: minimizers_in_read,

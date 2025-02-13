@@ -927,6 +927,7 @@ dependencies = [
 name = "myloasm"
 version = "0.0.1"
 dependencies = [
+ "approx",
  "bincode",
  "bio-seq",
  "block-aligner",

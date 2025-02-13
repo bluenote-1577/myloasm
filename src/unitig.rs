@@ -1426,7 +1426,7 @@ impl UnitigGraph {
             let right_cut = cut_map[key].1;
             let base_info;
             if best_overlap_chunk {
-                base_info = get_base_info_mapchunks(left_cut, right_cut, node, reads, dna_seq_info)
+                base_info = get_base_info_mapchunks(left_cut, right_cut, node, reads, dna_seq_info);
             } else {
                 base_info = get_base_info_overlaps(left_cut, right_cut, node, reads, dna_seq_info)
             }
@@ -2525,7 +2525,7 @@ impl UnitigGraph {
             let edge_count;
             if beam {
                 edge_count =
-                    self.beam_search_path_prob(*node_id, temperature, 15, 5, 0.000000001, args.c, steps, steps);
+                    self.beam_search_path_prob(*node_id, 1_000_000, temperature, 15, 7, 0.000000001, args.c, steps);
             } else {
                 edge_count = self.random_walk_sample(*node_id, samples, temperature, steps);
             }
@@ -2724,12 +2724,12 @@ impl UnitigGraph {
     fn beam_search_path_prob(
         &self,
         starting_node_id: NodeIndex,
+        max_length_search: usize,
         temperature: f64,
         _min_num_soln: usize,
         max_num_soln: usize,
         _min_prob_soln: f64,
         c: usize,
-        min_reads_seen: usize,
         depth: usize,
     ) -> FxHashMap<(EdgeIndex, NodeIndex), f64> {
         let mut edge_count = FxHashMap::default();
@@ -2748,15 +2748,23 @@ impl UnitigGraph {
             starting_soln.path_nodes = vec![starting_node_id];
             seen_nodes.insert(starting_node_id);
             starting_soln.depth = 0;
+            starting_soln.current_length = 0;
 
             edges_to_search.push((starting_soln, starting_edges));
             let mut current_depth = 0;
             let mut solutions = vec![];
 
-            while current_depth < depth || edges_to_search.iter().any(|x| x.0.coverages.len() < min_reads_seen) {
+            while current_depth < depth {
                 current_depth += 1;
                 let mut candidate_soln = vec![];
                 for (soln, edges) in edges_to_search.iter() {
+
+                    // If the current path is longer than the max length, add it to the solutions
+                    if soln.current_length > max_length_search {
+                        solutions.push(soln.clone());
+                        continue;
+                    }
+
                     for edge_id in edges.iter() {
                         let prob = self.log_probability_ol_cov(
                             *edge_id,
@@ -2797,6 +2805,7 @@ impl UnitigGraph {
                         .extend(self.nodes[&other_node].read_min_depths_multi.clone());
 
                     let other_unitig = &self.nodes[&other_node];
+                    new_soln.current_length += other_unitig.unique_length.unwrap();
                     let edge = &self.edges[*edge_id].as_ref().unwrap();
                     let new_edges = other_unitig
                         .edges_direction(&edge.node_edge_direction(&other_node).reverse());
@@ -2813,6 +2822,16 @@ impl UnitigGraph {
             for (soln, _) in edges_to_search {
                 solutions.push(soln);
             }
+
+            //CHANGE: try normalization. Equivalent to geometric mean of probabilities
+            // solutions.iter_mut().for_each(|x| {
+            //     let mut unique_nodes = FxHashSet::default();
+            //     x.path_nodes.iter().for_each(|x| {
+            //         unique_nodes.insert(*x);
+            //     });
+            //     let num_unique_nodes = unique_nodes.len();
+            //     x.score = x.score / (num_unique_nodes as f64);
+            // });
 
             let max_absolute_score = solutions
                 .iter()
@@ -2834,7 +2853,13 @@ impl UnitigGraph {
                 .collect::<Vec<_>>();
 
             for (i, soln) in solutions.iter().enumerate() {
+                //println!("{:?}", &soln.path_nodes);
+                //println!("{:?}", &soln.path);
+                if soln.path.len() == 0 {
+                    continue;
+                }   
                 let weight = starting_weight * probabilities[i];
+                //println!("Score: {}, Weighted {}", soln.score, weight);
                 for (j, edge_id) in soln.path.iter().enumerate() {
                     let count = edge_count
                         .entry((*edge_id, soln.path_nodes[j]))
@@ -4134,7 +4159,7 @@ mod tests {
         let temp = 1.;
 
         //This is fickle-- if RNG changes then we'll have to change this...
-        let edge_counts = graph.beam_search_path_prob(n1, temp, 5, 10, 0.00001, 9, 30, 5);
+        let edge_counts = graph.beam_search_path_prob(n1, 1000000, temp, 5, 10, 0.00001, 9,  5);
         dbg!(&edge_counts);
         assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
     }
@@ -4166,7 +4191,7 @@ mod tests {
         dbg!(&edge_counts);
         assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
 
-        let edge_counts = graph.beam_search_path_prob(n1, temp, 5, 10, 0.00001, 9, 50, 5);
+        let edge_counts = graph.beam_search_path_prob(n1, 1_000_000, temp, 5, 10, 0.00001, 9, 50);
         dbg!(&edge_counts);
         assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
     }
@@ -4219,7 +4244,7 @@ mod tests {
                 if j == 0 {
                     edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
                 } else {
-                    edge_counts = graph.beam_search_path_prob(nodeid, temp, 5, 10, 0.00001, 9, 50, 5);
+                    edge_counts = graph.beam_search_path_prob(nodeid, 1_000_000, temp, 5, 10, 0.00001, 9, 50);
                 }
                 for (edge_id, count) in edge_counts {
                     let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
@@ -4287,7 +4312,7 @@ mod tests {
                 if j == 0 {
                     edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
                 } else {
-                    edge_counts = graph.beam_search_path_prob(nodeid, temp, 5, 10, 0.00001,9, steps, steps);
+                    edge_counts = graph.beam_search_path_prob(nodeid, 1_000_000, temp, 5, 10, 0.00001,9, steps);
                 }
 
                 for (edge_id, count) in edge_counts {
@@ -4308,6 +4333,64 @@ mod tests {
 
             assert!(total_edgecounts[&good_edge] > total_edgecounts[&opt1]);
             assert!(total_edgecounts[&good_edge] > total_edgecounts[&opt2]);
+            //TODO do we want this? Current model biases towards circularization from the topological defintion
+            // of k-length paths. This isn't necessarily a _bad_ thing for metagenomics...
+            //assert!((total_edgecounts[&opt1] - total_edgecounts[&opt2]).abs() < 1.);
+        }
+    }
+
+    #[test]
+    fn beam_walk_test_circular_false() {
+        let mut builder = MockUnitigBuilder::new();
+        //False circular path, I want the high edge to have better weight. Length constraints will help.
+        // (high,large) n0 -> (high,large) n1  -> (error) n3
+        //              ↗  ↘                ↘ 
+        //              n2 (low,small)        .n4 (error)
+
+
+        //Want:  w(e3) ~ w(e1)
+        let n0 = builder.add_node(100, 100.0);
+        let n1 = builder.add_node(100, 80.0);
+        let n2 = builder.add_node(10, 10.0);
+        let n3 = builder.add_node(100, 5000.);
+        let n4 = builder.add_node(100, 5000.);
+
+        let e0 = builder.add_edge(n0, n1, 5000, true, true);
+        let e1 = builder.add_edge(n0, n2, 5000, true, true);
+        let _e2 = builder.add_edge(n2, n0, 5000, true, true);
+        let _e3 = builder.add_edge(n1, n3, 5000, true, true);
+        let _e4 = builder.add_edge(n1, n4, 5000, true, true);
+
+        let (graph, _reads) = builder.build();
+
+        let steps = 20;
+
+        let max_lengths = [50_000, 1_000_000_000];
+        for max_length in max_lengths{
+            let mut total_edgecounts = FxHashMap::default();
+            for nodeid in 0..1 {
+                let edge_counts = graph.beam_search_path_prob(nodeid, max_length, 1.0, 5, 10, 0.00001, 9, steps);
+                for (edge_id, count) in edge_counts {
+                    let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
+                    *total_count += count;
+                }
+            }
+            //print by sorted key
+            let mut keys: Vec<_> = total_edgecounts.keys().collect();
+            keys.sort();
+            for key in keys {
+                println!("Edge {:?} : {}", key, total_edgecounts[key]);
+            }
+
+            let good_edge = (e0, n0);
+            let opt1 = (e1,n0);
+
+            if max_length > 500_000{
+                assert!(total_edgecounts[&good_edge] < 5. * total_edgecounts[&opt1]);
+            }
+            else{
+                assert!(total_edgecounts[&good_edge] > 5. * total_edgecounts[&opt1]);
+            }
             //TODO do we want this? Current model biases towards circularization from the topological defintion
             // of k-length paths. This isn't necessarily a _bad_ thing for metagenomics...
             //assert!((total_edgecounts[&opt1] - total_edgecounts[&opt2]).abs() < 1.);

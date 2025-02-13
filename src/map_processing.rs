@@ -1,4 +1,6 @@
 use crate::cli::Cli;
+use crate::constants::READ_BLOCK_SIZE_FOR_COVERAGE;
+use std::cmp;
 use crate::constants::ENDPOINT_MAPPING_FUZZ;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::ID_THRESHOLD_ITERS;
@@ -7,6 +9,7 @@ use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
 use std::io::Write;
+use rust_lapper::Interval;
 use std::io::BufWriter;
 use std::path::Path;
 use crate::types::*;
@@ -14,7 +17,6 @@ use fxhash::FxHashMap;
 use rayon::prelude::*;
 use rust_lapper::Lapper;
 use std::sync::Mutex;
-use ordered_float::OrderedFloat;
 
 pub struct TwinReadMapping {
     pub tr_index: usize,
@@ -45,12 +47,100 @@ impl NodeMapping for TwinReadMapping {
     }
 }
 
+
+pub fn median_and_min_depth_from_lapper_new(
+    lapper: &Lapper<u32, SmallTwinOl>, 
+    sampling: usize, 
+    seq_start: usize, 
+    seq_length: usize, 
+    snpmer_identity_cutoff: f64
+) -> Option<(f64, f64)> {
+    let block_size = READ_BLOCK_SIZE_FOR_COVERAGE;
+    
+    // Filter intervals based on snpmer_identity and maximal_overlap
+    let intervals_cutoff = lapper
+        .iter()
+        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff) && x.val.maximal_overlap)
+        .map(|x| x.clone())
+        .collect::<Vec<_>>();
+    let lapper_cutoff = Lapper::new(intervals_cutoff);
+    
+    // If no qualifying intervals, return early
+    if lapper_cutoff.intervals.is_empty() {
+        log::trace!("No qualifying intervals found for depth calculation, start {} end {}", seq_start, seq_length);
+        return Some((0., 0.));
+    }
+    
+    // Get depths at regular intervals using our new function
+    let depths_at_points = depths_at_points(
+        &lapper_cutoff,
+        (seq_start + sampling) as u32,
+        (seq_length - sampling) as u32,
+        sampling as u32
+    );
+    
+    if depths_at_points.is_empty() {
+        log::trace!("No points found for depth calculation, start {} end {}", seq_start, seq_length);
+        return Some((0., 0.));
+    }
+    
+    // Process depths in blocks
+    let mut min_blocks = Vec::new();
+    let mut median_blocks = Vec::new();
+    let mut current_block = Vec::new();
+    let mut next_block_boundary = block_size + seq_start;
+    
+    for (pos, depth) in depths_at_points {
+        current_block.push(depth as u32);
+        
+        if pos as usize >= next_block_boundary && !current_block.is_empty() {
+            // Process the completed block
+            current_block.sort_unstable();
+            let min = current_block.first().unwrap();
+            let median = current_block[current_block.len() / 2];
+            
+            // Add block_size/sampling copies of the min and median
+            let copies = block_size / sampling;
+            min_blocks.extend(std::iter::repeat(min).take(copies));
+            median_blocks.extend(std::iter::repeat(median).take(copies));
+            
+            // Reset for next block
+            current_block.clear();
+            next_block_boundary += block_size;
+        }
+    }
+    
+    // Process any remaining points in the last block
+    if !current_block.is_empty() {
+        current_block.sort_unstable();
+        let min = current_block.first().unwrap();
+        let median = current_block[current_block.len() / 2];
+        
+        let remaining = current_block.len();
+        min_blocks.extend(std::iter::repeat(min).take(remaining));
+        median_blocks.extend(std::iter::repeat(median).take(remaining));
+    }
+    
+    if min_blocks.is_empty() {
+        log::trace!("No blocks processed for depth calculation, start {} end {}", seq_start, seq_length);
+        return Some((0., 0.));
+    }
+    
+    // Calculate final medians
+    min_blocks.sort_unstable();
+    median_blocks.sort_unstable();
+    let median_over_min_blocks: u32 = min_blocks[min_blocks.len() / 2];
+    let median_over_median_blocks : u32 = median_blocks[median_blocks.len() / 2];
+    
+    Some((median_over_min_blocks as f64, median_over_median_blocks as f64))
+}
+
 pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SmallTwinOl>, sampling: usize, seq_start: usize, seq_length: usize, snpmer_identity_cutoff: f64) -> Option<(f64,f64)> 
 //where
     //T: Eq + Clone + Send + Sync + Float
 {
     //TODO the block size should depend on read length
-    let block_size = 20_000;
+    let block_size = READ_BLOCK_SIZE_FOR_COVERAGE;
     let mut min_blocks = vec![];
     let mut median_blocks = vec![];
     let mut depths = vec![];
@@ -70,8 +160,9 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SmallTwinOl>, sampl
         if pos > next_block && depths.len() > 0{
             depths.sort();
             next_block += block_size;
-            let min_ind = 3.min(depths.len()-1);
-            let min = depths[min_ind];
+            //let min_ind = 3.min(depths.len()-1);
+            //let min = depths[min_ind];
+            let min = depths[0];
             let median = depths[depths.len() / 2];
             for _ in 0..block_size / sampling{
                 min_blocks.push(min);
@@ -84,8 +175,9 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SmallTwinOl>, sampl
     //Leftover blocks
     if depths.len() > 0{
         depths.sort();
-        let min_ind = 3.min(depths.len()-1);
-        let min = depths[min_ind];
+        //let min_ind = 3.min(depths.len()-1);
+        //let min = depths[min_ind];
+        let min = depths[0];
         let median = depths[depths.len() / 2];
         for _ in 0..depths.len(){
             min_blocks.push(min);
@@ -105,30 +197,6 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SmallTwinOl>, sampl
     return Some((median_over_min_blocks as f64, median_over_median_blocks as f64));
 }
 
-//Inefficient implemtation. Prob don't need to optimize though
-pub fn sliding_window_kmer_coverages(cov_vec: &Vec<(u32,u32)>, window_size: usize, k: usize) -> f64{
-    let mut max_covs = vec![];
-    let mut rolling_window = vec![0;window_size];
-    let mut curr_pos = 0;
-    for i in 0..cov_vec.len() {
-        let pos = cov_vec[i].0;
-        let count = cov_vec[i].1;
-        if pos > k as u32 + curr_pos || curr_pos == 0{
-            curr_pos = pos;
-            rolling_window[i % window_size] = count;
-        }
-        if i >= window_size{
-            let max = *rolling_window.iter().max().unwrap();
-            max_covs.push(max);
-        }
-    }
-    log::trace!("Max covs: {:?}", max_covs);
-    log::trace!("Raw covs: {:?}", cov_vec);
-    let returned_cov = (*max_covs.iter().min().unwrap()) as f64;
-    log::trace!("Returned cov: {}", returned_cov);
-    return returned_cov;
-}
-
 pub fn cov_mapping_breakpoints<T>(mapped: &T) -> Vec<Breakpoints>
 where
     T: NodeMapping,
@@ -137,6 +205,13 @@ where
         return vec![];
     }
     let mut breakpoints = vec![];
+    let sampling = 5;
+    let coverages_at_sampling = depths_at_points(
+        mapped.mapping_boundaries(),
+        0,
+        mapped.reference_length() as u32,
+        sampling,
+    );
     let depths = mapped.mapping_boundaries().depth().collect::<Vec<_>>();
     if depths.len() < 3 {
         return vec![];
@@ -176,8 +251,11 @@ where
         let cond1 = last_cov > 3 && next_cov > 3 && cov == 1;
         let cond2;
         if start > 200 && stop + 200 < mapped.reference_length() {
-            let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
-            let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
+            // let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
+            // let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
+
+            let left_count = coverages_at_sampling[(start as usize - 200) / sampling as usize].1;
+            let right_count = coverages_at_sampling[(start as usize + 200) / sampling as usize].1;
             cond2 = left_count > 3 && right_count > 3 && cov == 1;
         } else {
             cond2 = false;
@@ -241,6 +319,8 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
             //Repopulate minimizers and snpmers. This is kind of bad; should have a method that does this...
             new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
             new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
+            new_read.minimizers.shrink_to_fit();
+            new_read.snpmers.shrink_to_fit();
             new_read.id = format!("{}+split{}", &twin_read.id, i);
             new_read.split_start = last_break as u32;
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
@@ -270,8 +350,13 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
 
+    //Subintervals; much more efficient for the function call.
+    let max_overlap_lapper: Lapper<u32, SmallTwinOl>; 
+    let intervals = mapping_info.mapping_boundaries().iter().filter(|x| x.val.maximal_overlap).map(|x| x.clone()).collect::<Vec<_>>();
+    max_overlap_lapper = Lapper::new(intervals);
+
     for (i,id) in IDENTITY_THRESHOLDS.iter().enumerate() {
-        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper(&mapping_info.mapping_boundaries(), SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(&max_overlap_lapper, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
         median_depth = median_depth_t;
         min_depths[i] = min_depth;
     }
@@ -285,7 +370,7 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
             //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
             let mut try_id = min_depths[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
             loop{
-                let (min_depth_try, _) = median_and_min_depth_from_lapper(&mapping_info.mapping_boundaries(), SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&max_overlap_lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
                 if min_depth_try >= MIN_COV_READ as f64 {
                     log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, try_id * 100., min_depth_try);
                     twin_read.snpmer_id_threshold = Some(try_id);
@@ -345,8 +430,10 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
 
     twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
         if tr_map_info_dict.contains_key(&i){
+            let start = std::time::Instant::now();
             let map_info = tr_map_info_dict.get(&i).unwrap();
             let breakpoints = cov_mapping_breakpoints(*map_info);
+            log::trace!("Breakpoints time: {:?}", start.elapsed());
 
             if log::log_enabled!(log::Level::Trace) {
                 let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
@@ -370,7 +457,9 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 }
             }
 
+            let start = std::time::Instant::now();
             let splitted_reads = split_read_and_populate_depth(twin_read, map_info, breakpoints, args);
+            log::trace!("Split time: {:?}", start.elapsed());
             for new_read in splitted_reads{
                 new_twin_reads_bools.lock().unwrap().push((new_read, true));
             }
@@ -420,76 +509,61 @@ pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: us
     return false;
 }
 
-// fn _get_min_depth_various_thresholds(lapper: &Lapper<u32, SmallTwinOl>, seq_start: usize, seq_length: usize, snpmer_identity_cutoffs: &[f64]) -> Vec<f64>{
+pub fn depths_at_points(lapper: &Lapper<u32, SmallTwinOl>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)> {
+    if lapper.intervals.is_empty() || start > end || step == 0 {
+        return Vec::new();
+    }
 
-//     let intervals = &lapper.intervals;
-//     let mut start_stop = vec![];
-//     let mut counts = vec![0; snpmer_identity_cutoffs.len()];
-//     let mut min_counts : Vec<Option<u32>>  = vec![None; snpmer_identity_cutoffs.len()];
-//     for interval in intervals.iter(){
-//         if interval.stop < seq_start as u32{
-//             continue;
-//         }
-//         else if interval.start > seq_length as u32{
-//             continue;
-//         }
-//         else{
-//             start_stop.push((interval.start, false, interval.val));
-//             start_stop.push((interval.stop, true, interval.val));
-//         }
-//     }
-//     start_stop.sort();
+    let mut result = Vec::new();
+    let points = (end - start) / step + 1;
+    result.reserve(points as usize);
+    
+    let mut pos = start;
+    let mut active_intervals = Vec::new();
+    let mut next_interval_idx = 0;
 
-//     for (pos, start, id) in start_stop.iter(){
-//         let mut affected_indices = 0;
-//         if pos > &(seq_length as u32){
-//             break;
-//         }
-//         if !start{
-//             for (i, cutoff) in snpmer_identity_cutoffs.iter().enumerate(){
-//                 if *id >= OrderedFloat(*cutoff){
-//                     counts[i] += 1;
-//                     affected_indices = i+1;
-//                 }
-//                 //Assume ordered
-//                 else{
-//                     break;
-//                 }
-//             }
-//         }
-//         else{
-//             for (i, cutoff) in snpmer_identity_cutoffs.iter().enumerate(){
-//                 if *id >= OrderedFloat(*cutoff){
-//                     counts[i] -= 1;
-//                     affected_indices = i+1;
-//                 }
-//             }
-//         }
-//         if pos < &(seq_start as u32) {
-//             continue;
-//         }
-//         for i in 0..affected_indices{
-//             if min_counts[i].is_none() || counts[i] < min_counts[i].unwrap(){
-//                 min_counts[i] = Some(counts[i]);
-//             }
-//         }
-//     }
+    while pos <= end {
+        // Remove intervals that end before or at current position
+        active_intervals.retain(|&idx| {
+            let interval: &Interval<u32,SmallTwinOl> = &lapper.intervals[idx];
+            interval.stop > pos
+        });
 
-//     //If range contained in all intervals
-//     for i in 0..snpmer_identity_cutoffs.len(){
-//         if min_counts[i].is_none() || counts[i] < min_counts[i].unwrap(){
-//             min_counts[i] = Some(counts[i]);
-//         }
-//     }
+        // Add new intervals that start before or at current position
+        while next_interval_idx < lapper.intervals.len() 
+            && lapper.intervals[next_interval_idx].start <= pos 
+        {
+            if lapper.intervals[next_interval_idx].stop > pos {
+                active_intervals.push(next_interval_idx);
+            }
+            next_interval_idx += 1;
+        }
 
-//     let min_counts = min_counts.into_iter().map(|x| x.unwrap_or(0) as f64).collect::<Vec<_>>();
-//     return min_counts;
-// } 
+        // Record depth at current position
+        result.push((pos, active_intervals.len()));
+
+        // Move to next position
+        pos = pos + step;
+    }
+
+    result
+}
+
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
+    use approx::assert_relative_eq;
+
+
+    fn create_small_twinol(identity: f32, maximal: bool) -> SmallTwinOl {
+        SmallTwinOl {
+            snpmer_identity: identity,
+            maximal_overlap: maximal,
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn test_maximal_overlap(){
@@ -653,4 +727,367 @@ mod tests {
     //     assert!(min_depths[0] == 102.);
 
     // }
+
+    #[test]
+    fn test_depths_at_points() {
+        // Test case with overlapping intervals
+        let data = vec![
+            Interval { start: 0, stop: 10, val: SmallTwinOl::default() },
+            Interval { start: 5, stop: 15, val: SmallTwinOl::default() },
+            Interval { start: 10, stop: 20, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 0, 20, 5);
+        assert_eq!(depths, vec![
+            (0, 1),   // Only first interval
+            (5, 2),   // First and second intervals
+            (10, 2),  // Second and third intervals
+            (15, 1),  // Only third interval
+            (20, 0),  // No intervals
+        ]);
+    }
+
+    #[test]
+    fn test_depths_at_points_empty() {
+        let data: Vec<Interval<u32, SmallTwinOl>> = vec![];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 0, 10, 5);
+        assert_eq!(depths, vec![]);
+    }
+
+    #[test]
+    fn test_depths_at_points_single_interval() {
+        let data = vec![
+            Interval { start: 5, stop: 15, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 0, 20, 5);
+        assert_eq!(depths, vec![
+            (0, 0),
+            (5, 1),
+            (10, 1),
+            (15, 0),
+            (20, 0),
+        ]);
+    }
+
+
+        #[test]
+    fn test_depths_at_points_dense_overlap() {
+        let data = vec![
+            Interval { start: 0, stop: 10, val: SmallTwinOl::default() },
+            Interval { start: 0, stop: 5, val: SmallTwinOl::default() },
+            Interval { start: 0, stop: 3, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 0, 10, 1);
+        assert_eq!(depths, vec![
+            (0, 3),  // All three intervals
+            (1, 3),  // All three intervals
+            (2, 3),  // All three intervals
+            (3, 2),  // Two intervals remain
+            (4, 2),  // Two intervals remain
+            (5, 1),  // Only the longest interval
+            (6, 1),  // Only the longest interval
+            (7, 1),  // Only the longest interval
+            (8, 1),  // Only the longest interval
+            (9, 1),  // Only the longest interval
+            (10, 0), // No intervals
+        ]);
+    }
+
+    #[test]
+    fn test_depths_at_points_staggered_overlap() {
+        let data = vec![
+            Interval { start: 0, stop: 10, val: SmallTwinOl::default() },
+            Interval { start: 2, stop: 8, val: SmallTwinOl::default() },
+            Interval { start: 4, stop: 6, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 0, 10, 2);
+        assert_eq!(depths, vec![
+            (0, 1),  // First interval only
+            (2, 2),  // First and second intervals
+            (4, 3),  // All three intervals
+            (6, 2),  // Back to two intervals
+            (8, 1),  // Back to one interval
+            (10, 0), // No intervals
+        ]);
+    }
+
+    #[test]
+    fn test_depths_at_points_exact_boundaries() {
+        let data = vec![
+            Interval { start: 5, stop: 10, val: SmallTwinOl::default() },
+            Interval { start: 10, stop: 15, val: SmallTwinOl::default() },
+            Interval { start: 15, stop: 20, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 5, 20, 5);
+        assert_eq!(depths, vec![
+            (5, 1),   // First interval
+            (10, 1),  // Second interval (boundary)
+            (15, 1),  // Third interval (boundary)
+            (20, 0),  // No intervals
+        ]);
+    }
+
+    #[test]
+    fn test_depths_at_points_non_standard_step() {
+        let data = vec![
+            Interval { start: 0, stop: 20, val: SmallTwinOl::default() },
+            Interval { start: 5, stop: 15, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        let depths = depths_at_points(&lapper, 0, 20, 3);
+        assert_eq!(depths, vec![
+            (0, 1),   // First interval only
+            (3, 1),   // First interval only
+            (6, 2),   // Both intervals
+            (9, 2),   // Both intervals
+            (12, 2),  // Both intervals
+            (15, 1),  // First interval only
+            (18, 1),  // First interval only
+        ]);
+    }
+
+    #[test]
+    fn test_depths_at_points_query_subset() {
+        let data = vec![
+            Interval { start: 0, stop: 100, val: SmallTwinOl::default() },
+            Interval { start: 20, stop: 80, val: SmallTwinOl::default() },
+            Interval { start: 40, stop: 60, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        // Query only middle section
+        let depths = depths_at_points(&lapper, 30, 70, 10);
+        assert_eq!(depths, vec![
+            (30, 2),  // Two intervals
+            (40, 3),  // Three intervals
+            (50, 3),  // Three intervals
+            (60, 2),  // Back to two intervals
+            (70, 2),  // Two intervals
+        ]);
+    }
+
+    #[test]
+    fn test_depths_at_points_edge_cases() {
+        let data = vec![
+            Interval { start: 10, stop: 20, val: SmallTwinOl::default() },
+        ];
+        let lapper = Lapper::new(data);
+        
+        // Test empty range
+        assert_eq!(depths_at_points(&lapper, 5, 4, 1), vec![]);
+        
+        // Test zero step
+        assert_eq!(depths_at_points(&lapper, 0, 20, 0), vec![]);
+        
+        // Test single point
+        assert_eq!(
+            depths_at_points(&lapper, 15, 15, 5),
+            vec![(15, 1)]
+        );
+        
+        // Test points beyond interval
+        assert_eq!(
+            depths_at_points(&lapper, 0, 30, 10),
+            vec![(0, 0), (10, 1), (20, 0), (30, 0)]
+        );
+    }
+
+     #[test]
+    fn test_median_and_min_depth_basic() {
+        let intervals = vec![
+            Interval {
+                start: 0,
+                stop: 100,
+                val: SmallTwinOl {
+                    snpmer_identity: 1.0,
+                    maximal_overlap: true,
+                    ..Default::default()
+                }
+            },
+            Interval {
+                start: 25,
+                stop: 75,
+                val: SmallTwinOl {
+                    snpmer_identity: 1.0,
+                    maximal_overlap: true,
+                    ..Default::default()
+                }
+            },
+        ];
+        let lapper = Lapper::new(intervals);
+        
+        let result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
+        assert!(result.is_some());
+        let (min_depth, median_depth) = result.unwrap();
+        assert!(min_depth > 0.0);
+        assert!(median_depth >= min_depth);
+
+        let result = median_and_min_depth_from_lapper_new(&lapper, 10, 0, 100, 0.9);
+        assert!(result.is_some());
+        let (min_depth, median_depth) = result.unwrap();
+        assert!(min_depth > 0.0);
+        assert!(median_depth >= min_depth);
+
+    }
+
+    #[test]
+    fn test_median_and_min_depth_empty() {
+        let intervals = vec![];
+        let lapper = Lapper::new(intervals);
+        
+        let result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
+        assert_eq!(result, Some((0.0, 0.0)));
+
+        let result = median_and_min_depth_from_lapper_new(&lapper, 10, 0, 100, 0.9);
+        assert_eq!(result, Some((0.0, 0.0)));
+    }
+
+    #[test]
+    fn test_median_and_min_depth_filtered_out() {
+        let intervals = vec![
+            Interval {
+                start: 0,
+                stop: 100,
+                val: SmallTwinOl {
+                    snpmer_identity: 0.5, // Below cutoff
+                    maximal_overlap: true,
+                    ..Default::default()
+                }
+            },
+        ];
+        let lapper = Lapper::new(intervals);
+        
+        let result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
+        assert_eq!(result, Some((0.0, 0.0)));
+
+
+        let result = median_and_min_depth_from_lapper_new(&lapper, 10, 0, 100, 0.9);
+        assert_eq!(result, Some((0.0, 0.0)));
+    }
+
+      #[test]
+    fn test_sparse_coverage() {
+        let intervals = vec![
+            Interval {
+                start: 0,
+                stop: 20,
+                val: create_small_twinol(1.0, true)
+            },
+            Interval {
+                start: 50,
+                stop: 70,
+                val: create_small_twinol(1.0, true)
+            },
+            Interval {
+                start: 90,
+                stop: 100,
+                val: create_small_twinol(1.0, true)
+            },
+        ];
+        let lapper = Lapper::new(intervals);
+        
+        let old_result = median_and_min_depth_from_lapper(&lapper, 5, 0, 100, 0.9);
+        let new_result = median_and_min_depth_from_lapper_new(&lapper, 5, 0, 100, 0.9);
+        
+        assert!(old_result.is_some() && new_result.is_some());
+        let (old_min, old_median) = old_result.unwrap();
+        let (new_min, new_median) = new_result.unwrap();
+        
+        assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
+        assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_maximal_overlap_filtering() {
+        let intervals = vec![
+            Interval {
+                start: 0,
+                stop: 100,
+                val: create_small_twinol(1.0, true)
+            },
+            Interval {
+                start: 0,
+                stop: 100,
+                val: create_small_twinol(1.0, false)  // Not maximal
+            },
+        ];
+        let lapper = Lapper::new(intervals);
+        
+        let old_result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
+        let new_result = median_and_min_depth_from_lapper_new(&lapper, 10, 0, 100, 0.9);
+        
+        assert!(old_result.is_some() && new_result.is_some());
+        let (old_min, old_median) = old_result.unwrap();
+        let (new_min, new_median) = new_result.unwrap();
+        
+        assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
+        assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
+        assert_relative_eq!(old_min, 1.0, epsilon = 1e-10);  // Should only count maximal intervals
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Empty intervals
+        let empty_lapper = Lapper::new(vec![]);
+        let old_empty = median_and_min_depth_from_lapper(&empty_lapper, 10, 0, 100, 0.9);
+        let new_empty = median_and_min_depth_from_lapper_new(&empty_lapper, 10, 0, 100, 0.9);
+        assert_eq!(old_empty, new_empty);
+        assert_eq!(old_empty, Some((0.0, 0.0)));
+
+        // Single point interval
+        let point_intervals = vec![
+            Interval {
+                start: 50,
+                stop: 51,
+                val: create_small_twinol(1.0, true)
+            },
+        ];
+        let point_lapper = Lapper::new(point_intervals);
+        let old_point = median_and_min_depth_from_lapper(&point_lapper, 1, 0, 100, 0.9);
+        let new_point = median_and_min_depth_from_lapper_new(&point_lapper, 1, 0, 100, 0.9);
+        assert!(old_point.is_some() && new_point.is_some());
+        assert_eq!(old_point, new_point);
+    }
+
+    #[test]
+    fn test_varying_sampling_rates() {
+        let intervals = vec![
+            Interval {
+                start: 0,
+                stop: 100,
+                val: create_small_twinol(1.0, true)
+            },
+            Interval {
+                start: 25,
+                stop: 75,
+                val: create_small_twinol(1.0, true)
+            },
+        ];
+        let lapper = Lapper::new(intervals);
+        
+        for sampling in [1, 5, 10].iter() {
+            let old_result = median_and_min_depth_from_lapper(&lapper, *sampling, 0, 100, 0.9);
+            let new_result = median_and_min_depth_from_lapper_new(&lapper, *sampling, 0, 100, 0.9);
+            
+            dbg!(sampling);
+            assert!(old_result.is_some() && new_result.is_some());
+            let (old_min, old_median) = old_result.unwrap();
+            let (new_min, new_median) = new_result.unwrap();
+            
+            assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
+            assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
+        }
+    }
 }

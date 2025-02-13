@@ -52,6 +52,7 @@ tikv-jemallocator = "0"
 #predicates = "1"
 #serial_test = "*"
 #rand = "0.8"
+approx = "*"
 
 
 [profile.release]

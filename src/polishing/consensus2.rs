@@ -47,7 +47,8 @@ impl PoaConsensusBuilder {
 
                 let mut qual_map = FxHashMap::default();
                 for (i, qual) in quals.iter().enumerate() {
-                    qual_map.insert(i, -(qual.len() as i32));
+                    let mean_qual = qual.iter().map(|x| *x as i32).sum::<i32>() / qual.len() as i32;
+                    qual_map.insert(i, -(qual.len() as i32) * mean_qual);
                 }
 
                 //Sort seqs and quals by the qual_map
@@ -55,19 +56,17 @@ impl PoaConsensusBuilder {
                 sorted_indices.sort_by_key(|x| x.1);
                 let sorted_indices = sorted_indices.into_iter().map(|x| x.0).collect::<Vec<_>>();
 
-                let seqs = sorted_indices
+                let mut seqs = sorted_indices
                     .iter()
                     .map(|&i| std::mem::take(&mut seqs[i]))
                     .collect::<Vec<_>>();
-                let quals = sorted_indices
+                let mut quals = sorted_indices
                     .iter()
                     .map(|&i| std::mem::take(&mut quals[i]))
                     .collect::<Vec<_>>();
-
-                log::trace!("Seqs for block: {}", i);
-                for seq in seqs.iter() {
-                    log::trace!("{:?}", String::from_utf8_lossy(&seq));
-                }
+                
+                seqs.truncate(MAX_OL_POLISHING);
+                quals.truncate(MAX_OL_POLISHING);
 
                 let cons = poa_consensus(
                     &seqs,
@@ -101,7 +100,7 @@ impl PoaConsensusBuilder {
                 breakpoints.lock().unwrap().push((i, 0,0));
                 return;
             }
-            let ol_len = cons[i + 1].len().min(window_len);
+            let ol_len = cons[i].len().min(cons[i + 1].len().min(window_len));
             let overhang_i = &cons[i][cons[i].len() - ol_len..];
             let overhang_j = &cons[i + 1][0..ol_len];
 
@@ -187,7 +186,7 @@ impl PoaConsensusBuilder {
         &self,
         seq: Vec<u8>,
         qual: Vec<u8>,
-        cigar: &Vec<OpLen>,
+        cigar: &OpLenVec,
         align_start_r: usize,
         align_start_q: usize,
     ) {
@@ -206,9 +205,7 @@ impl PoaConsensusBuilder {
         let mut breakpoint_q = align_start_q;
         let mut window_breakpoint = self.breakpoints[bp_i] + self.window_overlap_len;
         let mut past_breakpoint = false;
-        for oplen in cigar {
-            let op = oplen.op;
-            let len = oplen.len;
+        for (op, len) in cigar.iter() {
 
             match op {
                 Operation::M | Operation::Eq | Operation::X => {
@@ -376,7 +373,7 @@ mod tests {
                 len: 4,
             },
         ];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         assert_eq!(builder.seq.len(), 1);
         assert_eq!(builder.qual.len(), 1);
         assert_eq!(
@@ -395,7 +392,7 @@ mod tests {
             op: Operation::M,
             len: 29,
         }];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         assert_eq!(builder.seq.len(), 10);
         assert_eq!(builder.qual.len(), 10);
         assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
@@ -413,7 +410,7 @@ mod tests {
             op: Operation::M,
             len: 29,
         }];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         assert_eq!(builder.seq.len(), 10);
         assert_eq!(builder.qual.len(), 10);
         assert_eq!(
@@ -437,7 +434,7 @@ mod tests {
             op: Operation::M,
             len: 30,
         }];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         assert_eq!(builder.seq.len(), 10);
         assert_eq!(builder.qual.len(), 10);
         assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
@@ -469,7 +466,7 @@ mod tests {
                 len: 25,
             },
         ];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         assert_eq!(builder.seq.len(), 10);
         assert_eq!(builder.qual.len(), 10);
         assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACCGTAC\0".to_vec());
@@ -501,7 +498,7 @@ mod tests {
                 len: 1,
             },
         ];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         assert_eq!(builder.seq.len(), 10);
         assert_eq!(builder.qual.len(), 10);
         assert_eq!(builder.seq[0].lock().unwrap()[0], b"ACGTACGTAC\0".to_vec());
@@ -537,7 +534,7 @@ mod tests {
                     len: 1,
                 },
             ];
-            builder.add_seq(seq, qual, &cigar, 0, 0);
+            builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
             let qual = vec![30; 32];
@@ -555,7 +552,7 @@ mod tests {
                     len: 1,
                 },
             ];
-            builder.add_seq(seq, qual, &cigar, 0, 0);
+            builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
             let qual = vec![30; 32];
@@ -569,7 +566,7 @@ mod tests {
                     len: 1,
                 },
             ];
-            builder.add_seq(seq, qual, &cigar, 0, 0);
+            builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             dbg!(&"HERE");
 
@@ -593,7 +590,7 @@ mod tests {
             op: Operation::M,
             len: 3,
         }];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
         let seq = b"ATG".to_vec();
         let qual = vec![50; 3];
@@ -601,7 +598,7 @@ mod tests {
             op: Operation::M,
             len: 3,
         }];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
         let seq = b"ATG".to_vec();
         let qual = vec![50; 3];
@@ -609,7 +606,7 @@ mod tests {
             op: Operation::M,
             len: 3,
         }];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
         let cons = builder.spoa_blocks();
         dbg!(&cons[0]);
     }
@@ -627,7 +624,7 @@ mod tests {
                 op: Operation::M,
                 len: 20,
             }];
-            builder.add_seq(seq, qual, &cigar, 0, 0);
+            builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             let seq = b"CCCCCATTTTTGGGGGAAAAA".to_vec();
             let qual = vec![50; 21];
@@ -649,7 +646,7 @@ mod tests {
                     len: 10,
                 },
             ];
-            builder.add_seq(seq, qual, &cigar, 0, 0);
+            builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             let seq = b"CCCCCTTTTTGGGGGAAAAA".to_vec();
             let qual = vec![50; 20];
@@ -657,7 +654,7 @@ mod tests {
                 op: Operation::M,
                 len: 20,
             }];
-            builder.add_seq(seq, qual, &cigar, 0, 0);
+            builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
             dbg!(&builder.seq[1].lock().unwrap());
             let cons = builder.spoa_blocks();
             for cons in cons.iter() {
@@ -698,7 +695,7 @@ mod tests {
                 len: 27,
             },
         ];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
         let qual = vec![50; 32];
@@ -712,7 +709,7 @@ mod tests {
                 len: 1,
             },
         ];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
         let qual = vec![50; 32];
@@ -726,7 +723,7 @@ mod tests {
                 len: 1,
             },
         ];
-        builder.add_seq(seq, qual, &cigar, 0, 0);
+        builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
         for x in builder.seq[2].lock().unwrap().iter() {
             println!("{:?}", x.to_ascii_uppercase());
@@ -805,7 +802,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         for i in 0..6 {
-            builder.add_seq(seqs[i].clone(), quals[i].clone(), &cigars[i], 0, 0);
+            builder.add_seq(seqs[i].clone(), quals[i].clone(), &OpLenVec::new(cigars[i].clone()), 0, 0);
         }
 
         let consensuses = builder.spoa_blocks();

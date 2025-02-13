@@ -25,11 +25,11 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
     let fasta_out_path = Path::new(args.output_dir.as_str()).join("final_contigs_polished.fa");
     let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
 
-    log::info!("Processing alignments...");
     final_graph.nodes.iter().for_each(|(_, contig)| {
         if !UnitigGraph::unitig_pass_filter(contig, args){
             return
         }
+        log::debug!("Processing alignments for u{} ...", contig.node_id);
         let mut poa_cons_builder = PoaConsensusBuilder::new(contig.base_seq().len());
         poa_cons_builder.generate_breakpoints(300, 100);
         let mapping_boundaries = contig.mapping_boundaries().iter().collect::<Vec<&Interval<u32, SmallTwinOl>>>();

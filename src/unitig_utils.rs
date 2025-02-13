@@ -140,6 +140,7 @@ pub fn get_base_info_mapchunks(
     _reads: &[TwinRead],
     _dna_seq_info: bool,
 ) -> BaseInfo {
+    panic!();
     return BaseInfo::default();
 }
 

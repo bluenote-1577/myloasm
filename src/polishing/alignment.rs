@@ -186,7 +186,7 @@ pub fn get_full_alignment(
     //Seed-chain-extend implementation
 
     return Some(AlignmentResult {
-        cigar: cigar_vec,
+        cigar: OpLenVec::new(cigar_vec),
         q_start,
         r_start,
         q_end,

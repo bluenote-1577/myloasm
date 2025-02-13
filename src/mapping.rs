@@ -770,7 +770,7 @@ pub fn map_reads_to_outer_reads<'a>(
                 let identity = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64);
 
                 //Used for EC
-                let strain_specific_thresh_lax = same_strain(
+                let _strain_specific_thresh_lax = same_strain(
                     hit.shared_minimizers,
                     hit.diff_snpmers,
                     hit.shared_snpmers,
@@ -793,7 +793,7 @@ pub fn map_reads_to_outer_reads<'a>(
                         reverse: hit.chain_reverse,
                         alignment_result: None
                     };
-                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol, strain_specific_thresh_lax, identity));
+                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
                 }
             }
         }
@@ -940,14 +940,12 @@ pub fn map_reads_to_unitigs(
 
         for hit in retained_hits {
             let start = std::time::Instant::now();
-            let mut alignment_result = alignment::get_full_alignment(
+            let alignment_result = alignment::get_full_alignment(
                 &twin_reads[hit.i1].dna_seq,
                 &tr_unitigs[&hit.i2].dna_seq,
                 &hit,
                 args,
             );
-
-            alignment_result.as_mut().unwrap().cigar.shrink_to_fit();
 
             write!(
                 mapping_file.lock().unwrap(),
@@ -1002,7 +1000,8 @@ pub fn map_reads_to_unitigs(
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
         number_of_alignments += intervals.len();
         cigar_string_lengths.extend(intervals.iter().map(|x| x.val.alignment_result.as_ref().unwrap().cigar.len()));
-        let lapper = Lapper::new(intervals);
+        let mut lapper = Lapper::new(intervals);
+        lapper.intervals.shrink_to_fit();
 
         //let (unitig_first_mini_pos, unitig_last_mini_pos) = first_last_mini_in_range(0, unitig_length, args.kmer_size, MINIMIZER_END_NTH_COV, tr_unitigs[&contig_id].minimizers.as_slice());
         //let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, unitig_first_mini_pos, unitig_last_mini_pos).unwrap();

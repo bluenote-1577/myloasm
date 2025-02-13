@@ -70,6 +70,13 @@ fn main() {
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
     log_memory_usage(true, "STAGE 3: Obtained unpolished contigs");
     contig_graph.print_statistics(&args);
+    contig_graph.to_fasta(output_dir.join("final_contigs_nopolish.fa"), &args);
+
+    if args.no_polish {
+        log::info!("No polishing requested. Exiting.");
+        log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
+        return;
+    }
 
     log::info!("Beginning final alignment of reads to graph...");
     let start = Instant::now();
@@ -88,7 +95,6 @@ fn main() {
         &twin_reads,
         &args,
     );
-    contig_graph.to_fasta(output_dir.join("final_contigs_nopolish.fa"), &args);
 
     // Step 8: TODO
     log::info!("Polishing...");
