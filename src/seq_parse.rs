@@ -1,11 +1,11 @@
 use crate::cli::Cli;
-use memory_stats::memory_stats;
 use fastbloom::BloomFilter;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use fxhash::FxHashMap;
 use crate::seeding;
+use crate::utils::*;
 use std::io::BufReader;
 use crossbeam_channel::unbounded;
 
@@ -19,11 +19,13 @@ pub fn read_to_split_kmers(
     let start = std::time::Instant::now();
     let bf_vec_maps = first_iteration(k, threads, args);
     log::info!("Finished with bloom filter processing in {:?}. Round 2 - Start k-mer counting...", start.elapsed());
+    log_memory_usage(true, "Memory usage after bloom filter processing");
 
     let start = std::time::Instant::now();
     let vec_maps = second_iteration(k, threads, args, bf_vec_maps); 
     let map_size_raw = vec_maps.iter().map(|x| x.len()).sum::<usize>();
     log::info!("Finished with k-mer counting in {:?}. Total kmers after bloom filter: {}", start.elapsed(), map_size_raw);
+    log_memory_usage(true, "Memory usage after second round of k-mer counting processing");
 
     let mut vectorized_map = vec![];
     for map in vec_maps.into_iter(){
@@ -40,7 +42,7 @@ pub fn read_to_split_kmers(
         log::warn!("Less than 0.1% of kmers have counts > 1 in both strands and > 2 multiplicity. This may indicate a problem with the input data or very low coverage.");
     }
     log::debug!("Final Hashmap len after vectorization: {}", map_size_retain);
-    log::debug!("Final Hash Memory usage after vectorization : {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
+    log_memory_usage(false, "Memory usage after second round of k-mer counting processing");
 
     return vectorized_map;
 }

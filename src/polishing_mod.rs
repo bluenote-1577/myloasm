@@ -24,25 +24,36 @@ use std::io::Write;
 pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args: &Cli){
     let fasta_out_path = Path::new(args.output_dir.as_str()).join("final_contigs_polished.fa");
     let mut fasta_writer = BufWriter::new(File::create(fasta_out_path).unwrap());
+    let mut total_count = 0;
+    let mut reset_count = 0;
+    let num_passing_nodes = final_graph.nodes.iter().filter(|(_, contig)| UnitigGraph::unitig_pass_filter(contig, args)).count();
 
     final_graph.nodes.iter().for_each(|(_, contig)| {
         if !UnitigGraph::unitig_pass_filter(contig, args){
             return
         }
-        log::debug!("Processing alignments for u{} ...", contig.node_id);
+        log::trace!("Processing alignments for u{} ...", contig.node_id);
         let mut poa_cons_builder = PoaConsensusBuilder::new(contig.base_seq().len());
         poa_cons_builder.generate_breakpoints(300, 100);
         let mapping_boundaries = contig.mapping_boundaries().iter().collect::<Vec<&Interval<u32, SmallTwinOl>>>();
         poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
 
-        log::debug!("Starting POA consensus for u{} ...", contig.node_id);
+        log::trace!("Starting POA consensus for u{} ...", contig.node_id);
         let cons = poa_cons_builder.spoa_blocks();
         let mut final_seq = Vec::new();
         for consensus in cons{
             final_seq.extend(consensus);
         }
+
+        //Output user logging info at 10% intervals
+        if reset_count == num_passing_nodes/10{
+            log::info!("Polished {}% of contigs...", (total_count as f64/num_passing_nodes as f64)*100.0);
+            reset_count = 0;
+        }
+
         write!(&mut fasta_writer, ">u{}\n", contig.node_id).unwrap();
         write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&final_seq).unwrap()).unwrap();
+        total_count +=1;
     });
 }
 

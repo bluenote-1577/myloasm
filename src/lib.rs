@@ -12,6 +12,7 @@ pub mod seq_parse;
 pub mod map_processing;
 pub mod unitig_utils;
 pub mod polishing;
+pub mod utils;
 
 //pub mod cbloom;
 //

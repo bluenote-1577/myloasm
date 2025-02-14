@@ -346,7 +346,6 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
     return new_reads;
 }
 
-#[inline]
 pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, start: usize, end: usize){
     let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizers);
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];

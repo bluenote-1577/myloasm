@@ -474,6 +474,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
 
     let mut snpmers = snpmers.into_inner().unwrap();
     snpmers.sort();
+    solid_kmers.shrink_to_fit();
     log::info!("Number of snpmers: {}. ", potential_snps.into_inner().unwrap());
     log::info!("Number of solid k-mers: {}.", solid_kmers.len());
     return KmerGlobalInfo{
