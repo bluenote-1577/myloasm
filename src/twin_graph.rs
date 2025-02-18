@@ -536,7 +536,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
 
     outer_read_indices.into_par_iter().for_each(|&i| { 
         let read = &twin_reads[i];
-        let mini_anchors = find_exact_matches_with_full_index(&read.minimizers, &inverted_index);
+        let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec(), &inverted_index);
         for (outer_ref_id, anchors) in mini_anchors.into_iter(){
 
             //Only compare once. I think we get slightly different results if we
@@ -871,11 +871,11 @@ pub fn remove_contained_reads_twin<'a>(outer_indices: Option<Vec<usize>>, twin_r
             .filter(|x| x.1.est_id.is_none() 
             || x.1.est_id.unwrap() > args.quality_value_cutoff)
             .fold(FxHashMap::default(), |mut acc, (i, x)| {
-                for &y in x.minimizers.iter() {
-                    if hash64(&y.1) > u64::MAX / downsample_factor {
+                for y in x.minimizer_kmers.iter(){
+                    if hash64(y) > u64::MAX / downsample_factor {
                         continue;
                     }
-                    acc.entry(y.1).or_insert(FxHashSet::default()).insert(i);
+                    acc.entry(*y).or_insert(FxHashSet::default()).insert(i);
                 }
                 acc
             });
@@ -924,7 +924,7 @@ fn parallel_remove_contained(
         let start = std::time::Instant::now();
         let mut index_count_map = FxHashMap::default();
         let mut index_range_map = FxHashMap::default();
-        for &y in read1.minimizers.iter() {
+        for y in read1.minimizers() {
             //Downsample to 100 compression factor
             if hash64(&y.1) > u64::MAX / downsample_factor{
                 continue;

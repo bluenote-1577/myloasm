@@ -196,12 +196,12 @@ pub struct TigRead {
 //and change to u32 to save space
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TwinRead {
-    pub minimizers: Vec<(usize, u64)>,
-    // pub minimizer_positions: Vec<u32>,
-    // pub minimizer_kmers: Vec<u64>,
-    pub snpmers: Vec<(usize, u64)>,
-    // pub snpmer_kmers: Vec<u64>,
-    // pub snpmer_positions: Vec<u32>,
+    //pub minimizers: Vec<(usize, u64)>,
+    pub minimizer_positions: Vec<u32>,
+    pub minimizer_kmers: Vec<u64>,
+    //pub snpmers: Vec<(usize, u64)>,
+    pub snpmer_kmers: Vec<u64>,
+    pub snpmer_positions: Vec<u32>,
     pub id: String,
     pub base_id: String,
     pub k: u8,
@@ -362,9 +362,88 @@ impl Complement for QualCompact3 {
 
 impl TwinRead{
     pub fn clear(&mut self){
-        self.minimizers.clear();
-        self.snpmers.clear();
+        self.minimizer_kmers.clear();
+        self.snpmer_kmers.clear();
+        self.minimizer_positions.clear();
+        self.snpmer_positions.clear();
     }
+
+    pub fn minimizers(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        assert!(self.minimizer_positions.len() == self.minimizer_kmers.len());
+        self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y))
+    }
+
+    pub fn minimizers_vec(&self) -> Vec<(u32, u64)> {
+        assert!(self.minimizer_positions.len() == self.minimizer_kmers.len());
+        self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
+    }
+
+    pub fn snpmers(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+        assert!(self.snpmer_positions.len() == self.snpmer_kmers.len());
+        self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y))
+    }
+
+    pub fn retain_mini_positions(&mut self, positions: FxHashSet<usize>) {
+        retain_vec_positions(&mut self.minimizer_kmers, &positions);
+        retain_vec_positions(&mut self.minimizer_positions, &positions);
+        self.minimizer_kmers.shrink_to_fit();
+        self.minimizer_positions.shrink_to_fit();
+    }
+
+    pub fn retain_snpmer_positions(&mut self, positions: FxHashSet<usize>) {
+        retain_vec_positions(&mut self.snpmer_kmers, &positions);
+        retain_vec_positions(&mut self.snpmer_positions, &positions);
+        self.snpmer_kmers.shrink_to_fit();
+        self.snpmer_positions.shrink_to_fit();
+    }
+
+    
+    pub fn shift_and_retain(&mut self, other_read: &TwinRead, last_break: usize, bp_start: usize, k: usize){
+
+        // new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
+        // new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
+        // new_read.minimizers.shrink_to_fit();
+        // new_read.snpmers.shrink_to_fit();
+
+        let mut mini_positions_filtered = Vec::new();
+        let mut mini_kmers_filtered = Vec::new();
+        let mut snp_positions_filtered = Vec::new();
+        let mut snp_kmers_filtered = Vec::new();
+
+        for (pos, kmer) in other_read.minimizers(){
+            if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
+                mini_positions_filtered.push(pos - last_break as u32);
+                mini_kmers_filtered.push(kmer);
+            }
+        }
+
+        for (pos, kmer) in other_read.snpmers(){
+            if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
+                snp_positions_filtered.push(pos - last_break as u32);
+                snp_kmers_filtered.push(kmer);
+            }
+        }
+
+        //shirnk to fit
+        mini_positions_filtered.shrink_to_fit();
+        mini_kmers_filtered.shrink_to_fit();
+        snp_positions_filtered.shrink_to_fit();
+        snp_kmers_filtered.shrink_to_fit();
+
+        self.minimizer_positions = mini_positions_filtered;
+        self.minimizer_kmers = mini_kmers_filtered;
+        self.snpmer_positions = snp_positions_filtered;
+        self.snpmer_kmers = snp_kmers_filtered;
+    }
+}
+
+pub fn retain_vec_positions<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
+    let mut i = 0;
+    vec.retain(|_| {
+        let keep = positions.contains(&i);
+        i += 1;
+        keep
+    });
 }
 
 

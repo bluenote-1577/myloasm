@@ -144,7 +144,7 @@ fn _smith_waterman(
 }
 
 pub fn find_exact_matches_with_full_index(
-    seq1: &[(usize, u64)],
+    seq1: &[(u32, u64)],
     index: &FxHashMap<u64, Vec<HitInfo>>,
 ) -> FxHashMap<u32, Anchors> {
     let mut max_mult = 0;
@@ -183,24 +183,22 @@ pub fn find_exact_matches_with_full_index(
         .collect()
 }
 
-fn find_exact_matches_indexes(
-    seq1: &[(usize, u64)],
-    seq2: &[(usize, u64)],
+fn find_exact_matches_indexes_references(
+    seq1: &[(u32, u64)],
+    seq2: &[(u32, u64)],
 ) -> (Vec<Anchor>, usize) {
     let mut max_mult = 0;
     let mut matches = Vec::new();
-    let index_seq = &seq2;
-    let query_seq = &seq1;
     let mut index_map = FxHashMap::default();
 
     //Sorted
-    for (j, (pos, x)) in index_seq.iter().enumerate() {
-        index_map.entry(x).or_insert(vec![]).push((j, *pos));
+    for (j, (pos, x)) in seq2.iter().enumerate() {
+        index_map.entry(x).or_insert(vec![]).push((j, pos));
     }
 
     //Sorted
-    for (i, (pos, s)) in query_seq.iter().enumerate() {
-        if let Some(indices) = index_map.get(s) {
+    for (i, (pos, s)) in seq1.iter().enumerate() {
+        if let Some(indices) = index_map.get(&s) {
             if indices.len() > max_mult {
                 max_mult = indices.len();
             }
@@ -209,6 +207,42 @@ fn find_exact_matches_indexes(
                     i: i as u32,
                     j: *j as u32,
                     pos1: *pos as u32,
+                    pos2: **pos2 as u32,
+                };
+                matches.push(anchor);
+            }
+        }
+    }
+
+    (matches, max_mult)
+}
+
+fn find_exact_matches_indexes<T>(
+    seq1: T,
+    seq2: T,
+) -> (Vec<Anchor>, usize) 
+    where T: Iterator<Item = (u32, u64)>
+{
+    let mut max_mult = 0;
+    let mut matches = Vec::new();
+    let mut index_map = FxHashMap::default();
+
+    //Sorted
+    for (j, (pos, x)) in seq2.enumerate() {
+        index_map.entry(x).or_insert(vec![]).push((j, pos));
+    }
+
+    //Sorted
+    for (i, (pos, s)) in seq1.enumerate() {
+        if let Some(indices) = index_map.get(&s) {
+            if indices.len() > max_mult {
+                max_mult = indices.len();
+            }
+            for (j, pos2) in indices {
+                let anchor = Anchor {
+                    i: i as u32,
+                    j: *j as u32,
+                    pos1: pos as u32,
                     pos2: *pos2 as u32,
                 };
                 matches.push(anchor);
@@ -441,7 +475,7 @@ pub fn compare_twin_reads(
             Some((anchors.max_mult * 10).min(50)),
         );
     } else {
-        let anchors = find_exact_matches_indexes(&seq1.minimizers, &seq2.minimizers);
+        let anchors = find_exact_matches_indexes(seq1.minimizers(), seq2.minimizers());
         mini_chain_infos = find_optimal_chain(&anchors.0, 10, 1, Some((anchors.1 * 10).min(50)));
     }
     let mut twin_overlaps = vec![];
@@ -462,10 +496,10 @@ pub fn compare_twin_reads(
             shared_snpmer = 0;
             diff_snpmer = 0;
 
-            let l1 = seq1.minimizers[mini_chain[0].i as usize].0;
-            let r1 = seq1.minimizers[mini_chain[mini_chain.len() - 1].i as usize].0;
-            let l2 = seq2.minimizers[mini_chain[0].j as usize].0;
-            let r2 = seq2.minimizers[mini_chain[mini_chain.len() - 1].j as usize].0;
+            let l1 = seq1.minimizer_positions[mini_chain[0].i as usize] as usize;
+            let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize] as usize;
+            let l2 = seq2.minimizer_positions[mini_chain[0].j as usize] as usize;
+            let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize] as usize;
             let start1 = l1.min(r1);
             let end1 = l1.max(r1) + k - 1;
             let start2 = l2.min(r2);
@@ -476,20 +510,20 @@ pub fn compare_twin_reads(
             let mut splitmers1 = vec![];
             let mut ind_redirect1 = vec![];
 
-            for (i, (pos, snpmer)) in seq1.snpmers.iter().enumerate() {
-                if *pos >= start1 && *pos <= end1 {
+            for (i, (pos, snpmer)) in seq1.snpmers().enumerate() {
+                if pos as usize >= start1 && pos as usize <= end1 {
                     ind_redirect1.push(i);
-                    splitmers1.push((*pos, *snpmer & mask));
+                    splitmers1.push((pos, snpmer & mask));
                 }
             }
 
             let mut splitmers2 = vec![];
             let mut ind_redirect2 = vec![];
 
-            for (i, (pos, snpmer)) in seq2.snpmers.iter().enumerate() {
-                if *pos >= start2 && *pos <= end2 {
+            for (i, (pos, snpmer)) in seq2.snpmers().enumerate() {
+                if pos as usize >= start2 && pos as usize <= end2 {
                     ind_redirect2.push(i);
-                    splitmers2.push((*pos, *snpmer & mask));
+                    splitmers2.push((pos, snpmer & mask));
                 }
             }
             
@@ -497,7 +531,7 @@ pub fn compare_twin_reads(
             if let Some(anchors) = snpmer_anchors {
                 split_chain_opt = find_optimal_chain(&anchors.anchors, 50, 1, Some((anchors.max_mult * 10).min(50))).into_iter().max_by_key(|x| x.score);
             } else {
-                let anchors = find_exact_matches_indexes(&splitmers1, &splitmers2);
+                let anchors = find_exact_matches_indexes_references(&splitmers1, &splitmers2);
                 let chains = find_optimal_chain(&anchors.0, 50, 1, Some((anchors.1 * 10).min(50)));
                 split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
             }
@@ -511,18 +545,8 @@ pub fn compare_twin_reads(
                         let i = ind_redirect1[i as usize];
                         let j = anchor.j;
                         let j = ind_redirect2[j as usize];
-                        //let base1 = ((seq1.snpmers[i as usize].1 & !mask) >> (k - 1)) as u8;
-                        //let base2 = ((seq2.snpmers[j as usize].1 & !mask) >> (k - 1)) as u8;
 
-                        // let snpmer_hit = SnpmerHit{
-                        //     pos1: seq1.snpmers[i as usize].0 as u32,
-                        //     pos2: seq2.snpmers[j as usize].0 as u32,
-                        //     bases: (base1, base2),
-                        // };
-
-                        // snpmer_relative_hits.push(snpmer_hit);
-
-                        if seq1.snpmers[i as usize].1 == seq2.snpmers[j as usize].1 {
+                        if seq1.snpmer_kmers[i as usize] == seq2.snpmer_kmers[j as usize] {
                             shared_snpmer += 1;
                         } else {
                             diff_snpmer += 1;
@@ -543,12 +567,12 @@ pub fn compare_twin_reads(
                     for anchor in split_chain_opt.unwrap().chain.iter() {
                         let i = anchor.i;
                         let j = anchor.j;
-                        if seq1.snpmers[i as usize].1 != seq2.snpmers[j as usize].1 {
-                            positions_read1_snpmer_diff.push(seq1.snpmers[i as usize].0);
-                            positions_read2_snpmer_diff.push(seq2.snpmers[j as usize].0);
+                        if seq1.snpmer_kmers[i as usize] != seq2.snpmer_kmers[j as usize] {
+                            positions_read1_snpmer_diff.push(seq1.snpmer_positions[i as usize]);
+                            positions_read2_snpmer_diff.push(seq2.snpmer_positions[j as usize]);
 
-                            let kmer1 = decode_kmer(seq1.snpmers[i as usize].1, seq1.k as u8);
-                            let kmer2 = decode_kmer(seq2.snpmers[j as usize].1, seq2.k as u8);
+                            let kmer1 = decode_kmer(seq1.snpmer_kmers[i as usize], seq1.k as u8);
+                            let kmer2 = decode_kmer(seq2.snpmer_kmers[j as usize], seq2.k as u8);
 
                             kmers_read1_diff.push(kmer1);
                             kmers_read2_diff.push(kmer2);
@@ -565,18 +589,17 @@ pub fn compare_twin_reads(
                 .intersection(&splitmers2.iter().map(|x| x.1).collect::<FxHashSet<_>>())
                 .count();
             intersection_snp = seq1
-                .snpmers
+                .snpmer_kmers
                 .iter()
-                .map(|x| x.1)
                 .collect::<FxHashSet<_>>()
-                .intersection(&seq2.snpmers.iter().map(|x| x.1).collect::<FxHashSet<_>>())
+                .intersection(&seq2.snpmer_kmers.iter().collect::<FxHashSet<_>>())
                 .count();
         }
 
-        let l1 = seq1.minimizers[mini_chain[0].i as usize].0;
-        let r1 = seq1.minimizers[mini_chain[mini_chain.len() - 1].i as usize].0;
-        let l2 = seq2.minimizers[mini_chain[0].j as usize].0;
-        let r2 = seq2.minimizers[mini_chain[mini_chain.len() - 1].j as usize].0;
+        let l1 = seq1.minimizer_positions[mini_chain[0].i as usize];
+        let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize];
+        let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
+        let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
         let start1 = l1.min(r1);
         let end1 = l1.max(r1);
         let start2 = l2.min(r2);
@@ -589,14 +612,14 @@ pub fn compare_twin_reads(
         let twinol = TwinOverlap {
             i1: i,
             i2: j,
-            start1,
-            end1,
-            start2,
-            end2,
+            start1: start1 as usize,
+            end1: end1 as usize,
+            start2: start2 as usize,
+            end2: end2 as usize,
             shared_minimizers,
             shared_snpmers: shared_snpmer,
             diff_snpmers: diff_snpmer,
-            snpmers_in_both: (seq1.snpmers.len(), seq2.snpmers.len()),
+            snpmers_in_both: (seq1.snpmer_kmers.len(), seq2.snpmer_kmers.len()),
             chain_reverse: mini_chain_info.reverse,
             intersect: (intersect_split, intersection_snp),
             chain_score: mini_chain_info.score,
@@ -648,20 +671,20 @@ fn unitigs_to_tr(
             .collect::<Vec<u8>>();
         let tr = seeding::get_twin_read_syncmer(u8_seq, None, args.kmer_size, args.c, &snpmer_set, id);
         if let Some(mut tr) = tr {
-            let mut solid_minis = vec![];
-            let mut solid_snpmers = vec![];
-            for (pos,mini) in tr.minimizers.iter_mut(){
-                if solid_kmers.contains(mini){
-                    solid_minis.push((*pos,*mini));
+            let mut solid_mini_positions = FxHashSet::default();
+            let mut solid_snpmer_positions = FxHashSet::default();
+            for (pos,mini) in tr.minimizers(){
+                if solid_kmers.contains(&mini){
+                    solid_mini_positions.insert(pos as usize);
                 }
             }
-            for (pos, snpmer) in tr.snpmers.iter_mut(){
-                if snpmer_set.contains(snpmer){
-                    solid_snpmers.push((*pos,*snpmer));
+            for (pos, snpmer) in tr.snpmers(){
+                if snpmer_set.contains(&snpmer){
+                    solid_snpmer_positions.insert(pos as usize);
                 }
             }
-            tr.minimizers = solid_minis;
-            tr.snpmers = solid_snpmers;
+            tr.retain_mini_positions(solid_mini_positions);
+            tr.retain_snpmer_positions(solid_snpmer_positions);
             tr_unitigs.insert(node_hash_id, tr);
         }
     }
@@ -673,13 +696,13 @@ fn unitigs_to_tr(
 pub fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
     for (&id, tr) in twinreads.iter() {
-        for (i, (pos, mini)) in tr.minimizers.iter().enumerate() {
+        for (i, (pos, mini)) in tr.minimizers().enumerate() {
             let hit = HitInfo {
                 index: i as u32,
                 contig_id: id as u32,
-                pos: *pos as u32,
+                pos: pos as u32,
             };
-            mini_index.entry(*mini).or_insert(vec![]).push(hit);
+            mini_index.entry(mini).or_insert(vec![]).push(hit);
         }
     }
     mini_index
@@ -690,13 +713,13 @@ pub fn get_minimizer_index_ref(
 ) -> FxHashMap<u64, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
     for (&id, tr) in twinreads.iter() {
-        for (i, (pos, mini)) in tr.minimizers.iter().enumerate() {
+        for (i, (pos, mini)) in tr.minimizers().enumerate() {
             let hit = HitInfo {
                 index: i as u32,
                 contig_id: id as u32,
-                pos: *pos as u32,
+                pos: pos as u32,
             };
-            mini_index.entry(*mini).or_insert(vec![]).push(hit);
+            mini_index.entry(mini).or_insert(vec![]).push(hit);
         }
     }
     mini_index
@@ -723,9 +746,9 @@ pub fn map_reads_to_outer_reads<'a>(
     let counter = Mutex::new(0);
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
-        let mini = &read.minimizers;
+        let mini = read.minimizers_vec();
         //let start = std::time::Instant::now();
-        let mini_anchors = find_exact_matches_with_full_index(mini, &mini_index);
+        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index);
         //let anchor_finding_time = start.elapsed().as_micros();
         let mut unitig_hits = vec![];
         *counter.lock().unwrap() += 1;
@@ -871,8 +894,8 @@ pub fn map_reads_to_unitigs(
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
-        let mini = &read.minimizers;
-        let mini_anchors = find_exact_matches_with_full_index(mini, &mini_index);
+        let mini = read.minimizers_vec();
+        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index);
         let mut unitig_hits = vec![];
 
         for (contig_id, anchors) in mini_anchors.iter() {

@@ -7,7 +7,7 @@ use crate::constants::MIN_READ_LENGTH;
 use crate::twin_graph;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
-use fxhash::FxHasher64;
+use fxhash::FxHashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -288,31 +288,34 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             let seqlen = seq.len();
                             let qualities = msg.1;
                             let id = msg.2;
-                            let mut twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
+                            let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
                             if twin_read.is_some(){
-                                let mut solid_minis = vec![];
-                                let mut solid_snpmers = vec![];
-                                for mini in twin_read.as_mut().unwrap().minimizers.iter(){
-                                    if solid.contains(&mini.1){
-                                        solid_minis.push(*mini);
+
+                                let mut solid_mini_positions = FxHashSet::default();
+                                for (i, mini) in twin_read.as_ref().unwrap().minimizer_kmers.iter().enumerate(){
+                                    if solid.contains(&mini){
+                                        solid_mini_positions.insert(i);
                                     }
                                 }
                                 //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff. 
-                                if solid_minis.len() < seqlen / c / 20{
+                                if solid_mini_positions.len() < seqlen / c / 20{
                                     continue;
                                 }
 
-                                //MinHash top ~ 1/30 * read_length of solid snpmers 
-                                minhash_top_snpmers(twin_read.as_mut().unwrap(), MAX_FRACTION_OF_SNPMERS_IN_READ);
-
-                                for snpmer in twin_read.as_mut().unwrap().snpmers.iter(){
-                                    if solid.contains(&snpmer.1){
-                                        solid_snpmers.push(*snpmer);
+                                let mut solid_snpmer_positions = FxHashSet::default();
+                                for (i, snpmer) in twin_read.as_ref().unwrap().snpmer_kmers.iter().enumerate(){
+                                    if solid.contains(&snpmer){
+                                        solid_snpmer_positions.insert(i);
                                     }
                                 }
+
                                 let mut twin_read = twin_read.unwrap();
-                                twin_read.minimizers = solid_minis;
-                                twin_read.snpmers = solid_snpmers;
+                                twin_read.retain_mini_positions(solid_mini_positions);
+                                twin_read.retain_snpmer_positions(solid_snpmer_positions);
+
+                                //MinHash top ~ 1/30 * read_length of solid snpmers 
+                                minhash_top_snpmers(&mut twin_read, MAX_FRACTION_OF_SNPMERS_IN_READ);
+
                                 let mut vec = twrv.lock().unwrap();
                                 vec.push(twin_read);
                             }
@@ -337,14 +340,14 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
 
     if log::log_enabled!(log::Level::Trace) {
         for twin_read in twin_reads.iter(){
-            let decoded_snpmers = twin_read.snpmers.iter().map(|x| (x.0, decode_kmer(x.1, twin_read.k))).collect::<Vec<_>>();
+            let decoded_snpmers = twin_read.snpmers().map(|x| (x.0, decode_kmer(x.1, twin_read.k))).collect::<Vec<_>>();
             log::trace!("{} {:?}", twin_read.id, decoded_snpmers);
         }
     }
 
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
     log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
-    let snpmer_densities = twin_reads.iter().map(|x| x.snpmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
+    let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_kmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
 
@@ -355,18 +358,20 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
 
 fn minhash_top_snpmers(twin_read: &mut TwinRead, max_fraction: f64){
     let top = (twin_read.base_length as f64 * max_fraction).ceil() as usize;
-    if twin_read.snpmers.len() < top{
+    if twin_read.snpmer_kmers.len() < top{
         return;
     }
 
     let split_mask = !(3 << (twin_read.k - 1));
 
-    let mut splitmers_hash = twin_read.snpmers.iter().map(|x| mm_hash_64(x.1 & split_mask)).collect::<Vec<_>>();
+    let mut splitmers_hash = twin_read.snpmer_kmers.iter().map(|x| mm_hash_64(x & split_mask)).collect::<Vec<_>>();
     splitmers_hash.sort();
 
     let hash_cutoff = splitmers_hash[top];
+    let retain_positions = twin_read.snpmer_kmers.iter().enumerate().filter(|x| splitmers_hash[x.0] <= hash_cutoff).map(|x| x.0).collect::<FxHashSet<_>>();
 
-    twin_read.snpmers.retain(|x| mm_hash_64(x.1 & split_mask) <= hash_cutoff);
+    twin_read.snpmer_kmers = twin_read.snpmer_kmers.iter().enumerate().filter(|x| retain_positions.contains(&x.0)).map(|x| *x.1).collect::<Vec<_>>();
+    twin_read.snpmer_positions = twin_read.snpmer_positions.iter().enumerate().filter(|x| retain_positions.contains(&x.0)).map(|x| *x.1).collect::<Vec<_>>();
 }
 
 

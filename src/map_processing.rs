@@ -1,6 +1,5 @@
 use crate::cli::Cli;
 use crate::constants::READ_BLOCK_SIZE_FOR_COVERAGE;
-use std::cmp;
 use crate::constants::ENDPOINT_MAPPING_FUZZ;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::ID_THRESHOLD_ITERS;
@@ -319,10 +318,7 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
         if bp_start - last_break > MIN_READ_LENGTH{
             let mut new_read = TwinRead::default();
             //Repopulate minimizers and snpmers. This is kind of bad; should have a method that does this...
-            new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-            new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-            new_read.minimizers.shrink_to_fit();
-            new_read.snpmers.shrink_to_fit();
+            new_read.shift_and_retain(&twin_read, last_break, bp_start, k);
             new_read.id = format!("{}+split{}", &twin_read.id, i);
             new_read.split_start = last_break as u32;
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
@@ -347,7 +343,7 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
 }
 
 pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, start: usize, end: usize){
-    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizers);
+    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizer_positions);
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
 
@@ -389,25 +385,25 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     twin_read.median_depth = Some(median_depth);
 }
 
-pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[(usize,u64)]) -> (usize, usize){
+pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[u32]) -> (usize, usize){
     let mut first_mini = start;
     let mut count_first = 0;
     let mut last_mini = end;
     let mut count_last = 0;
 
-    for (mini_pos, _) in minis.iter(){
-        if *mini_pos >= start{
+    for mini_pos in minis.iter(){
+        if *mini_pos as usize >= start{
             count_first += 1;
-            first_mini = *mini_pos;
+            first_mini = *mini_pos as usize;
         }
         if count_first == nth{
             break;
         }
     }
 
-    for (mini_pos, _) in minis.iter().rev(){
-        if mini_pos + k - 1 < end{
-            last_mini = *mini_pos;
+    for mini_pos in minis.iter().rev(){
+        if *mini_pos as usize + k - 1 < end{
+            last_mini = *mini_pos as usize;
             count_last += 1;
         }
         if count_last == nth{
@@ -1130,7 +1126,7 @@ mod tests {
         let lapper = Lapper::new(intervals);
 
         let start = std::time::Instant::now();
-        let depths = depths_at_points(&lapper, 0, 1000, 1);
+        let _depths = depths_at_points(&lapper, 0, 1000, 1);
         dbg!(start.elapsed());
     }
 }
