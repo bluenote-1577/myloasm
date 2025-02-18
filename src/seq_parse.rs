@@ -145,16 +145,26 @@ fn first_iteration(
         let mut handles = Vec::new();
         for rx in rxs.into_iter(){
             handles.push(thread::spawn(move || {
-                let mut filter = BloomFilter::with_num_bits((bf_size * 8. * 1_000_000_000. / threads as f64) as usize).expected_items(1_000_000_000);
+                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).expected_items(5_000_000_000);
+                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).expected_items(5_000_000_000);
                 let mut map: FxHashMap<u64,[u32;2]> = FxHashMap::default();
                 loop{
                     match rx.recv() {
                         Ok(msg) => {
                             let kmer_vecs = msg;
                             for kmer_i_canon in kmer_vecs{
+                                let canonical = kmer_i_canon >> 63;
                                 let kmer = kmer_i_canon & mask;
-                                if filter.insert(&kmer){
-                                    map.insert(kmer, [0,0]);
+                                let kmer_canon = kmer | (1 << 63);
+                                if canonical == 1{
+                                    if filter_canonical.insert(&kmer_canon) && filter_noncanonical.contains(&kmer){
+                                        map.insert(kmer, [0,0]);
+                                    }
+                                }
+                                else{
+                                    if filter_noncanonical.insert(&kmer) && filter_canonical.contains(&kmer_canon){
+                                        map.insert(kmer, [0,0]);
+                                    }
                                 }
                             }
                         }

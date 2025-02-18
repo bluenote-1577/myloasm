@@ -90,7 +90,7 @@ pub struct Cli {
     pub ec: bool,
 
     /// Bloom filter size in GB
-    #[arg(short, long, default_value_t=3.)]
+    #[arg(short, long, default_value_t=10.)]
     pub bloom_filter_size: f64,
 
     /// Minimum number of reads in output contigs

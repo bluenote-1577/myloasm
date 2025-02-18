@@ -453,7 +453,7 @@ pub fn get_twin_read_syncmer(
     }
 
     let mut no_dup_snpmers_in_read = vec![];
-    for (pos, kmer) in snpmers_in_read.iter_mut() {
+    for (pos, kmer) in snpmers_in_read.iter(){
         if dedup_snpmers[&(*kmer & split_mask)] == 1 {
             no_dup_snpmers_in_read.push((*pos, *kmer));
         }

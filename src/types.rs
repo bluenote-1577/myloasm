@@ -60,6 +60,19 @@ pub const BYTE_TO_SEQ: [u8; 256] = [
 ];
 
 #[inline]
+pub fn mm_hash_64(key: u64) -> usize {
+    let mut key = key;
+    key = (!key).wrapping_add(key << 21); // key = (key << 21) - key - 1;
+    key = key ^ key >> 24;
+    key = (key.wrapping_add(key << 3)).wrapping_add(key << 8); // key * 265
+    key = key ^ key >> 14;
+    key = (key.wrapping_add(key << 2)).wrapping_add(key << 4); // key * 21
+    key = key ^ key >> 28;
+    key = key.wrapping_add(key << 31);
+    return key as usize;
+}
+
+#[inline]
 pub fn mm_hash(bytes: &[u8]) -> usize {
     let mut key = usize::from_ne_bytes(bytes.try_into().unwrap()) as usize;
     key = (!key).wrapping_add(key << 21); // key = (key << 21) - key - 1;
@@ -184,7 +197,11 @@ pub struct TigRead {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TwinRead {
     pub minimizers: Vec<(usize, u64)>,
+    // pub minimizer_positions: Vec<u32>,
+    // pub minimizer_kmers: Vec<u64>,
     pub snpmers: Vec<(usize, u64)>,
+    // pub snpmer_kmers: Vec<u64>,
+    // pub snpmer_positions: Vec<u32>,
     pub id: String,
     pub base_id: String,
     pub k: u8,
@@ -312,7 +329,7 @@ impl Codec for QualCompact3{
     }
 
     fn to_bits(self) -> u8 {
-        (self as u8)
+        self as u8
     }
 
     fn items() -> impl Iterator<Item = Self> {

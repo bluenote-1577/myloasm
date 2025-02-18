@@ -29,3 +29,6 @@ pub const MAX_BLOCK_SIZE: usize = 128;
 pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -1 };
 pub const MAX_OL_POLISHING: usize = 75;
 pub const READ_BLOCK_SIZE_FOR_COVERAGE: usize = 50_000;
+
+//At most 1/30 k-mers are snpmers. 
+pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./30.;

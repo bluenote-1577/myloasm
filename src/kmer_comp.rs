@@ -2,10 +2,12 @@ use std::collections::HashSet;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cli::Cli;
+use crate::constants::MAX_FRACTION_OF_SNPMERS_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::twin_graph;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
+use fxhash::FxHasher64;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -299,6 +301,10 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                                 if solid_minis.len() < seqlen / c / 20{
                                     continue;
                                 }
+
+                                //MinHash top ~ 1/30 * read_length of solid snpmers 
+                                minhash_top_snpmers(twin_read.as_mut().unwrap(), MAX_FRACTION_OF_SNPMERS_IN_READ);
+
                                 for snpmer in twin_read.as_mut().unwrap().snpmers.iter(){
                                     if solid.contains(&snpmer.1){
                                         solid_snpmers.push(*snpmer);
@@ -337,7 +343,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     }
 
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
-    log::info!("Number of valid reads - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
+    log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
     let snpmer_densities = twin_reads.iter().map(|x| x.snpmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
@@ -345,6 +351,22 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
 
     return twin_reads;
+}
+
+fn minhash_top_snpmers(twin_read: &mut TwinRead, max_fraction: f64){
+    let top = (twin_read.base_length as f64 * max_fraction).ceil() as usize;
+    if twin_read.snpmers.len() < top{
+        return;
+    }
+
+    let split_mask = !(3 << (twin_read.k - 1));
+
+    let mut splitmers_hash = twin_read.snpmers.iter().map(|x| mm_hash_64(x.1 & split_mask)).collect::<Vec<_>>();
+    splitmers_hash.sort();
+
+    let hash_cutoff = splitmers_hash[top];
+
+    twin_read.snpmers.retain(|x| mm_hash_64(x.1 & split_mask) <= hash_cutoff);
 }
 
 
