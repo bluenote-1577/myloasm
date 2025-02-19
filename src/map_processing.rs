@@ -360,20 +360,38 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
 
     // Change snpmer id threshold based on coverage
     if twin_read.snpmer_id_threshold.is_none(){
-        let sufficient_gap = min_depths[0] > 2.0 * min_depths[ID_THRESHOLD_ITERS - 1];
+        let sufficient_gap = min_depths[0] > 3.0 * min_depths[ID_THRESHOLD_ITERS - 1];
         let small_specific_depth = min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64;
         let sufficient_depth = min_depths[0] >= MIN_COV_READ as f64;
         if sufficient_gap && small_specific_depth && sufficient_depth{
             //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
-            let mut try_id = min_depths[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
+            let mut min_depth_prev = min_depths[ID_THRESHOLD_ITERS - 1];
+            let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
+            let mut unchanged_depth_attempts = 0;
             loop{
                 let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&max_overlap_lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
-                if min_depth_try >= MIN_COV_READ as f64 {
+
+                if min_depth_try >= MIN_COV_READ as f64  && min_depth_try < min_depth_prev * 1.50 {
                     log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, try_id * 100., min_depth_try);
-                    twin_read.snpmer_id_threshold = Some(try_id);
+                    twin_read.snpmer_id_threshold = Some(try_id * 100.);
                     break;
                 }
+                else if unchanged_depth_attempts == 10 {
+                    log::trace!("Read {} min_depth_identity:{} cov:{} UNCHANGED", twin_read.id, try_id * 100., min_depth_try);
+                    twin_read.snpmer_id_threshold = Some(try_id * 100.);
+                    break;
+                }
+
+                if min_depth_prev == min_depth_try{
+                    unchanged_depth_attempts += 1;
+                }
+                else{
+                    unchanged_depth_attempts = 0;
+                }
+
                 try_id -= 0.05 / 100.;
+                min_depth_prev = min_depth_try;
+                
             }
         }
         else{
@@ -383,6 +401,11 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
 
     twin_read.min_depth_multi = Some(min_depths);
     twin_read.median_depth = Some(median_depth);
+
+    //Percentage, not fractinoal
+    if twin_read.snpmer_id_threshold.is_some(){
+        assert!(twin_read.snpmer_id_threshold.unwrap() > 1.1);
+    }
 }
 
 pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[u32]) -> (usize, usize){
@@ -430,7 +453,6 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
             let start = std::time::Instant::now();
             let map_info = tr_map_info_dict.get(&i).unwrap();
             let breakpoints = cov_mapping_breakpoints(*map_info);
-            log::trace!("Breakpoints time: {:?}", start.elapsed());
 
             if log::log_enabled!(log::Level::Trace) {
                 let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
@@ -454,9 +476,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 }
             }
 
-            let start = std::time::Instant::now();
             let splitted_reads = split_read_and_populate_depth(twin_read, map_info, breakpoints, args);
-            log::trace!("Split time: {:?}", start.elapsed());
             for new_read in splitted_reads{
                 new_twin_reads_bools.lock().unwrap().push((new_read, true));
             }
@@ -1128,5 +1148,129 @@ mod tests {
         let start = std::time::Instant::now();
         let _depths = depths_at_points(&lapper, 0, 1000, 1);
         dbg!(start.elapsed());
+    }
+
+    /// Creates a basic TwinRead with evenly spaced minimizers
+    fn make_test_read() -> TwinRead {
+        TwinRead {
+            minimizer_positions: vec![10, 20, 30, 40, 50],
+            minimizer_kmers: vec![0, 0, 0, 0, 0],
+            k: 21,
+            ..Default::default()
+        }
+    }
+
+    /// Creates a mapping interval with sensible defaults
+    fn make_interval(start: u32, stop: u32) -> (u32, u32, f32, bool) {
+        (start, stop, 1.0, true)  // Default to 100% identity and maximal overlap
+    }
+
+    /// Creates a TwinReadMapping from a list of (start, stop) positions
+    /// Optionally override identity and maximal_overlap with full tuples
+    fn make_test_mapping<T>(intervals: T) -> TwinReadMapping 
+    where 
+        T: IntoIterator<Item = (u32, u32, f32, bool)>
+    {
+        let lapper_intervals = intervals
+            .into_iter()
+            .enumerate()
+            .map(|(i, (start, stop, identity, maximal))| Interval {
+                start,
+                stop,
+                val: SmallTwinOl {
+                    query_id: i as u32,
+                    snpmer_identity: identity,
+                    maximal_overlap: maximal,
+                    ..Default::default()
+                },
+            })
+            .collect();
+
+        TwinReadMapping {
+            tr_index: 0,
+            mapping_info: MappingInfo {
+                median_depth: 0.0,
+                minimum_depth: 0.0,
+                mapping_boundaries: Lapper::new(lapper_intervals),
+                present: true,
+                length: 1000,
+            },
+        }
+    }
+
+    #[test]
+    fn test_basic_coverage() {
+        let mut read = make_test_read();
+        // Single interval covering whole region
+        let mapping = make_test_mapping(vec![make_interval(0, 100)]);
+        
+        populate_depth_from_map_info(&mut read, &mapping, 0, 100);
+
+        assert!(read.min_depth_multi.is_some());
+        assert!(read.median_depth.is_some());
+        if let Some(min_depths) = read.min_depth_multi {
+            assert_relative_eq!(min_depths[0], 1.0, epsilon = 0.001);
+        }
+    }
+
+    #[test]
+    fn test_varying_identity() {
+        let mut read = make_test_read();
+        let mapping = make_test_mapping(vec![
+            (0, 100, 1.0, true),    // 100% identity
+            (0, 100, 0.998, true),   // 95% identity
+            (0, 100, 0.991, true),   // 90% identity
+        ]);
+        
+        populate_depth_from_map_info(&mut read, &mapping, 0, 100);
+
+        if let Some(min_depths) = read.min_depth_multi {
+            assert_relative_eq!(min_depths[0], 3.0, epsilon = 0.001);
+            assert_relative_eq!(min_depths[1], 2.0, epsilon = 0.001);
+            assert_relative_eq!(min_depths[2], 1.0, epsilon = 0.001);
+        }
+    }
+
+    #[test]
+    fn test_varying_identity_adaptive() {
+        let mut read = make_test_read();
+        let mapping = make_test_mapping(vec![
+            (0, 100, 1.0, true),    // 100% identity
+            (0, 100, 0.998, true),   // 95% identity
+            (0, 100, 0.997, true),   // 95% identity
+            (0, 100, 0.996, true),   // 95% identity
+            (0, 100, 0.995, true),   // 95% identity
+            (0, 100, 0.994, true),   // 95% identity
+            (0, 100, 0.993, true),   // 95% identity
+            (0, 100, 0.992, true),   // 95% identity
+            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 0.991, true),   // 90% identity
+        ]);
+        
+        populate_depth_from_map_info(&mut read, &mapping, 0, 100);
+
+        dbg!(&read.snpmer_id_threshold);
+        assert!(read.snpmer_id_threshold.unwrap() < 99.9);
+        assert!(read.snpmer_id_threshold.unwrap() > 1.0);
+    }
+
+    #[test]
+    fn test_gaps_in_coverage() {
+        let mut read = make_test_read();
+        let mapping = make_test_mapping(vec![
+            make_interval(0, 25),     // First quarter
+            make_interval(75, 100),   // Last quarter
+        ]);
+        
+        populate_depth_from_map_info(&mut read, &mapping, 0, 100);
+
+        if let Some(min_depths) = read.min_depth_multi {
+            assert!(min_depths[0] < 1.0);  // Should be less than 1 due to gaps
+        }
     }
 }

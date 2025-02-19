@@ -302,7 +302,6 @@ impl PoaConsensusBuilder {
             let ol = &interval.val;
             let ar = &ol.alignment_result.as_ref().unwrap();
             //TODO assume qualities exist
-            let start = std::time::Instant::now();
             let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
             let query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
             let query_seq_u8: Vec<u8>;
@@ -325,8 +324,6 @@ impl PoaConsensusBuilder {
                     .collect();
                 query_quals_u8 = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
             }
-            log::trace!("Conversion took: {:?}", start.elapsed());
-            let start = std::time::Instant::now();
             self.add_seq(
                 query_seq_u8,
                 query_quals_u8,
@@ -334,7 +331,6 @@ impl PoaConsensusBuilder {
                 ar.r_start,
                 ar.q_start,
             );
-            log::trace!("Processing took: {:?}", start.elapsed());
         })
     }
 }

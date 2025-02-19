@@ -313,7 +313,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                                 twin_read.retain_mini_positions(solid_mini_positions);
                                 twin_read.retain_snpmer_positions(solid_snpmer_positions);
 
-                                //MinHash top ~ 1/30 * read_length of solid snpmers 
+                                //MinHash top ~ 1/20 * read_length of solid snpmers 
                                 minhash_top_snpmers(&mut twin_read, MAX_FRACTION_OF_SNPMERS_IN_READ);
 
                                 let mut vec = twrv.lock().unwrap();
@@ -362,10 +362,16 @@ fn minhash_top_snpmers(twin_read: &mut TwinRead, max_fraction: f64){
         return;
     }
 
+    log::debug!("MinHashing read {}. Top {} snpmers for read of length {} with {} snpmers", &twin_read.id, top, twin_read.base_length, twin_read.snpmer_kmers.len());
+
     let split_mask = !(3 << (twin_read.k - 1));
 
     let mut splitmers_hash = twin_read.snpmer_kmers.iter().map(|x| mm_hash_64(x & split_mask)).collect::<Vec<_>>();
     splitmers_hash.sort();
+
+    if top >= splitmers_hash.len(){
+        return;
+    }
 
     let hash_cutoff = splitmers_hash[top];
     let retain_positions = twin_read.snpmer_kmers.iter().enumerate().filter(|x| splitmers_hash[x.0] <= hash_cutoff).map(|x| x.0).collect::<FxHashSet<_>>();

@@ -2853,13 +2853,13 @@ impl UnitigGraph {
                 .collect::<Vec<_>>();
 
             for (i, soln) in solutions.iter().enumerate() {
-                //println!("{:?}", &soln.path_nodes);
-                //println!("{:?}", &soln.path);
                 if soln.path.len() == 0 {
                     continue;
                 }   
                 let weight = starting_weight * probabilities[i];
-                //println!("Score: {}, Weighted {}", soln.score, weight);
+                // println!("{:?}", &soln.path_nodes);
+                // println!("{:?}", &soln.path);
+                // println!("Score: {}, Weighted {}", soln.score, weight);
                 for (j, edge_id) in soln.path.iter().enumerate() {
                     let count = edge_count
                         .entry((*edge_id, soln.path_nodes[j]))
@@ -4352,10 +4352,10 @@ mod tests {
 
         //Want:  w(e3) ~ w(e1)
         let n0 = builder.add_node(100, 100.0);
-        let n1 = builder.add_node(100, 80.0);
-        let n2 = builder.add_node(10, 10.0);
-        let n3 = builder.add_node(100, 5000.);
-        let n4 = builder.add_node(100, 5000.);
+        let n1 = builder.add_node(100, 100.0);
+        let n2 = builder.add_node(10, 50.0);
+        let n3 = builder.add_node(100, 50000.);
+        let n4 = builder.add_node(100, 50000.);
 
         let e0 = builder.add_edge(n0, n1, 5000, true, true);
         let e1 = builder.add_edge(n0, n2, 5000, true, true);

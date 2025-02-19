@@ -5,6 +5,7 @@ use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use std::collections::VecDeque;
 use bio_seq::seq::Seq;
+use bio_seq::prelude::*;
 
 //create new alias kmer = u64
 pub type Kmer64 = u64;
@@ -478,9 +479,10 @@ pub fn get_twin_read_syncmer(
     }
 
     let mut qual_seq : Option<Seq<QualCompact3>> = None;
-    if let Some(qualities) = qualities{
+    if let Some(mut qualities) = qualities{
         qual_seq = Some(qualities.try_into().unwrap());
     }
+    let dna_seq: Seq<Dna> = string.try_into().unwrap();
 
     Some(TwinRead{
         snpmer_kmers,
@@ -491,7 +493,7 @@ pub fn get_twin_read_syncmer(
         id,
         k: k as u8,
         base_length: len,
-        dna_seq: string.try_into().unwrap(),
+        dna_seq,
         qual_seq: qual_seq,
         est_id: seq_id,
         outer: false,

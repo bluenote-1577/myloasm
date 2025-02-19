@@ -990,7 +990,6 @@ pub fn map_reads_to_unitigs(
                 hit.shared_snpmers,
             ).unwrap();
 
-            log::trace!("Time elapsed {:?} sce", start.elapsed());
             let mut map = mapping_boundaries_map.lock().unwrap();
             let vec = map.entry(hit.i2).or_insert(vec![]);
             let small_twin_ol = SmallTwinOl{
@@ -1042,8 +1041,8 @@ pub fn map_reads_to_unitigs(
         mut_node.set_mapping_info(map_info);
     }
 
-    log::info!("Number of alignments: {}", number_of_alignments);
-    log::info!("Average cigar string length: {}", cigar_string_lengths.iter().sum::<usize>() as f64 / cigar_string_lengths.len() as f64);
+    log::debug!("Number of alignments: {}", number_of_alignments);
+    log::debug!("Average cigar string length: {}", cigar_string_lengths.iter().sum::<usize>() as f64 / cigar_string_lengths.len() as f64);
 }
 
 fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {

@@ -298,10 +298,11 @@ pub fn log_distribution_distance(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v2: &
         let iqr_weight  = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
         weights.push(iqr_weight + 1.);
     }
+
+    //This is wrong TODO
     let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
 
     return Some(weighted_distance);
-    
 }
 
 #[inline]
@@ -370,5 +371,37 @@ mod tests {
         dbg!(log_distribution_distance(&v1, &v2).unwrap());
         assert!(log_distribution_distance(&v1, &v2).unwrap() - 2. * (num/denom).ln().abs() < 0.0001);
 
+    }
+
+    #[test]
+    fn test_log_dist_iqrs() {
+        let v1 = vec![([10.;3], 1), ([5.;3], 1), ([5.;3], 1), ([5.;3], 1), ([10.;3], 1)];
+        let v2 = vec![([10.;3], 1)];
+        let dist1 = log_distribution_distance(&v1, &v2).unwrap();
+        dbg!(dist1);
+
+        let v1 = vec![([5.;3], 1)];
+        let v2 = vec![([10.;3], 1)];
+        let dist2 = log_distribution_distance(&v1, &v2).unwrap();
+        dbg!(dist2);
+
+        //Wider distribution -> less distance
+        assert!(dist2 > dist1);
+    }
+
+    #[test]
+    fn test_log_dist_sample_size_consideration() {
+        let v1 = vec![([10.;3], 1), ([5.;3], 1), ([5.;3], 1), ([5.;3], 1), ([10.;3], 1)];
+        let v2 = vec![([10.;3], 1), ([10.;3], 1), ([10.;3], 1), ([10.;3], 1), ([10.;3], 1)];
+        let dist1 = log_distribution_distance(&v1, &v2).unwrap();
+        dbg!(dist1);
+
+        let v1 = vec![([10.;3], 1), ([5.;3], 1), ([5.;3], 1), ([5.;3], 1), ([10.;3], 1)];
+        let v2 = vec![([10.;3], 1)];
+        let dist2 = log_distribution_distance(&v1, &v2).unwrap();
+        dbg!(dist2);
+
+        //Wider distribution -> less distance
+        assert!(dist1 > dist2);
     }
 }

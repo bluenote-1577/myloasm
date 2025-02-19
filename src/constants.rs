@@ -18,10 +18,11 @@ pub const ENDPOINT_MAPPING_FUZZ : u32 = 200;
 pub const RNG_SEED: [u8; 32] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 pub const PSEUDOCOUNT: f64 = 3.;
 pub const ID_THRESHOLD_ITERS: usize = 3;
-pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.995, 0.9975, 1.0];
+//pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.995, 0.9975, 1.0];
+pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.99, 0.9975, 1.0];
 //pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.0, 0.0, 1.0];
 pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.333, 0.333, 0.333];
-pub const MIN_COV_READ: usize = 4;
+pub const MIN_COV_READ: usize = 5;
 pub const SUB_MATRIX: block_aligner::scores::NucMatrix = block_aligner::scores::NucMatrix::new_simple(6, -4);
 pub const GAPS: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -5, extend: -3 };
 pub const MIN_BLOCK_SIZE: usize = 32;
@@ -30,5 +31,5 @@ pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::G
 pub const MAX_OL_POLISHING: usize = 75;
 pub const READ_BLOCK_SIZE_FOR_COVERAGE: usize = 50_000;
 
-//At most 1/30 k-mers are snpmers. 
-pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./30.;
+//At most 1/20 k-mers are snpmers. 
+pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./20.;

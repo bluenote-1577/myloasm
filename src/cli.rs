@@ -77,6 +77,10 @@ pub struct Cli {
     #[arg(long, default_value_t=30, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
+    /// Minimum overlap length for graph construction
+    #[arg(long, default_value_t=1000, help_heading = "Overlap Parameters")]
+    pub min_ol: usize,
+
     /// Maximum bubble length to pop; keep alternates
     #[arg(long, default_value_t=500000, help_heading = "Graph Parameters")]
     pub max_bubble_threshold: usize,

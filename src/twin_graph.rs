@@ -301,7 +301,9 @@ impl OverlapTwinGraph{
             if let Some(twin_reads) = twin_reads{
                 let read1_snpmer_id_thresh = twin_reads[edge.node1].snpmer_id_threshold.unwrap();
                 let read2_snpmer_id_thresh = twin_reads[edge.node2].snpmer_id_threshold.unwrap();
-                snpmer_threshold = read1_snpmer_id_thresh.min(read2_snpmer_id_thresh);
+                //snpmer_threshold = read1_snpmer_id_thresh.min(read2_snpmer_id_thresh);
+                // TODO try more selective... 
+                snpmer_threshold = read1_snpmer_id_thresh.max(read2_snpmer_id_thresh);
             }
             // Good overlap
             if same_strain_edge(edge, c, snpmer_threshold, snpmer_error_rate_strict){
@@ -320,8 +322,7 @@ impl OverlapTwinGraph{
             let mut node1_good_found = false;
             for edge_id in edge_nd1{
                 if let Some(edge) = &self.edges[*edge_id]{
-                    //TODO this is wrong
-                    if edge.diff_snpmers == 0{
+                    if same_strain_edge(edge, c, snpmer_threshold, snpmer_error_rate_strict){
                         node1_good_found = true;
                         break;
                     }
@@ -331,8 +332,7 @@ impl OverlapTwinGraph{
             let mut node2_good_found = false;
             for edge_id in edge_nd2{
                 if let Some(edge) = &self.edges[*edge_id]{
-                    //TODO this is wrong...
-                    if edge.diff_snpmers == 0{
+                    if same_strain_edge(edge, c, snpmer_threshold, snpmer_error_rate_strict){
                         node2_good_found = true;
                         break;
                     }
@@ -637,7 +637,7 @@ pub fn comparison_to_overlap(twlaps: Vec<TwinOverlap>, twin_reads: &[TwinRead], 
         let aln_len1 = twlap.end1 - twlap.start1;
         let aln_len2 = twlap.end2 - twlap.start2;
         let overlap_hang_length = 750;
-        if aln_len1.max(aln_len2) < 1000 {
+        if aln_len1.max(aln_len2) < args.min_ol{
             return vec![];
         }
         
@@ -1093,6 +1093,7 @@ pub fn same_strain_edge(edge: &ReadOverlapEdgeTwin, c: usize, snpmer_threshold: 
 }
 
 pub fn same_strain(minimizers: usize, snp_diff: usize, snp_shared: usize,  c: u64, snpmer_threshold: f64, snpmer_error_rate: f64) -> bool {
+    assert!(snpmer_threshold > 1.0); // Some ambiguity with percentages vs fractions...
     let identity = id_est(minimizers, snp_diff, c);
     let high_id;
     if identity >= snpmer_threshold / 100.{

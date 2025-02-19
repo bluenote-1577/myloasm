@@ -47,7 +47,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
 
         //Output user logging info at 10% intervals
         if reset_count == num_passing_nodes/10{
-            log::info!("Polished {}% of contigs...", (total_count as f64/num_passing_nodes as f64)*100.0);
+            log::info!("Polished {:.2}% of contigs...", (total_count as f64/num_passing_nodes as f64)*100.0);
             reset_count = 0;
         }
 

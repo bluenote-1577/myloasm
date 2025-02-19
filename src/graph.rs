@@ -148,11 +148,14 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
                 }
                 //Circular o --> x
                 //          ^  // 
-                for &edge in node.both_edges() {
-                    let edge = self.edges.get(edge).unwrap().as_ref().unwrap();
-                    log::trace!("{:?}",&edge);
+                if log::log_enabled!(log::Level::Trace) {
+                    log::trace!("{} Circular path detected", node_idx);
+                    for &edge in node.both_edges() {
+                        let edge = self.edges.get(edge).unwrap().as_ref().unwrap();
+                        log::trace!("{:?}",&edge);
+                    }
+                    log::trace!("{}, {}, {:?}, {:?}, {:?}", in_deg, out_deg, node.in_edges(), node.out_edges(), previous_node);
                 }
-                log::trace!("{}, {}, {:?}, {:?}, {:?}", in_deg, out_deg, node.in_edges(), node.out_edges(), previous_node);
                 return vec![];
             }
         } else if in_deg == 1 && out_deg != 1 {
