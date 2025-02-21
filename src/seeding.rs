@@ -479,7 +479,7 @@ pub fn get_twin_read_syncmer(
     }
 
     let mut qual_seq : Option<Seq<QualCompact3>> = None;
-    if let Some(mut qualities) = qualities{
+    if let Some(qualities) = qualities{
         qual_seq = Some(qualities.try_into().unwrap());
     }
     let dna_seq: Seq<Dna> = string.try_into().unwrap();

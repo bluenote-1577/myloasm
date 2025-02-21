@@ -22,14 +22,15 @@ use fxhash::FxHashSet;
 pub struct TwinReadMapping {
     pub tr_index: usize,
     pub mapping_info: MappingInfo,
+    pub all_intervals: Vec<BareInterval>,
 }
 
 impl NodeMapping for TwinReadMapping {
     fn median_mapping_depth(&self) -> f64 {
         self.mapping_info.median_depth
     }
-    fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
-        &self.mapping_info.mapping_boundaries
+    fn max_mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
+        &self.mapping_info.max_mapping_boundaries
     }
     fn min_mapping_depth(&self) -> f64 {
         self.mapping_info.minimum_depth
@@ -44,7 +45,7 @@ impl NodeMapping for TwinReadMapping {
         self.mapping_info.length
     }
     fn mapped_indices(&self) -> Vec<usize> {
-        self.mapping_boundaries().iter().map(|x| x.val.query_id as usize).collect()
+        self.max_mapping_boundaries().iter().map(|x| x.val.query_id as usize).collect()
     }
 }
 
@@ -61,7 +62,7 @@ pub fn median_and_min_depth_from_lapper_new(
     // Filter intervals based on snpmer_identity and maximal_overlap
     let intervals_cutoff = lapper
         .iter()
-        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff) && x.val.maximal_overlap)
+        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff))
         .map(|x| x.clone())
         .collect::<Vec<_>>();
     let lapper_cutoff = Lapper::new(intervals_cutoff);
@@ -147,7 +148,7 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SmallTwinOl>, sampl
     let mut depths = vec![];
     let intervals_cutoff = lapper
         .iter()
-        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff) && x.val.maximal_overlap)
+        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff))
         .map (|x| x.clone())
         .collect::<Vec<_>>();
     let lapper_cutoff = Lapper::new(intervals_cutoff);
@@ -198,22 +199,22 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, SmallTwinOl>, sampl
     return Some((median_over_min_blocks as f64, median_over_median_blocks as f64));
 }
 
-pub fn cov_mapping_breakpoints<T>(mapped: &T) -> Vec<Breakpoints>
-where
-    T: NodeMapping,
+pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: u32) -> Vec<Breakpoints>
 {
-    if mapped.mapping_boundaries().intervals.is_empty() {
+    if intervals.is_empty() {
         return vec![];
     }
     let mut breakpoints = vec![];
     let sampling = 5;
-    let coverages_at_sampling = depths_at_points(
-        mapped.mapping_boundaries(),
+    let coverages_at_sampling = depths_at_points_interval(
+        intervals,
         0,
-        mapped.reference_length() as u32,
+        reference_length,
         sampling,
     );
-    let depths = mapped.mapping_boundaries().depth().collect::<Vec<_>>();
+    let intervals = intervals.iter().map(|x| Interval{start: x.start, stop: x.stop, val: false}).collect::<Vec<Interval<u32,bool>>>();
+    let lapper = Lapper::new(intervals);
+    let depths = lapper.depth().collect::<Vec<_>>();
     if depths.len() < 3 {
         return vec![];
     }
@@ -227,9 +228,8 @@ where
     }
     //<xxxxx|--------
     //Cut bad left endpoints. 
-    let depth_start_right = if mapped.reference_length() > (ENDPOINT_MAPPING_FUZZ as usize) + depths[0].stop as usize{
-        mapped
-            .mapping_boundaries()
+    let depth_start_right = if reference_length as usize > (ENDPOINT_MAPPING_FUZZ as usize) + depths[0].stop as usize{
+        lapper 
             .count(depths[0].stop + ENDPOINT_MAPPING_FUZZ - 1, depths[0].stop + ENDPOINT_MAPPING_FUZZ)
     } else {
         0
@@ -251,7 +251,7 @@ where
         let cov = interval.val as usize;
         let cond1 = last_cov > 3 && next_cov > 3 && cov == 1;
         let cond2;
-        if start > 200 && stop + 200 < mapped.reference_length() {
+        if start > 200 && stop + 200 < reference_length as usize {
             // let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
             // let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
 
@@ -264,7 +264,7 @@ where
         let cond3 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov < 3;
         let cond4 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov == 3;
         if start > 200
-            && start as usize + 200 < mapped.reference_length()
+            && start as usize + 200 < reference_length as usize
             && (cond1 || cond2 || cond3 || cond4)
         {
             breakpoints.push(Breakpoints {
@@ -277,7 +277,7 @@ where
 
     // --------|xxxxx>
     if depths[depths.len() - 1].start > ENDPOINT_MAPPING_FUZZ {
-        let depth_stop_left = mapped.mapping_boundaries().count(
+        let depth_stop_left = lapper.count(
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ,
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ - 1,
         );
@@ -293,10 +293,10 @@ where
     }
 
     // -----|ooooo>
-    if depths[depths.len() - 1].stop as usize + (ENDPOINT_MAPPING_FUZZ as usize) < mapped.reference_length() {
+    if depths[depths.len() - 1].stop as usize + (ENDPOINT_MAPPING_FUZZ as usize) < reference_length as usize {
         breakpoints.push(Breakpoints {
             pos1: depths[depths.len() - 1].stop as usize,
-            pos2: mapped.reference_length(),
+            pos2: reference_length as usize ,
             cov: depths[depths.len() - 1].val as usize,
         });
     }
@@ -304,7 +304,7 @@ where
     return breakpoints;
 }
 
-fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
+fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
 
     let mut new_reads = vec![];
     break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
@@ -313,8 +313,10 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
     let k = twin_read.k as usize;
     
     for (i,break_point) in break_points.iter().enumerate(){
+
         let bp_start = break_point.pos1;
         let bp_end = break_point.pos2;
+
         if bp_start - last_break > MIN_READ_LENGTH{
             let mut new_read = TwinRead::default();
             //Repopulate minimizers and snpmers. This is kind of bad; should have a method that does this...
@@ -324,21 +326,26 @@ fn split_read_and_populate_depth(twin_read: TwinRead, mapping_info: &TwinReadMap
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
             new_read.k = twin_read.k;
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
+
             if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
                 new_read.qual_seq = Some(qual_seq[last_break..bp_start].to_owned());
             }
+
             new_read.base_length = new_read.dna_seq.len();
             new_read.base_id = twin_read.base_id.clone();
+
             if break_points.len() > 1 {
                 new_read.split_chimera = true;
             }
             else{
                 populate_depth_from_map_info(&mut new_read, mapping_info, last_break, bp_start);
             }
+
             new_reads.push(new_read);
         }
         last_break = bp_end;
     }
+    twin_read.clear();
     return new_reads;
 }
 
@@ -347,51 +354,42 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
 
-    //Subintervals; much more efficient for the function call.
-    let max_overlap_lapper: Lapper<u32, SmallTwinOl>; 
-    let intervals = mapping_info.mapping_boundaries().iter().filter(|x| x.val.maximal_overlap).map(|x| x.clone()).collect::<Vec<_>>();
-    max_overlap_lapper = Lapper::new(intervals);
-
     for (i,id) in IDENTITY_THRESHOLDS.iter().enumerate() {
-        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(&max_overlap_lapper, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(mapping_info.max_mapping_boundaries(), SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
         median_depth = median_depth_t;
         min_depths[i] = min_depth;
     }
 
     // Change snpmer id threshold based on coverage
     if twin_read.snpmer_id_threshold.is_none(){
-        let sufficient_gap = min_depths[0] > 3.0 * min_depths[ID_THRESHOLD_ITERS - 1];
-        let small_specific_depth = min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64;
+
+        let step = 0.10 / 100.;
+
+        let sufficient_gap = min_depths[0] > 5.0 * min_depths[ID_THRESHOLD_ITERS - 1];
         let sufficient_depth = min_depths[0] >= MIN_COV_READ as f64;
-        if sufficient_gap && small_specific_depth && sufficient_depth{
-            //0.05% increments; 100 -> 99.95 -> 99.90 -> 99.85 ...
+        let strain_specific_not_enough = min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64; // Always
+        let pass_cond_1 = sufficient_gap;
+        let pass_cond_2 = strain_specific_not_enough;
+
+        let mut prev_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1];
+
+        if (pass_cond_1 || pass_cond_2) && sufficient_depth {
+            //0.10% increments; 100 -> 99.90 -> 99.8 ...
             let mut min_depth_prev = min_depths[ID_THRESHOLD_ITERS - 1];
-            let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - 0.05 / 100.;
-            let mut unchanged_depth_attempts = 0;
+            let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - step;
             loop{
-                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&max_overlap_lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(mapping_info.max_mapping_boundaries(), SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
 
-                if min_depth_try >= MIN_COV_READ as f64  && min_depth_try < min_depth_prev * 1.50 {
-                    log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, try_id * 100., min_depth_try);
-                    twin_read.snpmer_id_threshold = Some(try_id * 100.);
-                    break;
-                }
-                else if unchanged_depth_attempts == 10 {
-                    log::trace!("Read {} min_depth_identity:{} cov:{} UNCHANGED", twin_read.id, try_id * 100., min_depth_try);
-                    twin_read.snpmer_id_threshold = Some(try_id * 100.);
+                //if min_depth_try >= MIN_COV_READ as f64  && min_depth_try < min_depth_prev * 1.50 {
+                if min_depth_try <= min_depth_prev * 1.50 && min_depth_try >= MIN_COV_READ as f64 {
+                    log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, prev_id * 100., min_depth_try);
+                    twin_read.snpmer_id_threshold = Some(prev_id * 100.);
                     break;
                 }
 
-                if min_depth_prev == min_depth_try{
-                    unchanged_depth_attempts += 1;
-                }
-                else{
-                    unchanged_depth_attempts = 0;
-                }
-
-                try_id -= 0.05 / 100.;
+                prev_id = try_id;
                 min_depth_prev = min_depth_try;
-                
+                try_id -= step;
             }
         }
         else{
@@ -450,12 +448,11 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
 
     twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
         if tr_map_info_dict.contains_key(&i){
-            let start = std::time::Instant::now();
             let map_info = tr_map_info_dict.get(&i).unwrap();
-            let breakpoints = cov_mapping_breakpoints(*map_info);
+            let breakpoints = cov_mapping_breakpoints(&map_info.all_intervals, map_info.reference_length() as u32);
 
             if log::log_enabled!(log::Level::Trace) {
-                let depths = map_info.mapping_boundaries().depth().collect::<Vec<_>>();
+                let depths = map_info.max_mapping_boundaries().depth().collect::<Vec<_>>();
                 let writer = &mut writer.lock().unwrap();
                 for depth in depths{
                     let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
@@ -484,6 +481,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
         else{
             new_twin_reads_bools.lock().unwrap().push((twin_read, false));
         }
+
     });
 
     let mut ntr_bools = new_twin_reads_bools.into_inner().unwrap();
@@ -524,6 +522,64 @@ pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: us
     }
 
     return false;
+}
+
+pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)> {
+    if intervals.is_empty() || start > end || step == 0 {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    let points = (end - start) / step + 1;
+    result.reserve(points as usize);
+    
+    let mut pos = start;
+    let mut active_intervals = FxHashSet::default();
+    let mut next_interval_idx = 0;
+    let mut stops_of_active_intervals: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+
+    while pos <= end {
+        let mut toremove_intervals = vec![];
+        let mut toremove_stops = vec![];
+
+        // Remove intervals that end before or at current position
+        for (stop,idsxs) in stops_of_active_intervals.iter(){
+            if *stop <= pos{
+                toremove_stops.push(*stop);
+                toremove_intervals.extend(idsxs.iter().cloned());
+            }
+            else{
+                break;
+            }
+        }
+
+        for idx in toremove_intervals.iter() {
+            active_intervals.remove(idx);
+        }
+
+        for stop in toremove_stops.iter() {
+            stops_of_active_intervals.remove(stop);
+        }
+
+        // Add new intervals that start before or at current position
+        while next_interval_idx < intervals.len() 
+            && intervals[next_interval_idx].start <= pos 
+        {
+            if intervals[next_interval_idx].stop > pos {
+                active_intervals.insert(next_interval_idx);
+                stops_of_active_intervals.entry(intervals[next_interval_idx].stop).or_insert(vec![]).push(next_interval_idx);
+            }
+            next_interval_idx += 1;
+        }
+
+        // Record depth at current position
+        result.push((pos, active_intervals.len()));
+
+        // Move to next position
+        pos = pos + step;
+    }
+
+    result
 }
 
 pub fn depths_at_points(lapper: &Lapper<u32, SmallTwinOl>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)> {
@@ -592,10 +648,9 @@ mod tests {
     use approx::assert_relative_eq;
 
 
-    fn create_small_twinol(identity: f32, maximal: bool) -> SmallTwinOl {
+    fn create_small_twinol(identity: f32, _maximal: bool) -> SmallTwinOl {
         SmallTwinOl {
             snpmer_identity: identity,
-            maximal_overlap: maximal,
             ..Default::default()
         }
     }
@@ -947,7 +1002,6 @@ mod tests {
                 stop: 100,
                 val: SmallTwinOl {
                     snpmer_identity: 1.0,
-                    maximal_overlap: true,
                     ..Default::default()
                 }
             },
@@ -956,7 +1010,6 @@ mod tests {
                 stop: 75,
                 val: SmallTwinOl {
                     snpmer_identity: 1.0,
-                    maximal_overlap: true,
                     ..Default::default()
                 }
             },
@@ -997,7 +1050,6 @@ mod tests {
                 stop: 100,
                 val: SmallTwinOl {
                     snpmer_identity: 0.5, // Below cutoff
-                    maximal_overlap: true,
                     ..Default::default()
                 }
             },
@@ -1174,13 +1226,12 @@ mod tests {
         let lapper_intervals = intervals
             .into_iter()
             .enumerate()
-            .map(|(i, (start, stop, identity, maximal))| Interval {
+            .map(|(i, (start, stop, identity, _))| Interval {
                 start,
                 stop,
                 val: SmallTwinOl {
                     query_id: i as u32,
                     snpmer_identity: identity,
-                    maximal_overlap: maximal,
                     ..Default::default()
                 },
             })
@@ -1191,10 +1242,11 @@ mod tests {
             mapping_info: MappingInfo {
                 median_depth: 0.0,
                 minimum_depth: 0.0,
-                mapping_boundaries: Lapper::new(lapper_intervals),
+                max_mapping_boundaries: Lapper::new(lapper_intervals),
                 present: true,
                 length: 1000,
             },
+            all_intervals: vec![],
         }
     }
 

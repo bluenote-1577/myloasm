@@ -22,9 +22,8 @@ spmc = "0.3"
 dashmap = "6"
 fishers_exact = "1.0"
 fxhash = "0"
-bio-seq = { version = "*", features = ["serde"]}
+bio-seq = { version = "0.14", features = ["serde"]}
 rust-lapper = "1.1"
-minimap2 = {version = "0.1"}
 memory-stats = "1.2.0"
 fastbloom = "0.8.0"
 crossbeam-channel = "0.5.13"

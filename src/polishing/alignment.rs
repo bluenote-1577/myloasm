@@ -5,7 +5,6 @@ use crate::constants::MIN_BLOCK_SIZE;
 use crate::constants::SUB_MATRIX;
 use crate::types::*;
 use bio_seq::prelude::*;
-use bio_seq::seq::ReverseComplement;
 use block_aligner::{cigar::*, scan_block::*, scores::*};
 
 fn get_length_from_cigar(cigar: &Vec<OpLen>) -> (usize, usize) {
@@ -45,7 +44,7 @@ pub fn get_full_alignment(
     let qlen = q_seq_redir.len() as u32;
     let end_ind = chain.len() - 1;
     if overlap.chain_reverse {
-        _q_seq_rev = Some(q_seq_redir.revcomp());
+        _q_seq_rev = Some(q_seq_redir.to_revcomp());
         q_seq = _q_seq_rev.as_ref().unwrap();
         q_start = (qlen - chain[end_ind].pos1 - k) as usize;
         r_start = chain[end_ind].pos2 as usize;

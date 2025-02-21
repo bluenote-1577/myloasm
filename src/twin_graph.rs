@@ -339,7 +339,7 @@ impl OverlapTwinGraph{
                 }
             }
 
-            if (node1_good_found || node2_good_found) || !rescue {
+            if (node1_good_found && node2_good_found) || !rescue {
                 edges_to_remove.insert(i);
                 self.edges[i] = None;
             }
@@ -861,7 +861,7 @@ pub fn print_graph_stdout<T>(graph: &OverlapTwinGraph, file: T) where T: AsRef<s
 }
 
 
-pub fn remove_contained_reads_twin<'a>(outer_indices: Option<Vec<usize>>, twin_reads: &'a [TwinRead], args: &Cli) -> Vec<usize>{
+pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
     let inverted_index_hashmap =

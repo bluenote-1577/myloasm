@@ -118,7 +118,7 @@ impl PoaConsensusBuilder {
         let mut new_cons_i = std::mem::take(&mut cons[0]);
         for (i, bp) in breakpoints.into_iter().enumerate() {
             let mut new_cons_j = std::mem::take(&mut cons[i + 1]);
-            let ol_len = new_cons_j.len().min(window_len);
+            let ol_len = new_cons_i.len().min(new_cons_j.len().min(window_len));
 
             let break_pos_i = new_cons_i.len() - (ol_len - bp.0);
             let break_pos_j = bp.1;
@@ -308,12 +308,12 @@ impl PoaConsensusBuilder {
             let query_quals_u8: Vec<u8>;
             if ol.reverse {
                 query_seq_u8 = query_seq
-                    .revcomp()
+                    .to_revcomp()
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
                     .collect();
                 query_quals_u8 = query_quals
-                    .revcomp()
+                    .to_revcomp()
                     .iter()
                     .map(|x| (x as u8) * 3 + 33)
                     .collect();

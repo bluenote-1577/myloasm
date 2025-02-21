@@ -61,7 +61,7 @@ pub struct BaseInfo {
 
 impl PartialEq for MappingInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.mapping_boundaries.intervals == other.mapping_boundaries.intervals
+        self.max_mapping_boundaries.intervals == other.max_mapping_boundaries.intervals
             && self.length == other.length
     }
 }
@@ -71,7 +71,7 @@ impl Default for MappingInfo {
         MappingInfo {
             median_depth: 0.0,
             minimum_depth: 0.0,
-            mapping_boundaries: Lapper::new(vec![]),
+            max_mapping_boundaries: Lapper::new(vec![]),
             present: false,
             length: 0,
         }
@@ -86,8 +86,8 @@ impl NodeMapping for UnitigNode {
         self.mapping_info.minimum_depth
     }
 
-    fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
-        &self.mapping_info.mapping_boundaries
+    fn max_mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
+        &self.mapping_info.max_mapping_boundaries
     }
     fn set_mapping_info(&mut self, mapping_info: MappingInfo) {
         self.mapping_info = mapping_info;
@@ -100,7 +100,7 @@ impl NodeMapping for UnitigNode {
     }
     fn mapped_indices(&self) -> Vec<usize> {
         self.mapping_info
-            .mapping_boundaries
+            .max_mapping_boundaries
             .iter()
             .map(|x| x.val.query_id as usize)
             .collect::<Vec<usize>>()
@@ -964,7 +964,7 @@ impl UnitigGraph {
             }
         }
 
-        log::debug!("Removing {} caps with <= 3 reads", unitigs_to_remove.len());
+        log::trace!("Removing {} caps with <= 3 reads", unitigs_to_remove.len());
         log::trace!("Unitigs to remove: {:?}", debug_ids);
         //Keep caps
         self.remove_nodes(&unitigs_to_remove, true);
@@ -1046,7 +1046,7 @@ impl UnitigGraph {
                 }
             }
         }
-        log::debug!(
+        log::trace!(
             "BUBBLE: Removed {} bubbles at max length {}",
             num_bubbles,
             max_length
@@ -1557,7 +1557,7 @@ impl UnitigGraph {
                 self.nodes[&edge.to_unitig].node_id
             );
         }
-        log::debug!("Z-EDGE: Cut {} z-edges", edges_to_remove.len());
+        log::trace!("Z-EDGE: Cut {} z-edges", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
         self.re_unitig();
     }
@@ -1957,7 +1957,7 @@ impl UnitigGraph {
                 args.c
             );
         }
-        log::debug!(
+        log::trace!(
             "BRIDGED: Cutting {} edges that have low relative confidence ({})",
             removed_edges.len(),
             ol_thresh
@@ -2495,7 +2495,7 @@ impl UnitigGraph {
                 let contig = self.nodes.get(contig_id_2).unwrap();
                 contig_str.push_str(&format!("{}, contained: {}, num reads: {} ", contig.node_id, cont_reads, contig.read_indices_ori.len()));
             }
-            log::debug!("Contig {} has strain repeats: {}", contig.node_id, contig_str);
+            log::trace!("Contig {} has strain repeats: {}", contig.node_id, contig_str);
         }
 
         return strain_repeats.into_iter().map(|(k,v)| (k, v.into_iter().map(|(k,_)| k).collect())).collect();
@@ -2654,7 +2654,8 @@ impl UnitigGraph {
 
         let other_covs = &other_unitig.read_min_depths_multi;
         //let cov_different = quantile_dist(coverages, other_covs);
-        let cov_different = log_distribution_distance(coverages, other_covs);
+        //let cov_different = log_distribution_distance(coverages, other_covs);
+        let cov_different = log_distribution_distance_new(coverages, other_covs);
 
         let start_unitig = &self.nodes[&start_unitig_id];
         let same_dir_edges =
@@ -2675,7 +2676,7 @@ impl UnitigGraph {
             .unwrap();
 
         // 99.5 - 100 -> e^(-1) 
-        let fsv_diff = 200.0 * (edge.edge_id_est(c) - max_fsv);
+        let fsv_diff = 100.0 * (edge.edge_id_est(c) - max_fsv);
 
         let cov1;
         let cov2;

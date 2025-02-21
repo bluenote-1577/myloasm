@@ -26,6 +26,7 @@
 //******************************
 
 use block_aligner::cigar::Operation;
+use rust_lapper::Interval;
 use smallvec::SmallVec;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,7 @@ use std::path::PathBuf;
 use bio_seq::prelude::*;
 use rust_lapper::Lapper;
 use block_aligner::cigar::OpLen;
+use std::cmp::Ordering;
 
 use crate::constants::ID_THRESHOLD_ITERS;
 
@@ -354,11 +356,12 @@ impl Codec for QualCompact3{
     }
 }
 
-impl Complement for QualCompact3 {
-    fn comp(&self) -> Self {
-        return *self 
+impl ComplementMut for QualCompact3{
+    fn comp(&mut self) {
     }
 }
+
+impl Complement for QualCompact3 {}
 
 impl TwinRead{
     pub fn clear(&mut self){
@@ -366,6 +369,10 @@ impl TwinRead{
         self.snpmer_kmers.clear();
         self.minimizer_positions.clear();
         self.snpmer_positions.clear();
+        self.minimizer_kmers.shrink_to_fit(); 
+        self.snpmer_kmers.shrink_to_fit();
+        self.minimizer_positions.shrink_to_fit();
+        self.snpmer_positions.shrink_to_fit();
     }
 
     pub fn minimizers(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
@@ -541,7 +548,7 @@ pub fn bits_to_ascii(bit_rep: u8) -> u8{
 pub struct MappingInfo {
     pub median_depth: f64,
     pub minimum_depth: f64,
-    pub mapping_boundaries: Lapper<u32, SmallTwinOl>,
+    pub max_mapping_boundaries: Lapper<u32, SmallTwinOl>,
     //pub kmer_counts: Vec<u32>,
     pub present: bool,
     pub length: usize,
@@ -550,7 +557,7 @@ pub struct MappingInfo {
 pub trait NodeMapping {
     fn median_mapping_depth(&self) -> f64;
     fn min_mapping_depth(&self) -> f64;
-    fn mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl>;
+    fn max_mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl>;
     fn set_mapping_info(&mut self, mapping_info: MappingInfo);
     fn mapping_info_present(&self) -> bool;
     fn reference_length(&self) -> usize;
@@ -562,15 +569,40 @@ pub struct SmallTwinOl{
     pub query_id: u32,
     pub snpmer_identity: f32,
     pub reverse: bool,
-    pub maximal_overlap: bool,
     pub alignment_result: Option<AlignmentResult>
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Eq)]
+pub struct BareInterval{
+    pub start: u32,
+    pub stop: u32
+}
+
+impl Ord for BareInterval
+{
+    #[inline]
+    fn cmp(&self, other: &BareInterval) -> Ordering {
+        match self.start.cmp(&other.start) {
+            Ordering::Less => Ordering::Less,
+            Ordering::Greater => Ordering::Greater,
+            Ordering::Equal => self.stop.cmp(&other.stop),
+        }
+    }
+}
+
+impl PartialOrd for BareInterval
+{
+    #[inline]
+    fn partial_cmp(&self, other: &BareInterval) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Eq for SmallTwinOl{}
 
 impl PartialEq for SmallTwinOl{
     fn eq(&self, other: &Self) -> bool{
-        self.query_id == other.query_id && self.snpmer_identity == other.snpmer_identity && self.reverse == other.reverse && self.maximal_overlap == other.maximal_overlap
+        self.query_id == other.query_id && self.snpmer_identity == other.snpmer_identity && self.reverse == other.reverse 
     }
 }
 

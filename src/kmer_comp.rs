@@ -362,7 +362,7 @@ fn minhash_top_snpmers(twin_read: &mut TwinRead, max_fraction: f64){
         return;
     }
 
-    log::debug!("MinHashing read {}. Top {} snpmers for read of length {} with {} snpmers", &twin_read.id, top, twin_read.base_length, twin_read.snpmer_kmers.len());
+    log::trace!("MinHashing read {}. Top {} snpmers for read of length {} with {} snpmers", &twin_read.id, top, twin_read.base_length, twin_read.snpmer_kmers.len());
 
     let split_mask = !(3 << (twin_read.k - 1));
 
@@ -411,6 +411,17 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
+    if args.no_snpmers{
+        log::info!("Skipping snpmer detection.");
+        return KmerGlobalInfo{
+            snpmer_info: vec![],
+            solid_kmers: solid_kmers,
+            high_freq_thresh: high_freq_thresh as f64,
+            read_files: paths_to_files
+        };
+    }
+
+    log::info!("Finding snpmers...");
     //Should be able to parallelize this, TODO
     for pair in big_kmer_map.into_iter(){
         let kmer = pair.0;
@@ -428,17 +439,6 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         }
     }
 
-    if args.no_snpmers{
-        log::info!("Skipping snpmer detection.");
-        return KmerGlobalInfo{
-            snpmer_info: vec![],
-            solid_kmers: solid_kmers,
-            high_freq_thresh: high_freq_thresh as f64,
-            read_files: paths_to_files
-        };
-    }
-
-    log::info!("Finding snpmers...");
     let potential_snps = Mutex::new(0);
     let snpmers = Mutex::new(vec![]);
     new_map_counts_bases.into_par_iter().for_each(|(split_kmer, c_and_b)|{

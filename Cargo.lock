@@ -107,9 +107,9 @@ dependencies = [
 
 [[package]]
 name = "bio-seq"
-version = "0.13.5"
+version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ed38e02e56d0a9455e95c182d78f1f06cf02aa76a846655eb982a05c28cfd19"
+checksum = "fca46dbfbc2f69d67a134ef22b352f1eff0172896d4f10c782610849416e3642"
 dependencies = [
  "bio-seq-derive",
  "bitvec",
@@ -119,9 +119,9 @@ dependencies = [
 
 [[package]]
 name = "bio-seq-derive"
-version = "4.9.0"
+version = "4.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55bbb3d9beb34e2ca5fdf750e524e363fd60b6d58a1beb6d912eccb7770c2646"
+checksum = "ce30cd6a0b4e2f90b9d9b7e1c5f56ae4839c5903bd7b4b9de375ce2e84e8f9eb"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -893,28 +893,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimap2"
-version = "0.1.21+minimap2.2.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a01677cfd97a5531c2b36ba7ade7e0c3222870a5c3579e237f84972c08a46d39"
-dependencies = [
- "libc",
- "minimap2-sys",
- "needletail 0.6.0",
-]
-
-[[package]]
-name = "minimap2-sys"
-version = "0.1.20+minimap2.2.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47d31565115502ac93fd101537bc1d6e32e56dd51538c42c82b927a3d58dad42"
-dependencies = [
- "cc",
- "libz-sys",
- "pkg-config",
-]
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,8 +920,7 @@ dependencies = [
  "gzp",
  "log",
  "memory-stats",
- "minimap2",
- "needletail 0.5.1",
+ "needletail",
  "ordered-float",
  "rand",
  "rayon",
@@ -1007,17 +984,6 @@ dependencies = [
  "flate2",
  "memchr",
  "xz2",
-]
-
-[[package]]
-name = "needletail"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f29a3c5015d6985f33318d154fa0c41315eb2e7df29432c844c74a83434bfe21"
-dependencies = [
- "buffer-redux",
- "bytecount",
- "memchr",
 ]
 
 [[package]]

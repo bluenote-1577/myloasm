@@ -725,9 +725,9 @@ pub fn get_minimizer_index_ref(
     mini_index
 }
 
-pub fn map_reads_to_outer_reads<'a>(
+pub fn map_reads_to_outer_reads(
     outer_read_indices: &[usize],
-    twin_reads: &'a [TwinRead],
+    twin_reads: &[TwinRead],
     args: &Cli,
 ) -> Vec<TwinReadMapping> {
     let mut ret = vec![];
@@ -806,17 +806,19 @@ pub fn map_reads_to_outer_reads<'a>(
                 {
                     let mut map = mapping_boundaries_map.lock().unwrap();
                     let vec = map.entry(hit.i2).or_insert(vec![]);
+
                     let small_twin_ol = SmallTwinOl{
                         query_id: rid as u32,
-                        //query_range: (hit.start1 as u32, hit.end1 as u32),
-                        //shared_minimizers: hit.shared_minimizers as u32,
                         snpmer_identity: identity as f32,
-                        maximal_overlap: max_overlap,
-                        //shared_snpmers: hit.shared_snpmers as u32,
                         reverse: hit.chain_reverse,
                         alignment_result: None
                     };
-                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
+
+                    if max_overlap {
+                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, Some(small_twin_ol)));
+                    } else {
+                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, None));
+                    }
                 }
             }
         }
@@ -826,36 +828,33 @@ pub fn map_reads_to_outer_reads<'a>(
 
     //let kmer_count_map = kmer_count_map.into_inner().unwrap();
     let mut num_alignments = 0;
+    let mut num_maximal = 0;
     for (outer_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
 
         let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
+        num_alignments += boundaries.len();
 
-        let intervals = boundaries
+        let mut all_local_intervals = boundaries.iter().map(|x| BareInterval{start: x.0, stop: x.1}).collect::<Vec<_>>();
+        all_local_intervals.sort_unstable();
+
+        let max_intervals = boundaries
             .into_iter()
+            .filter(|x| x.2.is_some())
             .map(|x| Interval {
                 start: x.0 as u32,
                 stop: x.1 as u32,
-                val: x.2,
+                val: x.2.unwrap(),
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
 
+        num_maximal += max_intervals.len();
+        let lapper = Lapper::new(max_intervals);
         
-        num_alignments += intervals.len();
-
-        //let (outer_read_first_mini_pos, outer_read_last_mini_pos) = first_last_mini_in_range(0, outer_read_length, args.kmer_size, MINIMIZER_END_NTH_COV, twin_reads[index_of_outer_in_all].minimizers.as_slice());
-        
-        let lapper = Lapper::new(intervals);
-        //let (min_depth, median_depth) = median_and_min_depth_from_lapper(&lapper, SAMPLING_RATE_COV, outer_read_first_mini_pos, outer_read_last_mini_pos).unwrap();
-        //let mean_depth = map_vec.iter().sum::<usize>() as f64 / outer_read_length as f64;
-
-        //let kmer_counts =  kmer_count_map.get(&contig_id).unwrap();
-
-        //TODO -1. for mapping depth for now.. we use members on the read directly
         let map_info = MappingInfo {
             minimum_depth: -1.,
             median_depth: -1.,
-            mapping_boundaries: lapper,
+            max_mapping_boundaries: lapper,
             present: true,
             length: outer_read_length,
         };
@@ -863,10 +862,13 @@ pub fn map_reads_to_outer_reads<'a>(
         let twinread_mapping = TwinReadMapping {
             tr_index: outer_read_indices[outer_id],
             mapping_info: map_info,
+            all_intervals: all_local_intervals,
         };
+
         ret.push(twinread_mapping);
     }
-    log::info!("Number of alignments to outer reads: {}", num_alignments);
+    log::info!("Number of local alignments to outer reads: {}", num_alignments);
+    log::info!("Number of maximal alignments to outer reads: {}", num_maximal);
 
     ret
 }
@@ -962,7 +964,6 @@ pub fn map_reads_to_unitigs(
         }
 
         for hit in retained_hits {
-            let start = std::time::Instant::now();
             let alignment_result = alignment::get_full_alignment(
                 &twin_reads[hit.i1].dna_seq,
                 &tr_unitigs[&hit.i2].dna_seq,
@@ -997,7 +998,6 @@ pub fn map_reads_to_unitigs(
                 //shared_minimizers: hit.shared_minimizers as u32,
                 //diff_snpmers: hit.diff_snpmers as u32,
                 snpmer_identity: id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64) as f32,
-                maximal_overlap: true,
                 //shared_snpmers: hit.shared_snpmers as u32,
                 reverse: hit.chain_reverse,
                 alignment_result: alignment_result
@@ -1033,7 +1033,7 @@ pub fn map_reads_to_unitigs(
         let map_info = MappingInfo {
             median_depth: -1.,
             minimum_depth: -1.,
-            mapping_boundaries: lapper,
+            max_mapping_boundaries: lapper,
             present: true,
             length: unitig_length,
         };

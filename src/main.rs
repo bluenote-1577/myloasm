@@ -17,6 +17,7 @@ use myloasm::seq_parse;
 use myloasm::twin_graph;
 use myloasm::twin_graph::OverlapConfig;
 use myloasm::types;
+use myloasm::types::MappingInfo;
 use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
