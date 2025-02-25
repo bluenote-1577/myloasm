@@ -119,8 +119,18 @@ impl PoaConsensusBuilder {
         for (i, bp) in breakpoints.into_iter().enumerate() {
             let mut new_cons_j = std::mem::take(&mut cons[i + 1]);
             let ol_len = new_cons_i.len().min(new_cons_j.len().min(window_len));
+            let hang;
 
-            let break_pos_i = new_cons_i.len() - (ol_len - bp.0);
+            //I believe this happens when the overlap alignments are discordant...
+            if bp.0 > ol_len{
+                log::debug!("Potential error in consensus joining at block {}", i);
+                hang = ol_len;
+            }
+            else{
+                hang = ol_len - bp.0;
+            }
+
+            let break_pos_i = new_cons_i.len() - hang;
             let break_pos_j = bp.1;
             new_cons_i.truncate(break_pos_i);
             new_cons_j = new_cons_j.split_off(break_pos_j);

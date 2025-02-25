@@ -314,7 +314,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                                 twin_read.retain_snpmer_positions(solid_snpmer_positions);
 
                                 //MinHash top ~ 1/20 * read_length of solid snpmers 
-                                minhash_top_snpmers(&mut twin_read, MAX_FRACTION_OF_SNPMERS_IN_READ);
+                                //minhash_top_snpmers(&mut twin_read, MAX_FRACTION_OF_SNPMERS_IN_READ);
 
                                 let mut vec = twrv.lock().unwrap();
                                 vec.push(twin_read);
@@ -456,7 +456,12 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
             let cond1 = right_p_val_thresh1 > 0.05;
             let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
             if cond1 || cond2 {
-                log::trace!("NOT SNPMER BINOMIAL c:{:?} c:{:?}",  counts[0], counts[1]);
+                if log::log_enabled!(log::Level::Trace) {
+                    let mid_bases = bases;
+                    let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
+                    let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
+                    log::trace!("NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}", decode_kmer(snpmer1, k as u8), decode_kmer(snpmer2, k as u8), counts[0], counts[1]);
+                }
                 return;
             }
 

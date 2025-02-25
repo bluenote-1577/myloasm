@@ -388,8 +388,8 @@ fn light_progressive_cleaning(
     let mut iteration = 1;
     let divider = 2;
 
-    let safety_edge_cov_score_thresholds = [50., 25., 10.];
-    //let safety_edge_cov_score_thresholds = [1000000.];
+    //let safety_edge_cov_score_thresholds = [50., 25., 10.];
+    let safety_edge_cov_score_thresholds = [1000000.];
     let bubble_length_cutoff = args.small_bubble_threshold;
 
     loop {

@@ -46,23 +46,25 @@ Given a vector $x$, define $ log_a (x[i]) = log(x[i] + a) $ as a log with pseudo
 
 $ d(x^i,y^i) = abs(log_a (x[i]) - log_a (y[i])). $
 
-We want to get a grasp of this distance over the distribution $X,Y$ in a principled way. Intuitively, if unitig $X$ has coverage 20 and unitig $Y$ has coverage 10, then given some scaling factor $C$ (that can depend on a range of factors), $D(X,Y)$ should be about $C log(20/10) = C log(2)$. This gives a probability of $e^(- C log(2) / T) = 1/2^(C/T)$. 
 
-Our model should achieve a few things:
-
-1. Unitigs from the same genome should have similar distributions, including variances and means
-
-2. Account for uncertainty in $X$ and $Y$, which are extremely noisy and have small sample sizes (e.g. a unitig with only one read) and high variance due to inter/intragenomic repeats
+Intuitively, if unitig $X$ has coverage 20 and unitig $Y$ has coverage 10, then given some scaling factor $C$ (that can depend on a range of factors), $D(X,Y)$ should be about $C log(20/10) = C log(2)$. This gives a probability of $e^(- C log(2) / T) = 1/2^(C/T)$. 
 
 
+The above intuition should carry over to the _distribution_ over $X, Y$: a unitig will not just have "coverage 20". Our goal is to define a distance over the distribution $X,Y$ in a principled way so that 
+
+1. unitigs from the same genome should have similar distributions, including variances and means, and
+
+2. account for uncertainty in $X$ and $Y$, which are extremely noisy and have small sample sizes (e.g. a unitig with only one read) and high variance due to inter/intragenomic repeats
 
 == Dealing with uncertainty and variance in $X$ and $Y$ 
 
 Let $M(X)$ be the coordinate-wise median of the distribution $X$ and also similarly for $Y$. Given samples $X$ and $Y$ from their respective, unknown probability distributions, we try to reason with $d(M(X)^i, M(Y)^i)$. We also have the distribution of pairwise log differences, $d(X^i, Y^i)$ on hand. Let's assume $d(X^i, Y^i)$ has some average $mu$ and standard deviation $Sigma$. 
 
+=== Variance matching
+
 === Variance
 
-To deal with variance, we divide $d(M(X)^i, M(Y)^i)$ by 0.5 plus the standard deviation over the distribution of log differences, $Sigma$. We add a factor of 0.5 stabilize, but also make it $<$ 1 to penalize large distances under small variance. To estimate the standard deviation, we take the IQR. Theoretically, many distributions have IQR $prop$ $Sigma$. 
+To estimate the standard deviation, we take the IQR of the pairwise log differences. Theoretically, many distributions have IQR $prop$ $Sigma$. 
 
 === Sample size
 
@@ -72,10 +74,29 @@ We can calculate this confidence interval in many ways. We could do boostrapping
 
 Instead, we propose the following. Under the assumption of normality, the confidence interval length is $prop Sigma / sqrt(N)$. We take $N$ as $2/(1/N_x + 1/N_y) = H(N_x,N_y)$, the harmonic mean, to bias for lower sample sizes. We already have a robust estimator proportional to $Sigma$: the IQR. 
 
-=== Final formula 
+=== Final formulae
+
+==== Version 1 (Didn't work out well)
 
 $ D(X,Y) = sum_(i=1)^n d(M(X)^i, M(Y)^i) / (([0.5 + 1/(1+max(N_x,N_y))]+ hat(Sigma)) * (1 + hat(Sigma)/sqrt(H(N_x,N_y)))) $
 
+Update: Didn't work well. Turns out we _want_ to penalize high variance: we want our final paths to have low variance. 
+
+==== Version 2 (Worked okay; 2-20 tests "POST-IQR" code in notebook)
+
+$ V_i = abs(d(U(X)^i, U(Y)^i) - d(L(X)^i, L(Y)^i)) $
+$ D_i = d(M(X)^i, M(Y)^i) $
+
+$ D(X,Y) = sum_(i=1)^n (D_i + V_i) / (1 + hat(Sigma)/(4 sqrt(H(N_x,N_y)))) $
+
+Update: Worked okay. However, the sum formulation has issues when there is an interspecies repeat. First coordinate will have large variance but the more strict coverages will have low (i.e. good) variance. 
+
+==== Version 3 (TODO)
+
+$ D_i = d(M(X)^i, M(Y)^i) $
+$ V_i = abs(d(U(X)^i, U(Y)^i) - d(L(X)^i, L(Y)^i)) $
+
+$ D(X,Y) = min_(i) (D_i + V_i) /  (1 + hat(Sigma)/(4sqrt(H(N_x,N_y)))) $
 
 
 

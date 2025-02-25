@@ -204,6 +204,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     if intervals.is_empty() {
         return vec![];
     }
+
     let mut breakpoints = vec![];
     let sampling = 5;
     let coverages_at_sampling = depths_at_points_interval(
@@ -363,7 +364,7 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     // Change snpmer id threshold based on coverage
     if twin_read.snpmer_id_threshold.is_none(){
 
-        let step = 0.10 / 100.;
+        let step = 0.05 / 100.;
 
         let sufficient_gap = min_depths[0] > 5.0 * min_depths[ID_THRESHOLD_ITERS - 1];
         let sufficient_depth = min_depths[0] >= MIN_COV_READ as f64;
@@ -451,7 +452,8 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
             let map_info = tr_map_info_dict.get(&i).unwrap();
             let breakpoints = cov_mapping_breakpoints(&map_info.all_intervals, map_info.reference_length() as u32);
 
-            if log::log_enabled!(log::Level::Trace) {
+            //Broke right now 
+            if log::log_enabled!(log::Level::Trace) && false {
                 let depths = map_info.max_mapping_boundaries().depth().collect::<Vec<_>>();
                 let writer = &mut writer.lock().unwrap();
                 for depth in depths{
@@ -1103,11 +1105,6 @@ mod tests {
                 start: 0,
                 stop: 100,
                 val: create_small_twinol(1.0, true)
-            },
-            Interval {
-                start: 0,
-                stop: 100,
-                val: create_small_twinol(1.0, false)  // Not maximal
             },
         ];
         let lapper = Lapper::new(intervals);

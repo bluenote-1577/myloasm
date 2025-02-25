@@ -359,10 +359,16 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
     let mut weights = vec![];
 
     for i in 0..ID_THRESHOLD_ITERS{
+
+        //Skip if both are below threshold
+        if median_larger_3.unwrap()[i] < MIN_COV_READ as f64 && median_smaller_3.unwrap()[i] < MIN_COV_READ as f64 && i != 0{
+            continue;
+        }
+
         let d = (median_larger_3.unwrap()[i] - median_smaller_3.unwrap()[i]).abs();
 
-        let upper_dist = (quantiles_larger[2].unwrap()[i] + PSEUDOCOUNT).ln() - 
-                        (quantiles_smaller[2].unwrap()[i] + PSEUDOCOUNT).ln();
+        let upper_dist = (quantiles_larger[ID_THRESHOLD_ITERS - 1].unwrap()[i] + PSEUDOCOUNT).ln() - 
+                        (quantiles_smaller[ID_THRESHOLD_ITERS - 1].unwrap()[i] + PSEUDOCOUNT).ln();
 
         let lower_dist = (quantiles_larger[0].unwrap()[i] + PSEUDOCOUNT).ln() -
                         (quantiles_smaller[0].unwrap()[i] + PSEUDOCOUNT).ln();
@@ -387,9 +393,8 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
         weights.push(1. / weight1);
     }
 
-    //This is wrong TODO
-    let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
-
+    //let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
+    let weighted_distance = ID_THRESHOLD_ITERS as f64 * distances.iter().zip(weights.iter()).map(|(x, y)| x * y).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
     return Some(weighted_distance);
 }
 
@@ -507,6 +512,25 @@ mod tests {
 
         //Wider distribution -> less distance
         assert!(dist1 > dist2);
+    }
+
+    #[test]
+    fn test_log_dist_interspecies_repeats() {
+        let v1 = vec![([100., 50., 20.], 1), ([20., 20., 20.,], 1), ([100., 50., 20.], 1), ([20., 20., 20.,], 1), ([100., 50., 20.], 1), ([20., 20., 20.,], 1), ([100., 50., 20.], 1), ([20., 20., 20.,], 1), ([100., 50., 20.], 1), ([20., 20., 20.,], 1)];
+        let v2 = vec![([20., 20., 20.,], 1), ([20., 20., 20.,], 1), ([20., 20., 20.,], 1), ([20., 20., 20.,], 1), ([20., 20., 20.,], 1)];
+        let dist1 = log_distribution_distance_new(&v1, &v2).unwrap();
+        dbg!(dist1);
+
+        //Coord 3 is not variable, low distance
+        assert!(dist1 < 0.1);
+
+        let v1 = vec![([100., 5., 1.], 1), ([90., 20., 2.,], 1), ([110., 20., 10.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1), ([110., 20., 10.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1)];
+        let v2 = vec![([100., 50., 30.,], 1), ([100., 20., 1.,], 1)];
+        let dist2 = log_distribution_distance_new(&v1, &v2).unwrap();
+        dbg!(dist2);
+        
+        //Coord 1 is not variable, low distance
+        assert!(dist2 < 0.2);
     }
 
 }

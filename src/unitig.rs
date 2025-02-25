@@ -2676,7 +2676,7 @@ impl UnitigGraph {
             .unwrap();
 
         // 99.5 - 100 -> e^(-1) 
-        let fsv_diff = 100.0 * (edge.edge_id_est(c) - max_fsv);
+        let fsv_diff = 200.0 * (edge.edge_id_est(c) - max_fsv);
 
         let cov1;
         let cov2;
@@ -4372,7 +4372,7 @@ mod tests {
         for max_length in max_lengths{
             let mut total_edgecounts = FxHashMap::default();
             for nodeid in 0..1 {
-                let edge_counts = graph.beam_search_path_prob(nodeid, max_length, 1.0, 5, 10, 0.00001, 9, steps);
+                let edge_counts = graph.beam_search_path_prob(nodeid, max_length, 0.3, 5, 10, 0.00001, 9, steps);
                 for (edge_id, count) in edge_counts {
                     let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
                     *total_count += count;

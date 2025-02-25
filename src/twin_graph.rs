@@ -729,7 +729,7 @@ pub fn comparison_to_overlap(twlaps: Vec<TwinOverlap>, twin_reads: &[TwinRead], 
         if exist_overlap {
             let mut bufwriter = writer.lock().unwrap();
             writeln!(bufwriter,
-                "{} {} ({}) ({}) fsv:{} SHARE:{} DIFF:{} LEN1:{} {}-{} LEN2:{} {}-{}, REVERSE: {}",
+                "{} {} {} {} fsv:{} SHARE:{} DIFF:{} MINI: {}, LEN1:{} {}-{} LEN2:{} {}-{}, REVERSE: {}",
                 i,
                 j,
                 &read1.id.split_ascii_whitespace().next().unwrap(),
@@ -737,6 +737,7 @@ pub fn comparison_to_overlap(twlaps: Vec<TwinOverlap>, twin_reads: &[TwinRead], 
                 identity * 100.,
                 twlap.shared_snpmers,
                 twlap.diff_snpmers,
+                twlap.shared_minimizers,
                 read1.base_length,
                 twlap.start1,
                 twlap.end1,
@@ -979,7 +980,7 @@ fn parallel_remove_contained(
         });
 
         let sorting_filtering_time = start.elapsed();
-        writeln!(bufwriter_dbg.lock().unwrap(), "CONTAIN: {} NUMBER OF HITS {}", &read1.id, top_indices.len()).unwrap();
+        writeln!(bufwriter_dbg.lock().unwrap(), "CONTAIN: {} NUMBER OF HITS {}. THRESHOLD: {}", &read1.id, top_indices.len(), read1.snpmer_id_threshold.unwrap_or(100.)).unwrap();
 
         let start = std::time::Instant::now();
         let num_tries = 50;
