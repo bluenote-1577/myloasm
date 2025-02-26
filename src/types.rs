@@ -548,21 +548,20 @@ pub fn bits_to_ascii(bit_rep: u8) -> u8{
 pub struct MappingInfo {
     pub median_depth: f64,
     pub minimum_depth: f64,
-    pub max_mapping_boundaries: Lapper<u32, SmallTwinOl>,
+    pub max_alignment_boundaries: Option<Lapper<u32, SmallTwinOl>>,
+    pub max_mapping_boundaries: Option<Lapper<u32, BareMappingOverlap>>,
     //pub kmer_counts: Vec<u32>,
     pub present: bool,
     pub length: usize,
 }
 
-pub trait NodeMapping {
-    fn median_mapping_depth(&self) -> f64;
-    fn min_mapping_depth(&self) -> f64;
-    fn max_mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl>;
-    fn set_mapping_info(&mut self, mapping_info: MappingInfo);
-    fn mapping_info_present(&self) -> bool;
-    fn reference_length(&self) -> usize;
-    fn mapped_indices(&self) -> Vec<usize>;
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BareMappingOverlap{
+    pub snpmer_identity: f32,
 }
+
+impl Eq for BareMappingOverlap{}
+
 
 #[derive(Debug, Clone,  Default)]
 pub struct SmallTwinOl{

@@ -36,7 +36,7 @@ pub struct UnitigNode {
     // If the unitig/contig is considered as an alternate; not implemented TODO
     pub alternate: bool,
     base_info: BaseInfo,
-    mapping_info: MappingInfo,
+    pub mapping_info: MappingInfo,
 }
 
 pub trait NodeSequence {
@@ -61,7 +61,10 @@ pub struct BaseInfo {
 
 impl PartialEq for MappingInfo {
     fn eq(&self, other: &Self) -> bool {
-        self.max_mapping_boundaries.intervals == other.max_mapping_boundaries.intervals
+        self.present == other.present && self.median_depth == other.median_depth
+            && self.minimum_depth == other.minimum_depth
+            && self.max_alignment_boundaries.is_some() == other.max_alignment_boundaries.is_some()
+            && self.max_mapping_boundaries.is_some() == other.max_mapping_boundaries.is_some()
             && self.length == other.length
     }
 }
@@ -71,41 +74,42 @@ impl Default for MappingInfo {
         MappingInfo {
             median_depth: 0.0,
             minimum_depth: 0.0,
-            max_mapping_boundaries: Lapper::new(vec![]),
+            max_alignment_boundaries: None,
+            max_mapping_boundaries: None,
             present: false,
             length: 0,
         }
     }
 }
 
-impl NodeMapping for UnitigNode {
-    fn median_mapping_depth(&self) -> f64 {
-        self.mapping_info.median_depth
-    }
-    fn min_mapping_depth(&self) -> f64 {
-        self.mapping_info.minimum_depth
-    }
+// impl NodeMapping for UnitigNode {
+//     fn median_mapping_depth(&self) -> f64 {
+//         self.mapping_info.median_depth
+//     }
+//     fn min_mapping_depth(&self) -> f64 {
+//         self.mapping_info.minimum_depth
+//     }
 
-    fn max_mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
-        &self.mapping_info.max_mapping_boundaries
-    }
-    fn set_mapping_info(&mut self, mapping_info: MappingInfo) {
-        self.mapping_info = mapping_info;
-    }
-    fn mapping_info_present(&self) -> bool {
-        self.mapping_info.present
-    }
-    fn reference_length(&self) -> usize {
-        self.mapping_info.length
-    }
-    fn mapped_indices(&self) -> Vec<usize> {
-        self.mapping_info
-            .max_mapping_boundaries
-            .iter()
-            .map(|x| x.val.query_id as usize)
-            .collect::<Vec<usize>>()
-    }
-}
+//     fn max_mapping_boundaries(&self) -> &Lapper<u32, SmallTwinOl> {
+//         &self.mapping_info.max_mapping_boundaries
+//     }
+//     fn set_mapping_info(&mut self, mapping_info: MappingInfo) {
+//         self.mapping_info = mapping_info;
+//     }
+//     fn mapping_info_present(&self) -> bool {
+//         self.mapping_info.present
+//     }
+//     fn reference_length(&self) -> usize {
+//         self.mapping_info.length
+//     }
+//     fn mapped_indices(&self) -> Vec<usize> {
+//         self.mapping_info
+//             .max_mapping_boundaries
+//             .iter()
+//             .map(|x| x.val.query_id as usize)
+//             .collect::<Vec<usize>>()
+//     }
+// }
 
 impl NodeSequence for UnitigNode {
     fn base_seq(&self) -> &Seq<Dna> {
@@ -676,9 +680,9 @@ impl UnitigGraph {
 
             let min_mapping_depth;
             let median_map_depth;
-            if unitig.mapping_info_present() {
-                median_map_depth = unitig.median_mapping_depth();
-                min_mapping_depth = unitig.min_mapping_depth();
+            if unitig.mapping_info.present {
+                median_map_depth = unitig.mapping_info.median_depth;
+                min_mapping_depth = unitig.mapping_info.minimum_depth;
             } else {
                 median_map_depth = -1.;
                 min_mapping_depth = -1.;

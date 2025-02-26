@@ -28,6 +28,11 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
+use tikv_jemallocator::Jemalloc;
+
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
     

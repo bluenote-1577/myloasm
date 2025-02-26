@@ -24,7 +24,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
         log::trace!("Processing alignments for u{} ...", contig.node_id);
         let mut poa_cons_builder = PoaConsensusBuilder::new(contig.base_seq().len());
         poa_cons_builder.generate_breakpoints(300, 100);
-        let mapping_boundaries = contig.max_mapping_boundaries().iter().collect::<Vec<&Interval<u32, SmallTwinOl>>>();
+        let mapping_boundaries = contig.mapping_info.max_alignment_boundaries.as_ref().unwrap().iter().collect::<Vec<&Interval<u32, SmallTwinOl>>>();
         poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
 
         log::trace!("Starting POA consensus for u{} ...", contig.node_id);

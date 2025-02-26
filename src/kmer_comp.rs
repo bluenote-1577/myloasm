@@ -411,15 +411,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
-    if args.no_snpmers{
-        log::info!("Skipping snpmer detection.");
-        return KmerGlobalInfo{
-            snpmer_info: vec![],
-            solid_kmers: solid_kmers,
-            high_freq_thresh: high_freq_thresh as f64,
-            read_files: paths_to_files
-        };
-    }
+    
 
     log::info!("Finding snpmers...");
     //Should be able to parallelize this, TODO
@@ -437,6 +429,16 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
 
             }
         }
+    }
+
+    if args.no_snpmers{
+        log::info!("Skipping snpmer detection.");
+        return KmerGlobalInfo{
+            snpmer_info: vec![],
+            solid_kmers: solid_kmers,
+            high_freq_thresh: high_freq_thresh as f64,
+            read_files: paths_to_files
+        };
     }
 
     let potential_snps = Mutex::new(0);

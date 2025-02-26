@@ -740,7 +740,8 @@ pub fn map_reads_to_outer_reads(
         .collect::<FxHashMap<usize, &TwinRead>>();
 
     let mini_index = get_minimizer_index_ref(&tr_outer);
-    let mapping_boundaries_map = Mutex::new(FxHashMap::default());
+    let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
+    let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
     //let kmer_count_map = Mutex::new(FxHashMap::default());
     
     let counter = Mutex::new(0);
@@ -803,50 +804,53 @@ pub fn map_reads_to_outer_reads(
                 );
 
                 //Populate mapping boundaries map
-                {
-                    let mut map = mapping_boundaries_map.lock().unwrap();
-                    let vec = map.entry(hit.i2).or_insert(vec![]);
-
-                    let small_twin_ol = SmallTwinOl{
-                        query_id: rid as u32,
+                if max_overlap {
+                    let small_twin_ol = BareMappingOverlap{
                         snpmer_identity: identity as f32,
-                        reverse: hit.chain_reverse,
-                        alignment_result: None
                     };
+                    let mut map = mapping_maximal_boundaries_map.lock().unwrap();
+                    let vec = map.entry(hit.i2).or_insert(vec![]);
+                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
 
-                    if max_overlap {
-                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, Some(small_twin_ol)));
-                    } else {
-                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, None));
-                    }
-                }
+                } 
+
+                let mut map = mapping_local_boundaries_map.lock().unwrap();
+                let vec = map.entry(hit.i2).or_insert(vec![]);
+                vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50));
             }
         }
         //println!("Anchor finding time: {}us", anchor_finding_time);
         //println!("Overlap time: {}us", overlap_time);
     });
 
+    drop(mini_index);
+
     //let kmer_count_map = kmer_count_map.into_inner().unwrap();
     let mut num_alignments = 0;
     let mut num_maximal = 0;
-    for (outer_id, boundaries) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
+
+    let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
+    let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
+
+    for (outer_id, boundaries) in mapping_local_boundaries_map.into_iter() {
 
         let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
         num_alignments += boundaries.len();
 
-        let mut all_local_intervals = boundaries.iter().map(|x| BareInterval{start: x.0, stop: x.1}).collect::<Vec<_>>();
+        let mut all_local_intervals = boundaries.into_iter().map(|x| BareInterval{start: x.0, stop: x.1}).collect::<Vec<_>>();
         all_local_intervals.sort_unstable();
 
-        let max_intervals = boundaries
+        let maximal_boundaries = std::mem::take(mapping_maximal_boundaries_map.get_mut(&outer_id).unwrap_or(&mut vec![]));
+
+        let max_intervals = maximal_boundaries
             .into_iter()
-            .filter(|x| x.2.is_some())
             .map(|x| Interval {
                 start: x.0 as u32,
                 stop: x.1 as u32,
-                val: x.2.unwrap(),
+                val: x.2,
             })
-            .collect::<Vec<Interval<u32, SmallTwinOl>>>();
+            .collect::<Vec<Interval<u32, BareMappingOverlap>>>();
 
         num_maximal += max_intervals.len();
         let lapper = Lapper::new(max_intervals);
@@ -854,7 +858,8 @@ pub fn map_reads_to_outer_reads(
         let map_info = MappingInfo {
             minimum_depth: -1.,
             median_depth: -1.,
-            max_mapping_boundaries: lapper,
+            max_alignment_boundaries: None,
+            max_mapping_boundaries: Some(lapper),
             present: true,
             length: outer_read_length,
         };
@@ -1033,12 +1038,13 @@ pub fn map_reads_to_unitigs(
         let map_info = MappingInfo {
             median_depth: -1.,
             minimum_depth: -1.,
-            max_mapping_boundaries: lapper,
+            max_mapping_boundaries: None,
+            max_alignment_boundaries: Some(lapper),
             present: true,
             length: unitig_length,
         };
         let mut_node = unitig_graph.nodes.get_mut(&contig_id).unwrap();
-        mut_node.set_mapping_info(map_info);
+        mut_node.mapping_info = map_info;
     }
 
     log::debug!("Number of alignments: {}", number_of_alignments);
