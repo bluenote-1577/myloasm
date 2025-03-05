@@ -12,7 +12,7 @@ pub const MID_BASE_THRESHOLD_READ: u8 = 17; // 98%
 pub const MID_BASE_THRESHOLD_INITIAL: u8 = 10; // 90%
 pub const MAX_BUBBLE_UNITIGS_FINAL_STAGE: usize = 5;
 pub const TS_DASHES_BLANK_COLONS_DOT_BLANK: &str = "%Y-%m-%d %H:%M:%S%.3f";
-pub const MIN_CHAIN_SCORE_COMPARE: i32 = 50;
+pub const MIN_CHAIN_SCORE_COMPARE: i32 = 150;
 pub const MIN_READ_LENGTH: usize = 1000;
 pub const ENDPOINT_MAPPING_FUZZ : u32 = 200;
 // seed with 42 and 31 0s

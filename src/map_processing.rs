@@ -468,8 +468,8 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
     return (new_twin_reads, new_outer_indices);
 }
 
-pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: usize, len1: usize, len2: usize, reverse: bool) -> bool {
-    let edge_fuzz = ENDPOINT_MAPPING_FUZZ as usize;
+pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: usize, len1: usize, len2: usize, reverse: bool, endpoint_fuzz: usize) -> bool {
+    let edge_fuzz = endpoint_fuzz;
 
     //Can not extend to the left (cond1) and cannot extend to the right (cond2)
     //  ------->             OR          --------->
@@ -637,6 +637,9 @@ mod tests {
 
     #[test]
     fn test_maximal_overlap(){
+
+        let fuzz = 200; 
+
         let len1 = 3000;
         let len2 = 3000;
 
@@ -647,12 +650,12 @@ mod tests {
         let start2 = 0;
         let end2 = 3000;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), true);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
 
         //  ------>
         // <----------
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), true);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
 
         // ------------>
         //    ----->
@@ -663,7 +666,7 @@ mod tests {
         let start2 = 0;
         let end2 = 2000;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), true);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
 
         let len1 = 3000;
         let len2 = 3000;
@@ -675,7 +678,7 @@ mod tests {
         let start2 = 100;
         let end2 = 1500;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), true);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
 
         //     ------>
         // ------->
@@ -684,7 +687,7 @@ mod tests {
         let start2 = 1400;
         let end2 = 2900;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), true);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
 
         //   ---xxxx>
         // -----x>
@@ -693,7 +696,7 @@ mod tests {
         let start2 = 2000;
         let end2 = 2500;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), false);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), false);
 
         // <-----xxxx 
         //  -----xxxx->
@@ -702,7 +705,7 @@ mod tests {
         let start2 = 0;
         let end2 = 1500;
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), false);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), false);
 
         // <------
         //    -------->
@@ -711,7 +714,7 @@ mod tests {
         let start2 = 0;
         let end2 = 1500;
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), true);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
 
         // <--|||xx
         //    |||xx--->
@@ -720,7 +723,7 @@ mod tests {
         let start2 = 0;
         let end2 = 1000;
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse), false);
+        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), false);
     }
 
     // fn _test_get_min_depth_various_thresholds(){

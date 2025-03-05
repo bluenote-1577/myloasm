@@ -391,16 +391,18 @@ impl TwinRead{
         self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y))
     }
 
-    pub fn retain_mini_positions(&mut self, positions: FxHashSet<usize>) {
-        retain_vec_positions(&mut self.minimizer_kmers, &positions);
-        retain_vec_positions(&mut self.minimizer_positions, &positions);
+    // Retain only the minimizers at the given INDICES, not positions
+    pub fn retain_mini_indices(&mut self, positions: FxHashSet<usize>) {
+        retain_vec_indices(&mut self.minimizer_kmers, &positions);
+        retain_vec_indices(&mut self.minimizer_positions, &positions);
         self.minimizer_kmers.shrink_to_fit();
         self.minimizer_positions.shrink_to_fit();
     }
 
-    pub fn retain_snpmer_positions(&mut self, positions: FxHashSet<usize>) {
-        retain_vec_positions(&mut self.snpmer_kmers, &positions);
-        retain_vec_positions(&mut self.snpmer_positions, &positions);
+    // Retain only the snpmers at the given INDICES, not positions
+    pub fn retain_snpmer_indices(&mut self, positions: FxHashSet<usize>) {
+        retain_vec_indices(&mut self.snpmer_kmers, &positions);
+        retain_vec_indices(&mut self.snpmer_positions, &positions);
         self.snpmer_kmers.shrink_to_fit();
         self.snpmer_positions.shrink_to_fit();
     }
@@ -445,7 +447,7 @@ impl TwinRead{
     }
 }
 
-pub fn retain_vec_positions<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
+pub fn retain_vec_indices<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
     let mut i = 0;
     vec.retain(|_| {
         let keep = positions.contains(&i);

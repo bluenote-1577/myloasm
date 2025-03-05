@@ -98,7 +98,9 @@ impl PoaConsensusBuilder {
         let breakpoints = Mutex::new(vec![]);
         (0..cons.len() - 1).into_par_iter().for_each(|i| {
             if cons[i].len() == 0 || cons[i + 1].len() == 0 {
-                breakpoints.lock().unwrap().push((i, 0,0));
+                let false_bp1 = 0;
+                let false_bp2 = 0;
+                breakpoints.lock().unwrap().push((i, false_bp1, false_bp2));
                 return;
             }
             let ol_len = cons[i].len().min(cons[i + 1].len().min(window_len));
@@ -118,6 +120,7 @@ impl PoaConsensusBuilder {
         let mut new_consensus = vec![];
         let mut new_cons_i = std::mem::take(&mut cons[0]);
         for (i, bp) in breakpoints.into_iter().enumerate() {
+
             let mut new_cons_j = std::mem::take(&mut cons[i + 1]);
             let ol_len = new_cons_i.len().min(new_cons_j.len().min(window_len));
             let hang;

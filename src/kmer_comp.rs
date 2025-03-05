@@ -291,27 +291,27 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
                             if twin_read.is_some(){
 
-                                let mut solid_mini_positions = FxHashSet::default();
+                                let mut solid_mini_indices = FxHashSet::default();
                                 for (i, mini) in twin_read.as_ref().unwrap().minimizer_kmers.iter().enumerate(){
                                     if solid.contains(&mini){
-                                        solid_mini_positions.insert(i);
+                                        solid_mini_indices.insert(i);
                                     }
                                 }
                                 //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff. 
-                                if solid_mini_positions.len() < seqlen / c / 20{
+                                if solid_mini_indices.len() < seqlen / c / 20{
                                     continue;
                                 }
 
-                                let mut solid_snpmer_positions = FxHashSet::default();
+                                let mut solid_snpmer_indices = FxHashSet::default();
                                 for (i, snpmer) in twin_read.as_ref().unwrap().snpmer_kmers.iter().enumerate(){
                                     if solid.contains(&snpmer){
-                                        solid_snpmer_positions.insert(i);
+                                        solid_snpmer_indices.insert(i);
                                     }
                                 }
 
                                 let mut twin_read = twin_read.unwrap();
-                                twin_read.retain_mini_positions(solid_mini_positions);
-                                twin_read.retain_snpmer_positions(solid_snpmer_positions);
+                                twin_read.retain_mini_indices(solid_mini_indices);
+                                twin_read.retain_snpmer_indices(solid_snpmer_indices);
 
                                 //MinHash top ~ 1/20 * read_length of solid snpmers 
                                 //minhash_top_snpmers(&mut twin_read, MAX_FRACTION_OF_SNPMERS_IN_READ);

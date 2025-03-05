@@ -1,27 +1,27 @@
 use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::ID_THRESHOLD_ITERS;
-use rust_lapper::Interval;
 use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
-use std::io::Write;
-use std::io::BufWriter;
-use std::path::Path;
+use crate::map_processing::*;
+use crate::polishing::alignment;
 use crate::seeding;
 use crate::twin_graph::same_strain;
-use std::collections::HashSet;
 use crate::types::*;
 use crate::unitig;
 use crate::unitig::NodeSequence;
-use crate::polishing::alignment;
 use bio_seq::codec::Codec;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rayon::prelude::*;
+use rust_lapper::Interval;
 use rust_lapper::Lapper;
+use std::collections::HashSet;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::Path;
 use std::sync::Mutex;
-use crate::map_processing::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HitInfo {
@@ -160,7 +160,7 @@ pub fn find_exact_matches_with_full_index(
             for hit in indices {
                 let contig = hit.contig_id;
                 let anchor = Anchor {
-                    i: i as u32, 
+                    i: i as u32,
                     j: hit.index as u32,
                     pos1: *pos as u32,
                     pos2: hit.pos as u32,
@@ -219,11 +219,9 @@ fn find_exact_matches_indexes_references(
     (matches, max_mult)
 }
 
-fn find_exact_matches_indexes<T>(
-    seq1: T,
-    seq2: T,
-) -> (Vec<Anchor>, usize) 
-    where T: Iterator<Item = (u32, u64)>
+fn find_exact_matches_indexes<T>(seq1: T, seq2: T) -> (Vec<Anchor>, usize)
+where
+    T: Iterator<Item = (u32, u64)>,
 {
     let mut max_mult = 0;
     let mut matches = Vec::new();
@@ -306,8 +304,7 @@ pub fn dp_anchors(
                 }
             }
             let gap_penalty_signed =
-                (start1 as i32 - (end1) as i32).abs() 
-                - (start2 as i32 - (end2) as i32).abs();
+                (start1 as i32 - (end1) as i32).abs() - (start2 as i32 - (end2) as i32).abs();
             let gap_penalty = gap_penalty_signed.abs();
 
             let large_indel = false;
@@ -324,14 +321,13 @@ pub fn dp_anchors(
                     max_score = score;
                     max_index = i;
                 }
-                if large_indel{
+                if large_indel {
                     large_indel_tracker[i] = true;
                 }
-            }
-            else{
+            } else {
                 unimproved += 1;
             }
-            if unimproved > max_skip{
+            if unimproved > max_skip {
                 break;
             }
         }
@@ -340,14 +336,11 @@ pub fn dp_anchors(
     // Reconstruct the chain
     let mut chains = Vec::new();
     let mut used_anchors = FxHashSet::default();
-    let mut reference_ranges : Vec<Interval<u32,bool>> = Vec::new();
-    let mut best_indices_ordered = (0..matches.len())
-        .map(|i| (dp[i], i))
-        .collect::<Vec<_>>();
+    let mut best_indices_ordered = (0..matches.len()).map(|i| (dp[i], i)).collect::<Vec<_>>();
     best_indices_ordered.sort_unstable_by_key(|&(score, _)| -score);
     assert!(dp[max_index] == best_indices_ordered[0].0);
 
-    for (score, best_index) in best_indices_ordered{
+    for (score, best_index) in best_indices_ordered {
         if used_anchors.contains(&best_index) {
             continue;
         }
@@ -358,8 +351,13 @@ pub fn dp_anchors(
         let mut chain = Vec::new();
         let mut large_indel = false;
         let mut i = Some(best_index);
+        let mut good_chain = true;
         while let Some(idx) = i {
             large_indel = large_indel || large_indel_tracker[idx];
+            if used_anchors.contains(&idx) {
+                good_chain = false;
+                break;
+            }
             used_anchors.insert(idx);
             chain.push(matches[idx].clone());
             i = prev[idx];
@@ -369,22 +367,13 @@ pub fn dp_anchors(
             break;
         }
 
-        chain.reverse();
-
-        let l = chain.first().unwrap().pos2;
-        let r = chain.last().unwrap().pos2;
-        let interval = Interval{start: l.min(r), stop: l.max(r), val: true};
-        if reference_ranges.iter().any(|x| {
-            let intersect = x.intersect(&interval);
-            intersect as f64 / (interval.stop - interval.start) as f64 > 0.25
-        }) {
-            continue;
+        if good_chain {
+            chain.reverse();
+            chains.push((score, chain, large_indel));
         }
-        chains.push((score, chain, large_indel));
-        reference_ranges.push(interval);
     }
-    
-    return chains
+
+    return chains;
 }
 
 fn find_optimal_chain(
@@ -392,6 +381,7 @@ fn find_optimal_chain(
     match_score: i32,
     gap_cost: i32,
     band_opt: Option<usize>,
+    allow_large_supplementary_overlaps: bool,
 ) -> Vec<ChainInfo> {
     let band;
     let matches = anchors;
@@ -434,33 +424,48 @@ fn find_optimal_chain(
         return vec![];
     }
 
-    let max_score = scores_and_chains_f.iter().chain(scores_and_chains_r.iter()).map(|x| x.0).max().unwrap();
+    let max_score = scores_and_chains_f
+        .iter()
+        .chain(scores_and_chains_r.iter())
+        .map(|x| x.0)
+        .max()
+        .unwrap();
     let mut chains = vec![];
-    let mut reference_intervals : Vec<Interval<u32, bool>> = vec![];
-    let mut both_chains = scores_and_chains_f.into_iter().map(|x| (x, false)).chain(scores_and_chains_r.into_iter().map(|x| (x, true))).collect::<Vec<_>>();
-    both_chains.sort_by(|a, b| b.0.0.cmp(&a.0.0));
+    let mut reference_intervals: Vec<Interval<u32, bool>> = vec![];
+    let mut both_chains = scores_and_chains_f
+        .into_iter()
+        .map(|x| (x, false))
+        .chain(scores_and_chains_r.into_iter().map(|x| (x, true)))
+        .collect::<Vec<_>>();
+    both_chains.sort_by(|a, b| b.0 .0.cmp(&a.0 .0));
 
-    for ((score, chain, large_indel), reverse) in both_chains{
-        if score as f64 > 0.75 * max_score as f64 {
+    for ((score, chain, large_indel), reverse) in both_chains {
+        if score as f64 > 0.25 * max_score as f64 {
             let l = chain.first().unwrap().pos2;
             let r = chain.last().unwrap().pos2;
-            let interval = Interval{start: l.min(r), stop: l.max(r), val: true};
+            let interval = Interval {
+                start: l.min(r),
+                stop: l.max(r),
+                val: true,
+            };
 
-            if reference_intervals.iter().any(|x| {
-                let intersect = x.intersect(&interval);
-                intersect as f64 / (interval.stop - interval.start) as f64 > 0.25
-            }) {
+            if !allow_large_supplementary_overlaps
+                && reference_intervals.iter().any(|x| {
+                    let intersect = x.intersect(&interval);
+                    intersect as f64 / (interval.stop - interval.start) as f64 > 0.25
+                })
+            {
                 continue;
             }
+
             chains.push(ChainInfo {
                 chain,
                 reverse: reverse,
                 score: score,
                 large_indel: large_indel,
             });
+
             reference_intervals.push(interval);
-
-
         }
     }
 
@@ -476,6 +481,7 @@ pub fn compare_twin_reads(
     j: usize,
     compare_snpmers: bool,
     retain_chain: bool,
+    allow_large_supplementary_overlaps: bool,
     args: &Cli,
 ) -> Vec<TwinOverlap> {
     let mini_chain_infos;
@@ -485,14 +491,21 @@ pub fn compare_twin_reads(
             args.c as i32,
             1,
             Some((anchors.max_mult * 10).min(50)),
+            allow_large_supplementary_overlaps,
         );
     } else {
         let anchors = find_exact_matches_indexes(seq1.minimizers(), seq2.minimizers());
-        mini_chain_infos = find_optimal_chain(&anchors.0, args.c as i32, 1, Some((anchors.1 * 10).min(50)));
+        mini_chain_infos = find_optimal_chain(
+            &anchors.0,
+            args.c as i32,
+            1,
+            Some((anchors.1 * 10).min(50)),
+            allow_large_supplementary_overlaps,
+        );
     }
     let mut twin_overlaps = vec![];
     let k = seq1.k as usize;
-    for mini_chain_info in mini_chain_infos{
+    for mini_chain_info in mini_chain_infos {
         let mini_chain = &mini_chain_info.chain;
         if mini_chain_info.score < MIN_CHAIN_SCORE_COMPARE {
             continue;
@@ -504,7 +517,7 @@ pub fn compare_twin_reads(
         let mut intersect_split = 0;
         let mut intersection_snp = 0;
 
-        if compare_snpmers{
+        if compare_snpmers {
             shared_snpmer = 0;
             diff_snpmer = 0;
 
@@ -518,7 +531,7 @@ pub fn compare_twin_reads(
             let end2 = l2.max(r2) + k - 1;
 
             let mask = !(3 << (k - 1));
-            
+
             let mut splitmers1 = vec![];
             let mut ind_redirect1 = vec![];
 
@@ -538,19 +551,33 @@ pub fn compare_twin_reads(
                     splitmers2.push((pos, snpmer & mask));
                 }
             }
-            
+
             let split_chain_opt;
             if let Some(anchors) = snpmer_anchors {
-                split_chain_opt = find_optimal_chain(&anchors.anchors, 50, 1, Some((anchors.max_mult * 10).min(50))).into_iter().max_by_key(|x| x.score);
+                split_chain_opt = find_optimal_chain(
+                    &anchors.anchors,
+                    50,
+                    1,
+                    Some((anchors.max_mult * 10).min(50)),
+                    allow_large_supplementary_overlaps,
+                )
+                .into_iter()
+                .max_by_key(|x| x.score);
             } else {
                 let anchors = find_exact_matches_indexes_references(&splitmers1, &splitmers2);
-                let chains = find_optimal_chain(&anchors.0, 50, 1, Some((anchors.1 * 10).min(50)));
+                let chains = find_optimal_chain(
+                    &anchors.0,
+                    50,
+                    1,
+                    Some((anchors.1 * 10).min(50)),
+                    allow_large_supplementary_overlaps,
+                );
                 split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
             }
 
             //If mini chain goes opposite from split chain, probably split chain
-            //is not reliable, so set shared and diff = 0. 
-            if let Some(split_chain) = split_chain_opt.as_ref(){
+            //is not reliable, so set shared and diff = 0.
+            if let Some(split_chain) = split_chain_opt.as_ref() {
                 if split_chain.reverse == mini_chain_info.reverse || split_chain.chain.len() == 1 {
                     for anchor in split_chain.chain.iter() {
                         let i = anchor.i;
@@ -568,8 +595,8 @@ pub fn compare_twin_reads(
             }
 
             //Only if log level is trace
-            if log::log_enabled!(log::Level::Trace) && false{
-                if diff_snpmer < 10 && shared_snpmer > 100{
+            if log::log_enabled!(log::Level::Trace) && false {
+                if diff_snpmer < 10 && shared_snpmer > 100 {
                     let mut positions_read1_snpmer_diff = vec![];
                     let mut positions_read2_snpmer_diff = vec![];
 
@@ -590,7 +617,17 @@ pub fn compare_twin_reads(
                             kmers_read2_diff.push(kmer2);
                         }
                     }
-                    log::trace!("{}--{:?} {}--{:?}, snp_diff:{} snp_shared:{}, kmers1:{:?}, kmers2:{:?}", &seq1.id, positions_read1_snpmer_diff, &seq2.id, positions_read2_snpmer_diff, diff_snpmer, shared_snpmer, kmers_read1_diff, kmers_read2_diff);
+                    log::trace!(
+                        "{}--{:?} {}--{:?}, snp_diff:{} snp_shared:{}, kmers1:{:?}, kmers2:{:?}",
+                        &seq1.id,
+                        positions_read1_snpmer_diff,
+                        &seq2.id,
+                        positions_read2_snpmer_diff,
+                        diff_snpmer,
+                        shared_snpmer,
+                        kmers_read1_diff,
+                        kmers_read2_diff
+                    );
                 }
             }
 
@@ -618,7 +655,7 @@ pub fn compare_twin_reads(
         let end2 = l2.max(r2);
         let shared_minimizers = mini_chain.len();
         let mut mini_chain_return = None;
-        if retain_chain{
+        if retain_chain {
             mini_chain_return = Some(mini_chain_info.chain);
         }
         let twinol = TwinOverlap {
@@ -644,7 +681,6 @@ pub fn compare_twin_reads(
 }
 
 pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64, large_indel: bool) -> f64 {
-    
     let diff_snps = diff_snpmers as f64;
     let shared_minis = shared_minimizers as f64;
     let alpha = diff_snps as f64 / shared_minis as f64 / c as f64;
@@ -675,29 +711,28 @@ fn unitigs_to_tr(
             .iter()
             .map(|x| bits_to_ascii(x.to_bits()) as u8)
             .collect::<Vec<u8>>();
-        let tr = seeding::get_twin_read_syncmer(u8_seq, None, args.kmer_size, args.c, &snpmer_set, id);
+        let tr =
+            seeding::get_twin_read_syncmer(u8_seq, None, args.kmer_size, args.c, &snpmer_set, id);
         if let Some(mut tr) = tr {
-            let mut solid_mini_positions = FxHashSet::default();
-            let mut solid_snpmer_positions = FxHashSet::default();
-            for (pos,mini) in tr.minimizers(){
-                if solid_kmers.contains(&mini){
-                    solid_mini_positions.insert(pos as usize);
+            let mut solid_mini_indices = FxHashSet::default();
+            let mut solid_snpmer_indices = FxHashSet::default();
+            for (index, mini) in tr.minimizer_kmers.iter().enumerate(){
+                if solid_kmers.contains(&mini) {
+                    solid_mini_indices.insert(index);
                 }
             }
-            for (pos, snpmer) in tr.snpmers(){
-                if snpmer_set.contains(&snpmer){
-                    solid_snpmer_positions.insert(pos as usize);
+            for (index, snpmer) in tr.snpmer_kmers.iter().enumerate() {
+                if snpmer_set.contains(&snpmer) {
+                    solid_snpmer_indices.insert(index);
                 }
             }
-            tr.retain_mini_positions(solid_mini_positions);
-            tr.retain_snpmer_positions(solid_snpmer_positions);
+            tr.retain_mini_indices(solid_mini_indices);
+            tr.retain_snpmer_indices(solid_snpmer_indices);
             tr_unitigs.insert(node_hash_id, tr);
         }
     }
     return tr_unitigs;
 }
-
-
 
 pub fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
@@ -737,8 +772,8 @@ pub fn map_reads_to_outer_reads(
     args: &Cli,
 ) -> Vec<TwinReadMapping> {
     let mut ret = vec![];
-    // 0..outer_read_indices -- confusingly, I chose to renumber the indices in this step. Then 
-    // it's fixed in the index_of_outer_in_all. 
+    // 0..outer_read_indices -- confusingly, I chose to renumber the indices in this step. Then
+    // it's fixed in the index_of_outer_in_all.
     let tr_outer = outer_read_indices
         .iter()
         .enumerate()
@@ -749,7 +784,7 @@ pub fn map_reads_to_outer_reads(
     let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
     let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
     //let kmer_count_map = Mutex::new(FxHashMap::default());
-    
+
     let counter = Mutex::new(0);
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
@@ -760,7 +795,11 @@ pub fn map_reads_to_outer_reads(
         let mut unitig_hits = vec![];
         *counter.lock().unwrap() += 1;
         if *counter.lock().unwrap() % 10000 == 0 {
-            log::info!("Processed {} reads / {} ...", *counter.lock().unwrap(), twin_reads.len());
+            log::info!(
+                "Processed {} reads / {} ...",
+                *counter.lock().unwrap(),
+                twin_reads.len()
+            );
         }
 
         //let start = std::time::Instant::now();
@@ -777,7 +816,8 @@ pub fn map_reads_to_outer_reads(
                 *contig_id as usize,
                 true,
                 false,
-                args
+                false,
+                args,
             ) {
                 if twin_ol.end2 - twin_ol.start2 < 500 {
                     continue;
@@ -796,31 +836,25 @@ pub fn map_reads_to_outer_reads(
                     read.base_length,
                     tr_outer[&hit.i2].base_length,
                     hit.chain_reverse,
+                    args.maximal_end_fuzz,
                 );
 
-                let identity = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64, hit.large_indel);
-
-                //Used for EC
-                let _strain_specific_thresh_lax = same_strain(
+                let identity = id_est(
                     hit.shared_minimizers,
                     hit.diff_snpmers,
-                    hit.shared_snpmers,
                     args.c as u64,
-                    args.snpmer_threshold_lax,
-                    args.snpmer_error_rate_lax,
                     hit.large_indel,
                 );
 
                 //Populate mapping boundaries map
                 if max_overlap {
-                    let small_twin_ol = BareMappingOverlap{
+                    let small_twin_ol = BareMappingOverlap {
                         snpmer_identity: identity as f32,
                     };
                     let mut map = mapping_maximal_boundaries_map.lock().unwrap();
                     let vec = map.entry(hit.i2).or_insert(vec![]);
                     vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
-
-                } 
+                }
 
                 let mut map = mapping_local_boundaries_map.lock().unwrap();
                 let vec = map.entry(hit.i2).or_insert(vec![]);
@@ -841,15 +875,24 @@ pub fn map_reads_to_outer_reads(
     let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
 
     for (outer_id, boundaries) in mapping_local_boundaries_map.into_iter() {
-
         let index_of_outer_in_all = outer_read_indices[outer_id];
         let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
         num_alignments += boundaries.len();
 
-        let mut all_local_intervals = boundaries.into_iter().map(|x| BareInterval{start: x.0, stop: x.1}).collect::<Vec<_>>();
+        let mut all_local_intervals = boundaries
+            .into_iter()
+            .map(|x| BareInterval {
+                start: x.0,
+                stop: x.1,
+            })
+            .collect::<Vec<_>>();
         all_local_intervals.sort_unstable();
 
-        let maximal_boundaries = std::mem::take(mapping_maximal_boundaries_map.get_mut(&outer_id).unwrap_or(&mut vec![]));
+        let maximal_boundaries = std::mem::take(
+            mapping_maximal_boundaries_map
+                .get_mut(&outer_id)
+                .unwrap_or(&mut vec![]),
+        );
 
         let max_intervals = maximal_boundaries
             .into_iter()
@@ -862,7 +905,7 @@ pub fn map_reads_to_outer_reads(
 
         num_maximal += max_intervals.len();
         let lapper = Lapper::new(max_intervals);
-        
+
         let map_info = MappingInfo {
             minimum_depth: -1.,
             median_depth: -1.,
@@ -880,8 +923,14 @@ pub fn map_reads_to_outer_reads(
 
         ret.push(twinread_mapping);
     }
-    log::info!("Number of local alignments to outer reads: {}", num_alignments);
-    log::info!("Number of maximal alignments to outer reads: {}", num_maximal);
+    log::info!(
+        "Number of local alignments to outer reads: {}",
+        num_alignments
+    );
+    log::info!(
+        "Number of maximal alignments to outer reads: {}",
+        num_maximal
+    );
 
     ret
 }
@@ -926,8 +975,10 @@ pub fn map_reads_to_unitigs(
                 *contig_id as usize,
                 true,
                 true,
+                false,
                 args
             ) {
+                log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}", &read.id, &tr_unitigs[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2);
                 //Disallow large indels because they may cause windowed POA to fail
                 if twinol.end2 - twinol.start2 < MIN_READ_LENGTH || twinol.large_indel{
                     continue;
@@ -953,7 +1004,7 @@ pub fn map_reads_to_unitigs(
         for hit in ss_hits{
             let read_length = twin_reads[hit.i1].base_length;
             let unitig_length = tr_unitigs[&hit.i2].base_length;
-            let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse);
+            let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse, args.maximal_end_fuzz);
 
             if !retained{
                 continue;
@@ -1027,7 +1078,8 @@ pub fn map_reads_to_unitigs(
 
     let mut number_of_alignments = 0;
     let mut cigar_string_lengths = vec![];
-    for (contig_id, boundaries_and_rid) in mapping_boundaries_map.into_inner().unwrap().into_iter() {
+    for (contig_id, boundaries_and_rid) in mapping_boundaries_map.into_inner().unwrap().into_iter()
+    {
         let unitig_length = unitig_graph.nodes.get(&contig_id).unwrap().cut_length();
         let intervals = boundaries_and_rid
             .into_iter()
@@ -1038,7 +1090,11 @@ pub fn map_reads_to_unitigs(
             })
             .collect::<Vec<Interval<u32, SmallTwinOl>>>();
         number_of_alignments += intervals.len();
-        cigar_string_lengths.extend(intervals.iter().map(|x| x.val.alignment_result.as_ref().unwrap().cigar.len()));
+        cigar_string_lengths.extend(
+            intervals
+                .iter()
+                .map(|x| x.val.alignment_result.as_ref().unwrap().cigar.len()),
+        );
         let mut lapper = Lapper::new(intervals);
         lapper.intervals.shrink_to_fit();
 
@@ -1060,7 +1116,10 @@ pub fn map_reads_to_unitigs(
     }
 
     log::debug!("Number of alignments: {}", number_of_alignments);
-    log::debug!("Average cigar string length: {}", cigar_string_lengths.iter().sum::<usize>() as f64 / cigar_string_lengths.len() as f64);
+    log::debug!(
+        "Average cigar string length: {}",
+        cigar_string_lengths.iter().sum::<usize>() as f64 / cigar_string_lengths.len() as f64
+    );
 }
 
 fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {
@@ -1070,5 +1129,3 @@ fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>()
 }
-
-

@@ -83,6 +83,11 @@ pub struct Cli {
     #[arg(long, default_value_t=1000, help_heading = "Overlap Parameters")]
     pub min_ol: usize,
 
+    /// Minimum overlap length for graph construction
+    #[arg(long, default_value_t=500, help_heading = "Overlap Parameters")]
+    pub min_ol_secondary: usize,
+
+
     /// Maximum bubble length to pop; keep alternates
     #[arg(long, default_value_t=500000, help_heading = "Graph Parameters")]
     pub max_bubble_threshold: usize,
@@ -95,6 +100,8 @@ pub struct Cli {
     #[arg(long, default_value_t=1.0, help_heading = "Graph Parameters")]
     pub z_edge_threshold: f64,
 
+    #[arg(long, default_value_t=200, help_heading = "Alignment Parameters")]
+    pub maximal_end_fuzz: usize, 
 
     /// Bloom filter size in GB
     #[arg(short, long, default_value_t=10.)]
