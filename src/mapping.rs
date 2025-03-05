@@ -1,4 +1,6 @@
 use crate::cli::Cli;
+use crate::constants::IDENTITY_THRESHOLDS;
+use crate::constants::ID_THRESHOLD_ITERS;
 use rust_lapper::Interval;
 use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
@@ -274,12 +276,13 @@ pub fn dp_anchors(
     gap_cost: i32,
     match_score: i32,
     band: usize,
-) -> Vec<(i32, Vec<Anchor>)> {
+) -> Vec<(i32, Vec<Anchor>, bool)> {
     if matches.is_empty() {
-        return vec![(0, vec![])];
+        return vec![(0, vec![], false)];
     }
     let mut dp = vec![0; matches.len()];
     let mut prev = vec![None; matches.len()];
+    let mut large_indel_tracker = vec![false; matches.len()];
     let mut max_score = 0;
     let mut max_index = 0;
     let max_skip = 10;
@@ -307,7 +310,9 @@ pub fn dp_anchors(
                 - (start2 as i32 - (end2) as i32).abs();
             let gap_penalty = gap_penalty_signed.abs();
 
+            let large_indel = false;
             if gap_penalty > MAX_GAP_CHAINING as i32 {
+                //large_indel = true;
                 continue;
             }
 
@@ -318,6 +323,9 @@ pub fn dp_anchors(
                 if score > max_score {
                     max_score = score;
                     max_index = i;
+                }
+                if large_indel{
+                    large_indel_tracker[i] = true;
                 }
             }
             else{
@@ -348,8 +356,10 @@ pub fn dp_anchors(
         }
 
         let mut chain = Vec::new();
+        let mut large_indel = false;
         let mut i = Some(best_index);
         while let Some(idx) = i {
+            large_indel = large_indel || large_indel_tracker[idx];
             used_anchors.insert(idx);
             chain.push(matches[idx].clone());
             i = prev[idx];
@@ -370,7 +380,7 @@ pub fn dp_anchors(
         }) {
             continue;
         }
-        chains.push((score, chain));
+        chains.push((score, chain, large_indel));
         reference_ranges.push(interval);
     }
     
@@ -430,7 +440,7 @@ fn find_optimal_chain(
     let mut both_chains = scores_and_chains_f.into_iter().map(|x| (x, false)).chain(scores_and_chains_r.into_iter().map(|x| (x, true))).collect::<Vec<_>>();
     both_chains.sort_by(|a, b| b.0.0.cmp(&a.0.0));
 
-    for ((score, chain), reverse) in both_chains{
+    for ((score, chain, large_indel), reverse) in both_chains{
         if score as f64 > 0.75 * max_score as f64 {
             let l = chain.first().unwrap().pos2;
             let r = chain.last().unwrap().pos2;
@@ -446,6 +456,7 @@ fn find_optimal_chain(
                 chain,
                 reverse: reverse,
                 score: score,
+                large_indel: large_indel,
             });
             reference_intervals.push(interval);
 
@@ -465,18 +476,19 @@ pub fn compare_twin_reads(
     j: usize,
     compare_snpmers: bool,
     retain_chain: bool,
+    args: &Cli,
 ) -> Vec<TwinOverlap> {
     let mini_chain_infos;
     if let Some(anchors) = mini_anchors {
         mini_chain_infos = find_optimal_chain(
             &anchors.anchors,
-            10,
+            args.c as i32,
             1,
             Some((anchors.max_mult * 10).min(50)),
         );
     } else {
         let anchors = find_exact_matches_indexes(seq1.minimizers(), seq2.minimizers());
-        mini_chain_infos = find_optimal_chain(&anchors.0, 10, 1, Some((anchors.1 * 10).min(50)));
+        mini_chain_infos = find_optimal_chain(&anchors.0, args.c as i32, 1, Some((anchors.1 * 10).min(50)));
     }
     let mut twin_overlaps = vec![];
     let k = seq1.k as usize;
@@ -624,34 +636,28 @@ pub fn compare_twin_reads(
             intersect: (intersect_split, intersection_snp),
             chain_score: mini_chain_info.score,
             minimizer_chain: mini_chain_return,
+            large_indel: mini_chain_info.large_indel,
         };
         twin_overlaps.push(twinol);
     }
     return twin_overlaps;
 }
 
-pub fn parse_badread(_id: &str) -> Option<(String, String)> {
-    return Some(("".to_string(), "".to_string()));
-    // let spl = id.split_whitespace().collect::<Vec<&str>>()[1]
-        // .split(",")
-        // .collect::<Vec<&str>>();
-    // if spl.len() < 3 {
-        // return Some((spl[0].to_string(), "0".to_string()));
-    // }
-    // let name = spl[0];
-    // let range = spl[2];
-    // return Some((name.to_string(), range.to_string()));
-}
-
-pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64) -> f64 {
-    if diff_snpmers == 0 {
-        return 1.;
-    }
+pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64, large_indel: bool) -> f64 {
+    
     let diff_snps = diff_snpmers as f64;
     let shared_minis = shared_minimizers as f64;
     let alpha = diff_snps as f64 / shared_minis as f64 / c as f64;
     let theta = alpha / (1. + alpha);
-    let id_est = 1. - theta;
+    let mut id_est = 1. - theta;
+
+    if large_indel {
+        //Right now it's 0.5% penalty for large indels.
+        let penalty = IDENTITY_THRESHOLDS.last().unwrap() - IDENTITY_THRESHOLDS.first().unwrap();
+        let penalty = penalty / 2.;
+        id_est -= penalty;
+    }
+
     return id_est;
 }
 
@@ -771,6 +777,7 @@ pub fn map_reads_to_outer_reads(
                 *contig_id as usize,
                 true,
                 false,
+                args
             ) {
                 if twin_ol.end2 - twin_ol.start2 < 500 {
                     continue;
@@ -791,7 +798,7 @@ pub fn map_reads_to_outer_reads(
                     hit.chain_reverse,
                 );
 
-                let identity = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64);
+                let identity = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64, hit.large_indel);
 
                 //Used for EC
                 let _strain_specific_thresh_lax = same_strain(
@@ -800,7 +807,8 @@ pub fn map_reads_to_outer_reads(
                     hit.shared_snpmers,
                     args.c as u64,
                     args.snpmer_threshold_lax,
-                    args.snpmer_error_rate_lax
+                    args.snpmer_error_rate_lax,
+                    hit.large_indel,
                 );
 
                 //Populate mapping boundaries map
@@ -917,9 +925,11 @@ pub fn map_reads_to_unitigs(
                 rid,
                 *contig_id as usize,
                 true,
-                true
+                true,
+                args
             ) {
-                if twinol.end2 - twinol.start2 < MIN_READ_LENGTH {
+                //Disallow large indels because they may cause windowed POA to fail
+                if twinol.end2 - twinol.start2 < MIN_READ_LENGTH || twinol.large_indel{
                     continue;
                 }
                 unitig_hits.push(twinol);
@@ -931,12 +941,13 @@ pub fn map_reads_to_unitigs(
                 x.shared_snpmers,
                 args.c.try_into().unwrap(),
                 args.snpmer_threshold_lax,
-                args.snpmer_error_rate_lax
+                args.snpmer_error_rate_lax,
+                x.large_indel,
             )).collect::<Vec<_>>();
 
         let mut retained_hits = vec![];
-        ss_hits.sort_by(|a, b| id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap()).
-        partial_cmp(&id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap())).unwrap());
+        ss_hits.sort_by(|a, b| id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel).
+        partial_cmp(&id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel)).unwrap());
 
         let mut already_best_hit = false;
         for hit in ss_hits{
@@ -955,7 +966,8 @@ pub fn map_reads_to_unitigs(
                 hit.shared_snpmers,
                 args.c.try_into().unwrap(),
                 args.snpmer_threshold_strict,
-                args.snpmer_error_rate_strict
+                args.snpmer_error_rate_strict,
+                hit.large_indel
             ){
                 if already_best_hit{
                     break;
@@ -1002,7 +1014,7 @@ pub fn map_reads_to_unitigs(
                 query_id: rid as u32,
                 //shared_minimizers: hit.shared_minimizers as u32,
                 //diff_snpmers: hit.diff_snpmers as u32,
-                snpmer_identity: id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64) as f32,
+                snpmer_identity: id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64, hit.large_indel) as f32,
                 //shared_snpmers: hit.shared_snpmers as u32,
                 reverse: hit.chain_reverse,
                 alignment_result: alignment_result

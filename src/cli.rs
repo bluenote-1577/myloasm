@@ -9,6 +9,8 @@ use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
     version,
     author
 )]
+
+#[derive(Default)]
 pub struct Cli {
     /// Input FASTQ files
     #[arg(num_args = 1..)]
@@ -89,9 +91,10 @@ pub struct Cli {
     #[arg(long, default_value_t=50000, help_heading = "Graph Parameters")]
     pub small_bubble_threshold: usize,
 
-    /// Test SNPMER error correction
-    #[arg(long, help_heading = "Graph Parameters")]
-    pub ec: bool,
+    /// Small bubble length to pop; discard alternates
+    #[arg(long, default_value_t=1.0, help_heading = "Graph Parameters")]
+    pub z_edge_threshold: f64,
+
 
     /// Bloom filter size in GB
     #[arg(short, long, default_value_t=10.)]
@@ -117,6 +120,12 @@ pub enum LogLevel {
     Info,
     Debug,
     Trace,
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        LogLevel::Debug
+    }
 }
 
 

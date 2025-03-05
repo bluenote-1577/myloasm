@@ -33,6 +33,19 @@ pub trait GraphNode {
     fn is_circular(&self) -> bool{
         self.in_edges().len() == 1 && self.out_edges().len() == 1 && self.in_edges()[0] == self.out_edges()[0]
     }
+
+    fn has_circular_walk(&self) -> bool{
+        let mut edges = FxHashSet::default();
+        for edge in self.in_edges(){
+            edges.insert(*edge);
+        }
+        for edge in self.out_edges(){
+            if edges.contains(edge){
+                return true
+            }
+        }
+        return false;
+    }
 }
 
 // Common edge trait - both ReadOverlapEdgeTwin and UnitigEdge share these
@@ -65,6 +78,27 @@ pub trait GraphEdge {
     //o<---->o is incoming for n1, incoming for n2. etc
     //TODO this fails for circular paths
     fn node_edge_direction(&self, node: &NodeIndex) -> Direction {
+        if self.node1() == *node {
+            if self.orientation1() {
+                Direction::Outgoing
+            } else {
+                Direction::Incoming
+            }
+        } else if self.node2() == *node {
+            if self.orientation2() {
+                Direction::Incoming
+            } else {
+                Direction::Outgoing
+            }
+        } else {
+            panic!("Edge does not connect to node");
+        }
+    }
+
+    fn node_edge_direction_fallback(&self, node: &NodeIndex, dir: Direction) -> Direction {
+        if self.node1() == *node && self.node2() == *node{
+            return dir
+        }
         if self.node1() == *node {
             if self.orientation1() {
                 Direction::Outgoing

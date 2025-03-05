@@ -340,7 +340,7 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
 
         let step = 0.05 / 100.;
 
-        let sufficient_gap = min_depths[0] > 5.0 * min_depths[ID_THRESHOLD_ITERS - 1];
+        let sufficient_gap = min_depths[0] > 3.0 * min_depths[ID_THRESHOLD_ITERS - 1];
         let sufficient_depth = min_depths[0] >= MIN_COV_READ as f64;
         let strain_specific_not_enough = min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64; // Always
         let pass_cond_1 = sufficient_gap;
@@ -348,7 +348,8 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
 
         let mut prev_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1];
 
-        if (pass_cond_1 || pass_cond_2) && sufficient_depth {
+        //TODO
+        if (pass_cond_1 && pass_cond_2) && sufficient_depth {
             //0.10% increments; 100 -> 99.90 -> 99.8 ...
             let mut min_depth_prev = min_depths[ID_THRESHOLD_ITERS - 1];
             let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - step;

@@ -23,6 +23,7 @@ pub struct PoaConsensusBuilder {
     breakpoints: Vec<usize>,
     genome_length: usize,
     window_overlap_len: usize,
+    contig_name: String,
     bp_len: usize,
 }
 
@@ -86,11 +87,11 @@ impl PoaConsensusBuilder {
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();
         let consensuses =
-            PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len);
+            PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, &self.contig_name);
         return consensuses;
     }
 
-    pub fn modify_join_consensus(mut cons: Vec<Vec<u8>>, window_len: usize) -> Vec<Vec<u8>> {
+    pub fn modify_join_consensus(mut cons: Vec<Vec<u8>>, window_len: usize, contig_name: &str) -> Vec<Vec<u8>> {
         if cons.len() == 0 {
             return vec![];
         }
@@ -123,7 +124,7 @@ impl PoaConsensusBuilder {
 
             //I believe this happens when the overlap alignments are discordant...
             if bp.0 > ol_len{
-                log::debug!("Potential error in consensus joining at block {}", i);
+                log::debug!("Potential error in consensus joining at block {} for contig {}", i, contig_name);
                 hang = ol_len;
             }
             else{
@@ -142,11 +143,24 @@ impl PoaConsensusBuilder {
         return new_consensus;
     }
 
-    pub fn new(genome_length: usize) -> Self {
+    pub fn new(genome_length: usize, contig_name: String) -> Self {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
             breakpoints: Vec::new(),
+            contig_name,
+            genome_length,
+            bp_len: 0,
+            window_overlap_len: 0,
+        }
+    }
+
+    fn new_test(genome_length: usize) -> Self{
+        PoaConsensusBuilder {
+            seq: Vec::new(),
+            qual: Vec::new(),
+            breakpoints: Vec::new(),
+            contig_name: "test".to_string(),
             genome_length,
             bp_len: 0,
             window_overlap_len: 0,
@@ -351,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_generate_breakpoints() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 0);
         assert_eq!(
             builder.breakpoints,
@@ -361,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_add_seq_1() {
-        let mut builder = PoaConsensusBuilder::new(10);
+        let mut builder = PoaConsensusBuilder::new_test(10);
         builder.generate_breakpoints(10, 0);
         let seq = b"ACGTACGTACGT".to_vec();
         let qual = vec![30; 12];
@@ -390,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_add_seq_2() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 0);
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTA".to_vec();
         let qual = vec![30; 29];
@@ -408,7 +422,7 @@ mod tests {
 
     #[test]
     fn test_add_seq_2_window() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 2);
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTA".to_vec();
         let qual = vec![30; 29];
@@ -432,7 +446,7 @@ mod tests {
 
     #[test]
     fn test_add_seq_3() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 0);
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
         let qual = vec![30; 30];
@@ -454,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_add_seq_del() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 0);
         let seq = b"ACCGTACGTACGTACGTACGTACGTAC".to_vec();
         let qual = vec![30; 30];
@@ -486,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_add_seq_ins() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 0);
         let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
         let qual = vec![30; 32];
@@ -522,7 +536,7 @@ mod tests {
     #[test]
     fn test_poa_cons() {
         for window_len in [0, 0] {
-            let mut builder = PoaConsensusBuilder::new(100);
+            let mut builder = PoaConsensusBuilder::new_test(100);
             builder.generate_breakpoints(10, window_len);
             let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
             let qual = vec![30; 32];
@@ -587,7 +601,7 @@ mod tests {
 
     #[test]
     fn test_poa_triplets() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
         builder.generate_breakpoints(10, 0);
 
         let seq = b"ATCG".to_vec();
@@ -621,7 +635,7 @@ mod tests {
     fn test_poa_with_without_window() {
         let window_lengths = [0, 3];
         for window_length in window_lengths {
-            let mut builder = PoaConsensusBuilder::new(100);
+            let mut builder = PoaConsensusBuilder::new_test(100);
             builder.generate_breakpoints(5, window_length);
 
             let seq = b"CCCCCTTTTTGGGGGAAAAA".to_vec();
@@ -681,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_poa_cons_quality() {
-        let mut builder = PoaConsensusBuilder::new(100);
+        let mut builder = PoaConsensusBuilder::new_test(100);
 
         builder.generate_breakpoints(10, 1);
 
@@ -784,7 +798,7 @@ mod tests {
 
     #[test]
     fn test_poa_cons_real_quality() {
-        let mut builder = PoaConsensusBuilder::new(10000);
+        let mut builder = PoaConsensusBuilder::new_test(10000);
 
         builder.generate_breakpoints(700, 50);
 
@@ -823,7 +837,7 @@ mod tests {
             b"TTACGTATGTGTGTGT".to_vec() // first T is errors
         ];
 
-        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 6);
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 6, "test");
 
         let mut final_consensus = vec![];
         for cons in new_cons{
@@ -842,7 +856,7 @@ mod tests {
             b"CCTTTGGGG".to_vec() // first T is errors
         ];
 
-        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5);
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5, "test");
 
         let mut final_consensus = vec![];
         for cons in new_cons{

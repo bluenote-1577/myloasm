@@ -17,7 +17,6 @@ use myloasm::seq_parse;
 use myloasm::twin_graph;
 use myloasm::twin_graph::OverlapConfig;
 use myloasm::types;
-use myloasm::types::MappingInfo;
 use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
@@ -31,8 +30,8 @@ use std::time::Instant;
 use tikv_jemallocator::Jemalloc;
 
 
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+//#[global_allocator]
+//static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
     
@@ -391,7 +390,9 @@ fn light_progressive_cleaning(
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
     let mut iteration = 1;
-    let divider = 2;
+    let divider = 3;
+    let max_attempts = 10;
+    let max_dropcut_thresh = 0.50;
 
     //let safety_edge_cov_score_thresholds = [50., 25., 10.];
     let safety_edge_cov_score_thresholds = [1000000.];
@@ -400,11 +401,25 @@ fn light_progressive_cleaning(
     loop {
         log::debug!("LIGHT-CLEAN: Cleaning graph iteration {}", iteration);
         let mut size_graph = unitig_graph.nodes.len();
+        let mut counter = 0;
+        let tip_length_cutoff = args.tip_length_cutoff;
+        let read_cutoff = args.tip_read_cutoff;
+
+        //First iteration, with spurious haplotype edge removal
+        unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.pop_bubbles(bubble_length_cutoff, None, false);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.remove_low_id_haplotype_edges(&args);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+        // unitig_graph.remove_singleton_lowcov_nodes(&args);
+        // unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
         // Remove tips
         loop {
-            let tip_length_cutoff = args.tip_length_cutoff;
-            let read_cutoff = args.tip_read_cutoff;
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
             //unitig_graph.remove_caps();
@@ -417,6 +432,10 @@ fn light_progressive_cleaning(
             }
 
             size_graph = unitig_graph.nodes.len();
+            counter += 1;
+            if counter == max_attempts {
+                break;
+            }
         }
 
         if output_temp {
@@ -449,7 +468,7 @@ fn light_progressive_cleaning(
             [(iteration - 1).min(safety_edge_cov_score_thresholds.len() - 1)];
         unitig_graph.resolve_bridged_repeats(
             &args,
-            0.50 / (divider as f64) * iteration as f64,
+            max_dropcut_thresh / (divider as f64) * iteration as f64,
             None,
             Some(edge_safe_cov_threshold),
             prebridge_file,
@@ -475,6 +494,7 @@ fn light_progressive_cleaning(
     }
 
     let mut size_graph = unitig_graph.nodes.len();
+    let mut counter = 0;
     loop {
         unitig_graph.remove_tips(args.tip_length_cutoff, args.tip_read_cutoff, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
@@ -484,6 +504,10 @@ fn light_progressive_cleaning(
             break;
         }
         size_graph = unitig_graph.nodes.len();
+        counter += 1;
+        if counter == max_attempts {
+            break;
+        }
     }
     if output_temp {
         unitig_graph.to_gfa(
@@ -662,9 +686,9 @@ fn heavy_clean_with_walk(
                 let ol_threshold = ol_thresholds[ind];
 
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-                if counter == (ol_thresholds.len() - 1) {
+                if counter <= (ol_thresholds.len() - 1) && counter != 0{
                     unitig_graph.to_gfa(
-                        temp_dir.join(format!("heavy-{}-{}-{}-before_walkcut_unitig_graph.gfa", multiplier, temperature, ol_threshold)),
+                        temp_dir.join(format!("heavy-{}-{}-{}.gfa", multiplier, temperature, ol_threshold)),
                         true,
                         false,
                         &twin_reads,
@@ -812,7 +836,7 @@ fn remove_tips_until_stable(
     max_attempts: Option<usize>,
     _temp_dir: &PathBuf,
     save_tips: bool,
-    _args: &cli::Cli,
+    args: &cli::Cli,
 ) {
     let get_seq_config = types::GetSequenceInfoConfig::default();
     let mut size_graph = unitig_graph.nodes.len();
@@ -827,6 +851,8 @@ fn remove_tips_until_stable(
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.pop_bubbles(max_bubble_threshold, Some(max_bubble_tigs), save_tips);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        //unitig_graph.cut_z_edges_circular_only(args);
+        //unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if unitig_graph.nodes.len() == size_graph {
             break;
         }
@@ -876,7 +902,6 @@ fn progressive_coverage_contigs(
     let all_covs = up_to_30.iter().chain(after_30.iter());
 
     for &cov_thresh in all_covs.into_iter() {
-        log::debug!("PROG-COV-CLEAN: Processing coverage {}", cov_thresh);
         let cov_thresh = cov_thresh as f64;
 
         unitig_graph_with_threshold.cut_coverage(cov_thresh);

@@ -169,11 +169,12 @@ fn first_iteration(
                             }
                         }
                         Err(_) => {
-                            log::debug!("Thread finished.");
+                            log::trace!("Thread finished.");
                             break;
                         }
                     }
                 }
+                map.shrink_to_fit();
                 map
             }));
         }
@@ -302,11 +303,12 @@ fn second_iteration(
                         }
                     }
                     Err(_) => {
-                        log::debug!("Thread finished.");
+                        log::trace!("Thread finished.");
                         break;
                     }
                 }
             }
+            my_map.shrink_to_fit();
             my_map
         }));
     }

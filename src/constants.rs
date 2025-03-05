@@ -6,6 +6,7 @@ pub const FORWARD_READ_SAFE_SEARCH_CUTOFF: usize = 10000;
 pub const MAX_GAP_CHAINING: usize = 200;
 pub const SAMPLING_RATE_COV: usize = 10;
 pub const MINIMIZER_END_NTH_COV: usize = 20;
+pub const MINIMIZER_END_NTH_OVERLAP: usize = 30;
 pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
 pub const MID_BASE_THRESHOLD_READ: u8 = 17; // 98%
 pub const MID_BASE_THRESHOLD_INITIAL: u8 = 10; // 90%
@@ -30,6 +31,7 @@ pub const MAX_BLOCK_SIZE: usize = 128;
 pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -1 };
 pub const MAX_OL_POLISHING: usize = 75;
 pub const READ_BLOCK_SIZE_FOR_COVERAGE: usize = 50_000;
+pub const OVERLAP_HANG_LENGTH: usize = 750;
 
 //At most 1/20 k-mers are snpmers. 
 pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./20.;

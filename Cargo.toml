@@ -19,7 +19,6 @@ clap = { version = "4.4", features = ["derive"] }
 rust-htslib= { version = "0.46", default-features = false }
 statrs = "0.16"
 spmc = "0.3"
-dashmap = "6"
 fishers_exact = "1.0"
 fxhash = "0"
 bio-seq = { version = "0.14", features = ["serde"]}

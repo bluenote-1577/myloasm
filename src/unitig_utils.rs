@@ -358,10 +358,12 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
     let mut distances = vec![];
     let mut weights = vec![];
 
+    let min_cov_threshold = (MIN_COV_READ as f64 + PSEUDOCOUNT).ln();
+
     for i in 0..ID_THRESHOLD_ITERS{
 
         //Skip if both are below threshold
-        if median_larger_3.unwrap()[i] < MIN_COV_READ as f64 && median_smaller_3.unwrap()[i] < MIN_COV_READ as f64 && i != 0{
+        if median_larger_3.unwrap()[i] < min_cov_threshold && median_smaller_3.unwrap()[i] < min_cov_threshold && i != 0{
             continue;
         }
 
@@ -386,11 +388,11 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
         }
 
         let iqr = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
-        let harmonic_mean_sample_size = 2. / (1. / larger.len() as f64 + 1. / smaller.len() as f64);
-        let weight1 = 1. + iqr / harmonic_mean_sample_size.sqrt() / 4.;
+        //let harmonic_mean_sample_size = 2. / (1. / larger.len() as f64 + 1. / smaller.len() as f64);
+        //let weight1 = 1. + iqr / harmonic_mean_sample_size.sqrt() / 4.;
         //let max_sample_size = larger.len().max(smaller.len());
         //let weight2 = (0.5 + 1. / (1. + max_sample_size as f64)) + iqr;
-        weights.push(1. / weight1);
+        weights.push(1.);
     }
 
     //let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
@@ -495,7 +497,7 @@ mod tests {
         dbg!(dist2);
 
         //Wider distribution -> less distance
-        assert!(dist1 > dist2);
+        assert!(dist1 == dist2);
     }
 
     #[test]

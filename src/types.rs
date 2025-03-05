@@ -183,6 +183,7 @@ pub struct ChainInfo {
     pub chain: Vec<Anchor>,
     pub reverse: bool,
     pub score: i32,
+    pub large_indel: bool
 }
 
 pub type EdgeIndex = usize;
@@ -493,6 +494,7 @@ pub struct TwinOverlap{
     pub chain_reverse: bool,
     pub intersect: (usize, usize),
     pub chain_score: i32,
+    pub large_indel: bool,
     pub minimizer_chain: Option<Vec<Anchor>>,
 }
 
@@ -738,3 +740,4 @@ pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{
         _ => b'N'
     }).collect()
 }
+
