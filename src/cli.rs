@@ -10,7 +10,7 @@ use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
     author
 )]
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Cli {
     /// Input FASTQ files
     #[arg(num_args = 1..)]
@@ -108,7 +108,7 @@ pub struct Cli {
     pub bloom_filter_size: f64,
 
     /// Minimum number of reads in output contigs
-    #[arg(long, default_value_t = 4)]
+    #[arg(long, default_value_t = 1)]
     pub min_reads_contig: usize,
     
     /// HiFi mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)

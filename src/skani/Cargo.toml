@@ -1,0 +1,53 @@
+[package]
+name = "skani"
+###Make sure to change version in main.rs after changing cargo.toml
+version = "0.2.2-LIB"
+####
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "skani is a fast tool for calculating ANI between metagenomic sequences, such as metagenome-assembled genomes (MAGs). It is extremely fast and is robust against incompleteness and fragmentation, giving accurate ANI estimates."
+homepage = "https://github.com/bluenote-1577/skani"
+documentation = "https://github.com/bluenote-1577/skani"
+repository = "https://github.com/bluenote-1577/skani"
+readme = "README.md"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "1.0"
+bio = "1"
+rand = "0.8.3"
+fxhash = "0"
+partitions = { git = "https://github.com/bluenote-1577/partitions.git" }
+#partitions = "0.2"
+num-traits = "0"
+needletail = "0.5"
+simple-logging= "2"
+log = "0.4"
+rayon = "1.5"
+smallvec = { version = "1", features = ["union","serde","write"] }
+serde = "1"
+bincode = "1"
+intervallum = "1"
+rust-lapper = "1"
+gcollections = "1"
+fastrand="1"
+gbdt = "0"
+serde_json = "1"
+statrs = "0"
+
+[dependencies.clap]
+version = "3"
+optional = true
+
+[profile.release]
+panic = "abort"
+lto = true
+
+[profile.dev]
+#opt-level = 1
+opt-level = 3
+
+#[rust]
+#debuginfo-level = 1

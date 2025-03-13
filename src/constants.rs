@@ -24,6 +24,7 @@ pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.99, 0.9975, 1.0];
 //pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.0, 0.0, 1.0];
 pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.333, 0.333, 0.333];
 pub const MIN_COV_READ: usize = 5;
+pub const MIN_COV_READ_SMALL: usize = 3;
 pub const SUB_MATRIX: block_aligner::scores::NucMatrix = block_aligner::scores::NucMatrix::new_simple(6, -4);
 pub const GAPS: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -5, extend: -3 };
 pub const MIN_BLOCK_SIZE: usize = 32;
@@ -35,3 +36,6 @@ pub const OVERLAP_HANG_LENGTH: usize = 750;
 
 //At most 1/20 k-mers are snpmers. 
 pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./20.;
+pub const SUPP_ALIGNMENT_SCORE_THRESHOLD: i32 = 2000;
+
+pub const POLISHED_CONTIGS_NAME: &str = "initial_polished.fa";

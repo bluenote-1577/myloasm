@@ -28,6 +28,89 @@ fn get_length_from_cigar(cigar: &Vec<OpLen>) -> (usize, usize) {
     return (add_length_ref, add_length_q);
 }
 
+// Just extend the ends to get the full alignment range
+pub fn extend_ends_chain(
+    q_seq_redir: &Seq<Dna>,
+    r_seq: &Seq<Dna>,
+    overlap: &TwinOverlap,
+    args: &Cli,
+) -> (usize, usize, usize, usize){
+    let k = args.kmer_size as u32;
+    let chain = overlap.minimizer_chain.as_ref().unwrap();
+    let q_seq;
+    let _q_seq_rev;
+    let qlen = q_seq_redir.len() as u32;
+    let end_ind = chain.len() - 1;
+    if overlap.chain_reverse {
+        _q_seq_rev = Some(q_seq_redir.to_revcomp());
+        q_seq = _q_seq_rev.as_ref().unwrap();
+    } else {
+        q_seq = q_seq_redir;
+        _q_seq_rev = None;
+    }
+
+    //Main chain-extend between ends
+    let prev_q_pos = if overlap.chain_reverse {
+        qlen - chain[end_ind].pos1 - k
+    } else {
+        chain[0].pos1
+    };
+
+    let prev_r_pos = if overlap.chain_reverse {
+        chain[end_ind].pos2
+    } else {
+        chain[0].pos2
+    };
+
+
+    // ----- LEFT EXTEND ---- 
+    let left_ref = if prev_q_pos > prev_r_pos {
+        0
+    } else {
+        prev_r_pos - prev_q_pos
+    };
+
+    let q_left_slice = &q_seq[0..prev_q_pos as usize];
+    let r_left_slice = &r_seq[left_ref as usize..prev_r_pos as usize];
+    let q_left_slice_u8 = dna_slice_to_u8(q_left_slice);
+    let r_left_slice_u8 = dna_slice_to_u8(r_left_slice);
+    //Reverse and do forward local
+    let q_left_slice_u8_rev = q_left_slice_u8
+        .iter()
+        .rev()
+        .map(|&x| x)
+        .collect::<Vec<u8>>();
+    let r_left_slice_u8_rev = r_left_slice_u8
+        .iter()
+        .rev()
+        .map(|&x| x)
+        .collect::<Vec<u8>>();
+    let left_cigar =
+        align_seq_to_ref_slice(&r_left_slice_u8_rev, &q_left_slice_u8_rev, &GAPS, Some(30));
+    let (add_length_ref_l, add_length_q_l) = get_length_from_cigar(&left_cigar);
+    let left_start_q = prev_q_pos as usize - add_length_q_l;
+    let left_start_r = prev_r_pos as usize - add_length_ref_l;
+
+    // --- RIGHT EXTEND ----
+    // qlen = 3, end = 1, k = 2, gap = 0
+    let right_gap = (qlen - prev_q_pos - k).min(r_seq.len() as u32 - prev_r_pos - k) as usize;
+    let pqpos = (prev_q_pos + k) as usize;
+    let prpos = (prev_r_pos + k) as usize;
+
+    let q_right_slice = &q_seq[pqpos..pqpos + right_gap];
+    let r_right_slice = &r_seq[prpos..prpos + right_gap];
+    let q_right_slice_u8 = dna_slice_to_u8(q_right_slice);
+    let r_right_slice_u8 = dna_slice_to_u8(r_right_slice);
+    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(30));
+    let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
+
+    let q_end = pqpos + add_length_q_r;
+    let q_start = left_start_q;
+    let r_end = prpos + add_length_ref_r;
+    let r_start = left_start_r;
+    return (q_start, q_end, r_start, r_end);
+}
+
 //Seed-chain-extend
 pub fn get_full_alignment(
     q_seq_redir: &Seq<Dna>,
@@ -61,6 +144,7 @@ pub fn get_full_alignment(
     } else {
         chain[0].pos1
     };
+
     let mut prev_r_pos = if overlap.chain_reverse {
         chain[end_ind].pos2
     } else {
@@ -160,19 +244,20 @@ pub fn get_full_alignment(
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
     extend_cigar(&mut cigar_vec, right_cigar);
 
-    log::trace!(
-        "{}, {}, KMERS {}, {}, START {}, {}, start: {}, END {}, {}, STR: {}",
-        fmt(&cigar_vec[0..10]),
-        overlap.chain_reverse,
-        &q_seq[q_start..q_start + 50].to_string(),
-        &r_seq[r_start..r_start + 50].to_string(),
-        &q_seq[left_start_q..left_start_q + 50].to_string(),
-        &r_seq[left_start_r..left_start_r + 50].to_string(),
-        left_start_q,
-        q_seq[pqpos..pqpos + right_gap].to_string(),
-        r_seq[prpos..prpos + right_gap].to_string(),
-        q_seq[0..10].to_string(),
-    );
+    // --FOR Development--
+    // log::trace!(
+    //     "{}, {}, KMERS {}, {}, START {}, {}, start: {}, END {}, {}, STR: {}",
+    //     fmt(&cigar_vec[0..10]),
+    //     overlap.chain_reverse,
+    //     &q_seq[q_start..q_start + 50].to_string(),
+    //     &r_seq[r_start..r_start + 50].to_string(),
+    //     &q_seq[left_start_q..left_start_q + 50].to_string(),
+    //     &r_seq[left_start_r..left_start_r + 50].to_string(),
+    //     left_start_q,
+    //     q_seq[pqpos..pqpos + right_gap].to_string(),
+    //     r_seq[prpos..prpos + right_gap].to_string(),
+    //     q_seq[0..10].to_string(),
+    // );
 
     let (cigar_length_r, cigar_length_q) = get_length_from_cigar(&cigar_vec);
     let q_end = pqpos + add_length_q_r;

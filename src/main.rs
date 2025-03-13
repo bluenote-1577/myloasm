@@ -1,25 +1,29 @@
 use bincode;
+use flexi_logger::style;
 use clap::Parser;
 use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
-use myloasm::polishing_mod;
 use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
 use myloasm::constants::ID_THRESHOLD_ITERS;
 use myloasm::constants::MAX_BUBBLE_UNITIGS_FINAL_STAGE;
+use myloasm::constants::POLISHED_CONTIGS_NAME;
 use myloasm::constants::TS_DASHES_BLANK_COLONS_DOT_BLANK;
 use myloasm::graph::GraphNode;
 use myloasm::kmer_comp;
 use myloasm::map_processing;
 use myloasm::mapping;
+use myloasm::polishing_mod;
 use myloasm::seq_parse;
 use myloasm::twin_graph;
 use myloasm::twin_graph::OverlapConfig;
+use myloasm::small_genomes;
 use myloasm::types;
 use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
+use myloasm::skani_dereplicate;
 use myloasm::utils::*;
 use std::fs::File;
 use std::io::BufReader;
@@ -29,12 +33,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tikv_jemallocator::Jemalloc;
 
-
 //#[global_allocator]
 //static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
-    
     let total_start_time = Instant::now();
     let mut args = cli::Cli::parse();
     let (output_dir, temp_dir) = initialize_setup(&mut args);
@@ -55,14 +57,28 @@ fn main() {
 
     // Step 4: Construct raw unitig graph
     let (mut unitig_graph, overlap_adj_map) =
-        unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, &args);
+        unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, Some(&twin_read_container.outer_indices), &args);
+
+    let out_file = std::path::Path::new(&args.output_dir).join("unitig_graph.gfa");
+    unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
 
     // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
     light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir, true);
 
+    
     // Step 6: Second round of progressive cleaning; more aggressive.
     //heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
-    heavy_clean_with_walk(&mut unitig_graph, &twin_reads, &overlap_adj_map, &args, &temp_dir, &output_dir);
+    heavy_clean_with_walk(
+        &mut unitig_graph,
+        &twin_reads,
+        &overlap_adj_map,
+        &args,
+        &temp_dir,
+        &output_dir,
+    );
+
+    // Step 6.5: Small circular contig retrieval
+    small_genomes::two_cycle_retrieval(&mut unitig_graph, &twin_reads, &args, &temp_dir);
 
     // Step 7: Progressive coverage filter
     let mut contig_graph =
@@ -71,18 +87,24 @@ fn main() {
     // Step 8: Align reads back to graph. TODO consensus and etc.
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
     get_seq_config.dna_seq_info = true;
-    get_seq_config.blunted = true;
+    get_seq_config.blunted = false;
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+    // Step 8.5: Dereplicate small contigs
+    log::info!("Dereplicating spurious contigs...");
+    mapping::map_to_dereplicate(&mut contig_graph, &kmer_info, &twin_reads, &args);
+    
     log_memory_usage(true, "STAGE 3: Obtained unpolished contigs");
     contig_graph.print_statistics(&args);
     contig_graph.to_fasta(output_dir.join("final_contigs_nopolish.fa"), &args);
 
     if args.no_polish {
-        log::info!("No polishing requested. Exiting.");
+        log::warn!("No polishing requested. This is not recommended.");
         log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
         return;
     }
-
+    
+    // Step 9: Align reads back to graph and take consensuses
     log::info!("Beginning final alignment of reads to graph...");
     let start = Instant::now();
     mapping::map_reads_to_unitigs(&mut contig_graph, &kmer_info, &twin_reads, &args);
@@ -101,12 +123,33 @@ fn main() {
         &args,
     );
 
-    // Step 8: TODO
     log::info!("Polishing...");
     polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
     log::info!("Time elapsed for polishing is {:?}", start.elapsed());
 
+    log::info!("Dereplicating polished contigs with skani...");
+    skani_dereplicate::dereplicate_with_skani(POLISHED_CONTIGS_NAME, &args);
+
     log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
+}
+
+fn my_own_format_colored(
+    w: &mut dyn std::io::Write,
+    now: &mut DeferredNow,
+    record: &Record,
+) -> Result<(), std::io::Error> {
+    let mut paintlevel = record.level();
+    if paintlevel == log::Level::Info {
+        paintlevel = log::Level::Debug;
+    }
+    write!(
+        w,
+        "({}) {} [{}] {}",
+        now.format(TS_DASHES_BLANK_COLONS_DOT_BLANK),
+        style(paintlevel).paint(record.level().to_string()),
+        record.module_path().unwrap_or(""),
+        &record.args()
+    )
 }
 
 fn my_own_format(
@@ -116,7 +159,7 @@ fn my_own_format(
 ) -> Result<(), std::io::Error> {
     write!(
         w,
-        "{} {} [{}] {}",
+        "({}) {} [{}] {}",
         now.format(TS_DASHES_BLANK_COLONS_DOT_BLANK),
         record.level(),
         record.module_path().unwrap_or(""),
@@ -162,14 +205,16 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
     }
 
     // Initialize logger with CLI-specified level
+    let log_spec = format!("{},skani=info", args.log_level_filter().to_string());
     let filespec = FileSpec::default()
         .directory(output_dir)
         .basename("myloasm");
-    flexi_logger::Logger::try_with_str(args.log_level_filter().to_string())
+    flexi_logger::Logger::try_with_str(log_spec)
         .expect("Something went wrong with logging")
         .log_to_file(filespec) // write logs to file
         .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
-        .format(my_own_format) // use a simple colored format
+        .format(my_own_format_colored) // use a simple colored format
+        .format_for_files(my_own_format)
         .start()
         .expect("Something went wrong with creating log file");
 
@@ -317,8 +362,8 @@ fn get_twin_reads_from_kmer_info(
             );
         }
 
-        split_twin_reads.iter_mut().for_each(|x| { 
-            if x.min_depth_multi.is_some(){
+        split_twin_reads.iter_mut().for_each(|x| {
+            if x.min_depth_multi.is_some() {
                 x.outer = true;
             }
         });
@@ -364,8 +409,12 @@ fn get_overlaps_from_twin_reads(
     } else {
         log::info!("Getting overlaps between outer reads...");
         let start = Instant::now();
-        overlaps =
-            twin_graph::get_overlaps_outer_reads_twin(&twin_reads, &outer_read_indices, &args);
+        overlaps = twin_graph::get_overlaps_outer_reads_twin(
+            &twin_reads,
+            &outer_read_indices,
+            &args,
+            Some("overlaps.txt"),
+        );
         log::info!(
             "Time elapsed for getting overlaps is: {:?}",
             start.elapsed()
@@ -536,7 +585,10 @@ fn get_contigs_from_progressive_coverage(
 
         // First pass: identify contigs to keep
         for contig in graph_per_coverage[&cov].nodes.values() {
-            if (contig.min_read_depth_multi.unwrap().iter().sum::<f64>() / (ID_THRESHOLD_ITERS as f64)) >= cov as f64 * 2.0 {
+            if (contig.min_read_depth_multi.unwrap().iter().sum::<f64>()
+                / (ID_THRESHOLD_ITERS as f64))
+                >= cov as f64 * 2.0
+            {
                 let mut unused = true;
 
                 for (read, _) in contig.read_indices_ori.iter() {
@@ -628,7 +680,9 @@ fn get_contigs_from_progressive_coverage(
             continue;
         }
         let edge = edge.as_ref().unwrap();
-        if !final_unitig_graph.nodes[&edge.from_unitig].is_circular() || !final_unitig_graph.nodes[&edge.to_unitig].is_circular() {
+        if !final_unitig_graph.nodes[&edge.from_unitig].is_circular()
+            || !final_unitig_graph.nodes[&edge.to_unitig].is_circular()
+        {
             remove_edge_set.insert(id);
         }
     }
@@ -644,15 +698,16 @@ fn heavy_clean_with_walk(
     overlap_adj_map: &OverlapAdjMap,
     args: &cli::Cli,
     temp_dir: &PathBuf,
-    out_dir: &PathBuf, 
+    out_dir: &PathBuf,
 ) {
     log::info!("Graph cleaning with walks...");
-    let mut save_removed = false;
-    let temperatures = [2., 1.5,  1.0, 0.5];
+    let mut save_removed;
+    let temperatures = [2., 1.5, 1.0, 0.5];
     let ol_thresholds = [0.125, 0.25, 0.5];
     let aggressive_multipliers = [10, 15, 30];
     let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
+    let mut special_small;
     let samples = 20;
     let steps = 10;
 
@@ -660,15 +715,27 @@ fn heavy_clean_with_walk(
 
     //Try switching temp/multiplier
     for temperature in temperatures {
-        for multiplier in aggressive_multipliers{
-            if multiplier > 20{
+        for multiplier in aggressive_multipliers {
+            //TODO 
+            if multiplier > 0 {
                 save_removed = true;
             }
+            else{
+                save_removed = false;
+            }
+
+            if multiplier > 20 {
+                special_small = true;
+            } else {
+                special_small = false;
+            }
+
             let mut counter = 0;
             loop {
                 let tip_length_cutoff_heavy = args.tip_length_cutoff * 5;
                 let tip_read_cutoff_heavy = args.tip_read_cutoff * 5;
-                let bubble_threshold_heavy = (args.small_bubble_threshold * multiplier).min(1_000_000);
+                let bubble_threshold_heavy =
+                    (args.small_bubble_threshold * multiplier).min(1_000_000);
                 remove_tips_until_stable(
                     unitig_graph,
                     twin_reads,
@@ -686,9 +753,12 @@ fn heavy_clean_with_walk(
                 let ol_threshold = ol_thresholds[ind];
 
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-                if counter <= (ol_thresholds.len() - 1) && counter != 0{
+                if counter <= (ol_thresholds.len() - 1) && counter != 0 {
                     unitig_graph.to_gfa(
-                        temp_dir.join(format!("heavy-{}-{}-{}.gfa", multiplier, temperature, ol_threshold)),
+                        temp_dir.join(format!(
+                            "heavy-{}-{}-{}.gfa",
+                            multiplier, temperature, ol_threshold
+                        )),
                         true,
                         false,
                         &twin_reads,
@@ -696,11 +766,8 @@ fn heavy_clean_with_walk(
                     );
                 }
 
-                let strain_repeats = unitig_graph.get_strain_repeats(
-                    &overlap_adj_map,
-                    &args,
-                );
-                
+                let strain_repeats = unitig_graph.get_strain_repeats(&overlap_adj_map, &args);
+
                 let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
                     &args,
@@ -715,10 +782,17 @@ fn heavy_clean_with_walk(
                     args.tip_length_cutoff * multiplier,
                     Some(&strain_repeats),
                     true,
+                    special_small
                 );
 
                 let length_after_cut = unitig_graph.nodes.len();
-                log::debug!("WALK-CLEAN: Cut {} nodes at multiplier {}, temperature {}, and threshold {}", length_before_cut - length_after_cut, multiplier, temperature, ol_threshold);
+                log::debug!(
+                    "WALK-CLEAN: Cut {} nodes at multiplier {}, temperature {}, and threshold {}",
+                    length_before_cut - length_after_cut,
+                    multiplier,
+                    temperature,
+                    ol_threshold
+                );
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
                 counter += 1;
@@ -728,7 +802,6 @@ fn heavy_clean_with_walk(
                     break;
                 }
                 size_graph = unitig_graph.nodes.len();
-
             }
         }
     }
@@ -836,14 +909,14 @@ fn remove_tips_until_stable(
     max_attempts: Option<usize>,
     _temp_dir: &PathBuf,
     save_tips: bool,
-    args: &cli::Cli,
+    _args: &cli::Cli,
 ) {
     let get_seq_config = types::GetSequenceInfoConfig::default();
     let mut size_graph = unitig_graph.nodes.len();
     let mut counter = 0;
     loop {
-        if let Some(max_attempts) = max_attempts{
-            if counter == max_attempts{
+        if let Some(max_attempts) = max_attempts {
+            if counter == max_attempts {
                 break;
             }
         }
@@ -958,3 +1031,5 @@ fn progressive_coverage_contigs(
 
     return unitig_graph;
 }
+
+

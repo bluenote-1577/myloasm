@@ -1,8 +1,12 @@
 use crate::constants::*;
+use crate::mapping;
 use crate::polishing::alignment;
 use crate::types::SmallTwinOl;
 use crate::types::*;
+use crate::cli::Cli;
+use crate::seeding;
 use bio_seq::prelude::*;
+use fxhash::FxHashSet;
 use block_aligner::cigar::*;
 use fxhash::FxHashMap;
 use rayon::prelude::*;
@@ -360,6 +364,51 @@ impl PoaConsensusBuilder {
             );
         })
     }
+}
+
+pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, hang2: usize, contig_name: &str, args: &Cli) {
+
+    let seq_len = seq.len();
+    if seq_len < 1000{
+        return
+    }
+
+    //let overlap_length = edge.overlap.overlap_len_bases + edge.overlap.hang1 + edge.overlap.hang2 + 1000;
+    let overlap_length = overlap_len + hang1 + hang2 + 500;
+
+    if overlap_length > seq_len{
+        log::warn!("Overlap length is greater than sequence length; something went wrong during polishing.");
+        return
+    }
+
+    let overhang1 = seq[seq_len-overlap_length..seq_len].to_vec();
+    let overhang2 = seq[0..overlap_length].to_vec();
+
+    let tr1 = seeding::get_twin_read_syncmer(overhang1, None, args.kmer_size, args.c, &FxHashSet::default(), String::new()).unwrap();
+    let tr2 = seeding::get_twin_read_syncmer(overhang2, None, args.kmer_size, args.c, &FxHashSet::default(), String::new()).unwrap();
+
+    let mut lax_args = args.clone();
+    lax_args.min_ol = args.min_ol/2;
+
+    let tr_options = CompareTwinReadOptions{
+        compare_snpmers: false,
+        retain_chain: false,
+        force_one_to_one_alignments: true,
+        ..Default::default()
+    };
+
+    let overlaps = mapping::compare_twin_reads(&tr1, &tr2, None, None, 0, 1, &tr_options, args);
+
+    if overlaps.is_empty(){
+        log::debug!("Circular contig with hash id {} was not able to be end-polished correctly", &contig_name);
+        return
+    }
+
+    let best_overlap = overlaps.iter().max_by_key(|x| x.end1 - x.start1).unwrap();
+    let end_trim = overlap_length - best_overlap.start1;
+    let start_trim = best_overlap.start2;
+    let new_seq = seq[start_trim..seq_len-end_trim].to_vec();
+    *seq = new_seq;
 }
 
 #[cfg(test)]
@@ -869,5 +918,27 @@ mod tests {
 
         assert_eq!(final_consensus, b"AAAAATTTGGGG".to_vec());
 
+    }
+
+    #[test]
+    fn circular_join_basic_test(){
+        let mut args = Cli::default();
+        args.c = 5;
+        args.kmer_size = 10;
+        {
+            let random_string = b"GCATGCGTTCAACGTAGGCCGTACTAGCTGCGTAATCGACGGAATGGCAGTATCGCGATAACGCTTGAAACGCTACGAGCCATAGCGGTATCGTAGCAACGCTAATCGGCATAGCTATCGATGCAGTCGCTATAGCTAGCTAGCGATCGGCCGATAGCGATCGATCGGCTAGCGGCATCGATAGCGGCCGATCGCGATCAGCATGGCCGATGCGATCGCGTATCAGCGCGATCGAGCCGATCGATCGCGTCCGATGCATGCAACGATCGGCATATCACGCGCGATCGACTAGCGATCGATCGCGTACGCATCGATCGAGCGATCGACTGATCGCTAGCTGCATGCATACGCTAGCTGCAGCTAGCATCGATCGCTATGCTAGCTAGCATCGAGCTGATCGTAGCATCGATCGATCGATCGATCGATCGAGCTATCGATCGATACGCGATCGATCGATCGCGATCGATCGATCGATCGCGATCGATCGCGATCGACTGCGATCGCTAGCTAGCTAGCTATGCTAGCTAGCTGCTAGTCGACGATCGATCGATCGATCGATCTAGCTAGCATCGCTAGCTGATCGTAGCTAGCTAGCATCGATCGA".to_vec();
+            let mut seq = random_string.clone();
+            seq.extend(vec![b'G'; 250]);
+            seq.extend(vec![b'A'; 250]);
+            seq.extend(vec![b'T'; 250]);
+            seq.extend(vec![b'C'; 250]);
+            seq.extend(random_string.clone());
+
+            dbg!(seq.len());
+
+            join_circular_ends(&mut seq, random_string.len(), 10, 10, "test", &args);
+
+            assert_eq!(seq.len(), 1000 + random_string.len());
+        }
     }
 }

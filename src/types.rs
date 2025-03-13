@@ -26,7 +26,6 @@
 //******************************
 
 use block_aligner::cigar::Operation;
-use rust_lapper::Interval;
 use smallvec::SmallVec;
 use fxhash::FxHashSet;
 use serde::{Deserialize, Serialize};
@@ -195,6 +194,9 @@ pub struct TigRead {
     pub id: String,
 }
 
+
+pub type Percentage = f64;
+
 //TODO: we restructure minimizers and snpmmer positions to another vector
 //and change to u32 to save space
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -211,7 +213,7 @@ pub struct TwinRead {
     pub base_length: usize,
     pub dna_seq: Seq<Dna>,
     pub qual_seq: Option<Seq<QualCompact3>>,
-    pub est_id: Option<f64>,
+    pub est_id: Option<Percentage>,
     pub min_depth_multi: Option<MultiCov>,
     pub median_depth: Option<f64>,
     pub split_chimera: bool,
@@ -566,6 +568,15 @@ pub struct BareMappingOverlap{
 
 impl Eq for BareMappingOverlap{}
 
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TwoCycle {
+    pub read_i: usize,
+    pub read_j: usize,
+    pub hang_penalty: i64, 
+    pub circular_length: usize,
+    pub total_mini: usize,
+}
+
 
 #[derive(Debug, Clone,  Default)]
 pub struct SmallTwinOl{
@@ -743,3 +754,23 @@ pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{
     }).collect()
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompareTwinReadOptions{
+    pub compare_snpmers: bool,
+    pub retain_chain: bool,
+    pub force_one_to_one_alignments: bool,
+    pub supplementary_threshold_score: Option<f64>,
+    pub supplementary_threshold_ratio: Option<f64>, 
+}
+
+impl Default for CompareTwinReadOptions{
+    fn default() -> Self{
+        CompareTwinReadOptions{
+            compare_snpmers: true,
+            retain_chain: false,
+            force_one_to_one_alignments: false,
+            supplementary_threshold_score: None,
+            supplementary_threshold_ratio: Some(0.25),
+        }
+    }
+}

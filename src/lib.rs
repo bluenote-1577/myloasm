@@ -13,6 +13,8 @@ pub mod map_processing;
 pub mod unitig_utils;
 pub mod polishing;
 pub mod utils;
+pub mod small_genomes;
+pub mod skani_dereplicate;
 
 //pub mod cbloom;
 //

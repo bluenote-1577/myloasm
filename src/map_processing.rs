@@ -301,6 +301,7 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
             new_read.k = twin_read.k;
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
+            new_read.est_id = twin_read.est_id;
 
             if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
                 new_read.qual_seq = Some(qual_seq[last_break..bp_start].to_owned());
