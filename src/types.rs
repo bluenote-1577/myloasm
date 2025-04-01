@@ -463,7 +463,9 @@ pub fn retain_vec_indices<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
 pub struct KmerGlobalInfo {
     pub snpmer_info: Vec<SnpmerInfo>,
     pub solid_kmers: HashSet<Kmer64>,
+    pub use_solid_kmers: bool,
     pub high_freq_thresh: f64,
+    pub high_freq_kmers: HashSet<Kmer64>,
     pub read_files: Vec<PathBuf>,
 }
 
@@ -761,6 +763,8 @@ pub struct CompareTwinReadOptions{
     pub force_one_to_one_alignments: bool,
     pub supplementary_threshold_score: Option<f64>,
     pub supplementary_threshold_ratio: Option<f64>, 
+    // When not forcing 1-to-1 alignments, allow query overlaps only if secondary threshold is below a certain amount
+    pub secondary_threshold: Option<f64> 
 }
 
 impl Default for CompareTwinReadOptions{
@@ -769,8 +773,9 @@ impl Default for CompareTwinReadOptions{
             compare_snpmers: true,
             retain_chain: false,
             force_one_to_one_alignments: false,
-            supplementary_threshold_score: None,
+            supplementary_threshold_score: Some(500.0),
             supplementary_threshold_ratio: Some(0.25),
+            secondary_threshold: Some(0.50),
         }
     }
 }

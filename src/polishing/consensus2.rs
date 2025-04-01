@@ -34,9 +34,9 @@ pub struct PoaConsensusBuilder {
 impl PoaConsensusBuilder {
     pub fn spoa_blocks(self) -> Vec<Vec<u8>> {
         let consensus_max_length = 800;
-        let alignment_type = 1;
+        let alignment_type = 1; // 0 local, 1 global, 2, semiglobal
         let match_score = 5;
-        let mismatch_score = -3;
+        let mismatch_score = -2;
         let gap_open = -2;
         let gap_extend = -1;
 
@@ -99,27 +99,39 @@ impl PoaConsensusBuilder {
         if cons.len() == 0 {
             return vec![];
         }
+
+        let window_cut_ratio = 2;
         let breakpoints = Mutex::new(vec![]);
+
         (0..cons.len() - 1).into_par_iter().for_each(|i| {
             if cons[i].len() == 0 || cons[i + 1].len() == 0 {
                 let false_bp1 = 0;
                 let false_bp2 = 0;
-                breakpoints.lock().unwrap().push((i, false_bp1, false_bp2));
+                breakpoints.lock().unwrap().push((i, false_bp1, false_bp2, 0));
                 return;
             }
             let ol_len = cons[i].len().min(cons[i + 1].len().min(window_len));
-            let overhang_i = &cons[i][cons[i].len() - ol_len..];
-            let overhang_j = &cons[i + 1][0..ol_len];
+            let cut = ol_len.min(window_len / window_cut_ratio);
+
+            //          < ol_len >
+            //          ALIGN CUT
+            // --------|-----|-->
+            //     <--|-----|---------
+            //     CUT ALIGN
+            let overhang_i = &cons[i][cons[i].len() - ol_len..][cut/2..ol_len - cut/2];
+            let overhang_j = &cons[i + 1][0..ol_len][cut/2..ol_len-cut/2];
+
+            //dbg!(&overhang_i, &overhang_j);
 
             //i is query
-            let (query_end, reference_end, _) = alignment::align_seq_to_ref_slice_local(overhang_j, overhang_i, &GAPS);
+            let (i_end, j_end, _) = alignment::align_seq_to_ref_slice_local(overhang_i, overhang_j, &GAPS_LAX_INDEL);
 
             //breakpoints.push((query_pos, ref_pos));
-            breakpoints.lock().unwrap().push((i, query_end, reference_end));
+            breakpoints.lock().unwrap().push((i, i_end, j_end, cut));
         });
         let mut breakpoints = breakpoints.into_inner().unwrap();
         breakpoints.sort_by_key(|x| x.0);
-        let breakpoints = breakpoints.into_iter().map(|x| (x.1, x.2)).collect::<Vec<_>>();
+        let breakpoints = breakpoints.into_iter().map(|x| (x.1, x.2, x.3)).collect::<Vec<_>>();
 
         let mut new_consensus = vec![];
         let mut new_cons_i = std::mem::take(&mut cons[0]);
@@ -138,8 +150,10 @@ impl PoaConsensusBuilder {
                 hang = ol_len - bp.0;
             }
 
-            let break_pos_i = new_cons_i.len() - hang;
-            let break_pos_j = bp.1;
+            let cut = bp.2;
+            let break_pos_i = new_cons_i.len() - hang + cut/2;
+            let break_pos_j = bp.1 + cut/2;
+
             new_cons_i.truncate(break_pos_i);
             new_cons_j = new_cons_j.split_off(break_pos_j);
             new_consensus.push(new_cons_i);
@@ -405,6 +419,8 @@ pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, h
     }
 
     let best_overlap = overlaps.iter().max_by_key(|x| x.end1 - x.start1).unwrap();
+
+    //dbg!(&best_overlap);
     let end_trim = overlap_length - best_overlap.start1;
     let start_trim = best_overlap.start2;
     let new_seq = seq[start_trim..seq_len-end_trim].to_vec();
@@ -727,7 +743,7 @@ mod tests {
                 len: 20,
             }];
             builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
-            dbg!(&builder.seq[1].lock().unwrap());
+            //dbg!(&builder.seq[1].lock().unwrap());
             let cons = builder.spoa_blocks();
             for cons in cons.iter() {
                 if cons.len() != 0{
@@ -885,11 +901,11 @@ mod tests {
     #[test]
     fn test_modify_new(){
         let consensuses = vec![
-            b"GCAACGTACGTCC".to_vec(), // last C is error
-            b"TTACGTATGTGTGTGT".to_vec() // first T is errors
+            b"GCAACGTATGT".to_vec(), // last C is error
+            b"ACGTATGTGTGTGT".to_vec() // first T is errors
         ];
 
-        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 6, "test");
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 8, "test");
 
         let mut final_consensus = vec![];
         for cons in new_cons{
@@ -897,15 +913,15 @@ mod tests {
             final_consensus.extend(cons);
         }
 
-        assert_eq!(final_consensus, b"GCAACGTACGTATGTGTGTGT".to_vec());
+        assert_eq!(final_consensus, b"GCAACGTATGTGTGTGT".to_vec());
 
     }
 
     #[test]
     fn test_modify_new_del(){
         let consensuses = vec![
-            b"AAAAATTT".to_vec(), // last A is error
-            b"CCTTTGGGG".to_vec() // first T is errors
+            b"AAAAATTTA".to_vec(), // last A is error
+            b"CTTTGGGG".to_vec() // first T is errors
         ];
 
         let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5, "test");

@@ -3,7 +3,9 @@ use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cli::Cli;
 use crate::constants::MAX_FRACTION_OF_SNPMERS_IN_READ;
+use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
+use crate::constants::USE_SOLID_KMERS;
 use crate::twin_graph;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
@@ -245,7 +247,10 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let files_owned = fastq_files.clone();
     let hpc = args.homopolymer_compression;
     let solid_kmers_take = std::mem::take(&mut kmer_info.solid_kmers);
+    let high_freq_kmers_take = std::mem::take(&mut kmer_info.high_freq_kmers);
     let arc_solid = Arc::new(solid_kmers_take);
+    let arc_high_freq = Arc::new(high_freq_kmers_take);
+    let num_reads_removed_repetitive = Arc::new(Mutex::new(0));
 
     for fastq_file in files_owned{
         let (mut tx, rx) = spmc::channel();
@@ -279,7 +284,9 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
             let rx = rx.clone();
             let set = Arc::clone(&snpmer_set);
             let solid = Arc::clone(&arc_solid);
+            let highfreq = Arc::clone(&arc_high_freq);
             let twrv = Arc::clone(&twin_read_vec);
+            let num_repetitive = Arc::clone(&num_reads_removed_repetitive);
             handles.push(thread::spawn(move || {
                 loop{
                     match rx.recv() {
@@ -291,30 +298,47 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
                             if twin_read.is_some(){
 
+                                let mut kmer_counter_map = FxHashMap::default();
+                                for mini in twin_read.as_ref().unwrap().minimizer_kmers.iter(){
+                                    *kmer_counter_map.entry(*mini).or_insert(0) += 1;
+                                }
+
                                 let mut solid_mini_indices = FxHashSet::default();
                                 for (i, mini) in twin_read.as_ref().unwrap().minimizer_kmers.iter().enumerate(){
-                                    if solid.contains(&mini){
-                                        solid_mini_indices.insert(i);
+                                    if USE_SOLID_KMERS{
+                                        if solid.contains(&mini){
+                                            solid_mini_indices.insert(i);
+                                        }
+                                    }
+                                    else{
+                                        if !highfreq.contains(&mini) && kmer_counter_map[mini] < MAX_KMER_COUNT_IN_READ {
+                                            solid_mini_indices.insert(i);
+                                        }
                                     }
                                 }
                                 //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff. 
                                 if solid_mini_indices.len() < seqlen / c / 20{
+                                    *num_repetitive.lock().unwrap() += 1;
                                     continue;
                                 }
 
                                 let mut solid_snpmer_indices = FxHashSet::default();
                                 for (i, snpmer) in twin_read.as_ref().unwrap().snpmer_kmers.iter().enumerate(){
-                                    if solid.contains(&snpmer){
-                                        solid_snpmer_indices.insert(i);
+                                    if USE_SOLID_KMERS{
+                                        if solid.contains(&snpmer){
+                                            solid_snpmer_indices.insert(i);
+                                        }
+                                    }
+                                    else{
+                                        if !highfreq.contains(&snpmer){
+                                            solid_snpmer_indices.insert(i);
+                                        }
                                     }
                                 }
 
                                 let mut twin_read = twin_read.unwrap();
                                 twin_read.retain_mini_indices(solid_mini_indices);
                                 twin_read.retain_snpmer_indices(solid_snpmer_indices);
-
-                                //MinHash top ~ 1/20 * read_length of solid snpmers 
-                                //minhash_top_snpmers(&mut twin_read, MAX_FRACTION_OF_SNPMERS_IN_READ);
 
                                 let mut vec = twrv.lock().unwrap();
                                 vec.push(twin_read);
@@ -335,6 +359,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     }
 
     kmer_info.solid_kmers = Arc::try_unwrap(arc_solid).unwrap();
+    kmer_info.high_freq_kmers = Arc::try_unwrap(arc_high_freq).unwrap();
     let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
     twin_reads.sort_by(|a,b| a.id.cmp(&b.id));
 
@@ -345,12 +370,12 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
         }
     }
 
+    log::info!("Number of reads filtered due to repetitiveness: {}", num_reads_removed_repetitive.lock().unwrap());
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
     log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
     let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_kmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
-
     log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
 
     return twin_reads;
@@ -395,6 +420,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
     let mut solid_kmers = HashSet::default();
+    let mut high_freq_kmers = HashSet::default();
     let paths_to_files = args.input_files.iter().map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap()).collect::<Vec<_>>();
 
     for pair in big_kmer_map.iter(){
@@ -407,11 +433,9 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         log::error!("No k-mers found. Exiting.");
         std::process::exit(1);
     }
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 50000) - 1].max(100);
+    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 500000) - 1].max(100);
     log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
-
-    
 
     log::info!("Finding snpmers...");
     //Should be able to parallelize this, TODO
@@ -426,7 +450,9 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
                 let v = new_map_counts_bases.entry(split_kmer).or_insert(CountsAndBases{counts: SmallVec::new(), bases: SmallVec::new()});
                 v.counts.push(counts);
                 v.bases.push(mid_base);
-
+            }
+            else {
+                high_freq_kmers.insert(kmer);
             }
         }
     }
@@ -436,6 +462,8 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         return KmerGlobalInfo{
             snpmer_info: vec![],
             solid_kmers: solid_kmers,
+            high_freq_kmers: high_freq_kmers,
+            use_solid_kmers: USE_SOLID_KMERS,
             high_freq_thresh: high_freq_thresh as f64,
             read_files: paths_to_files
         };
@@ -520,6 +548,8 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     return KmerGlobalInfo{
         snpmer_info: snpmers,
         solid_kmers: solid_kmers,
+        high_freq_kmers: high_freq_kmers,
+        use_solid_kmers: USE_SOLID_KMERS,
         high_freq_thresh: high_freq_thresh as f64,
         read_files: paths_to_files
     };

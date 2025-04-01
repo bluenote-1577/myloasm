@@ -33,8 +33,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tikv_jemallocator::Jemalloc;
 
-//#[global_allocator]
-//static GLOBAL: Jemalloc = Jemalloc;
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 fn main() {
     let total_start_time = Instant::now();

@@ -81,8 +81,8 @@ pub fn get_base_info_overlaps(
         } else if i == 0 {
             let mut end = reads[ind].base_length as i64 + 1
                 - internal_ol_len[0] as i64
-                - overhangs[0] as i64
-                - overhangs[1] as i64;
+                - overhangs[0] as i64;
+                //- overhangs[1] as i64; TODO check
             if end < 0 {
                 end = 0;
             }
@@ -90,19 +90,23 @@ pub fn get_base_info_overlaps(
             hang_ind += 2;
         } else if i == node.read_indices_ori.len() - 1 {
             range = (
-                carryover,
+                carryover
+                + overhangs[hang_ind - 1], // TODO    
                 reads[ind].base_length - right_cut.min(reads[ind].base_length),
             );
             hang_ind += 2;
         } else {
             let mut end = reads[ind].base_length as i64 + 1
                 - internal_ol_len[hang_ind] as i64
-                - overhangs[hang_ind] as i64
-                - overhangs[hang_ind + 1] as i64;
+                - overhangs[hang_ind] as i64;
+                //- overhangs[hang_ind + 1] as i64; TODO
             if end < 0 {
                 end = 0;
             }
-            range = (carryover, end as usize);
+            range = (carryover + 
+                overhangs[hang_ind - 1], // TODO
+                end as usize);
+                //, end as usize);
             hang_ind += 2;
         }
         if range.0 >= range.1 {

@@ -97,30 +97,91 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
     let mut fasta_writer_primary = BufWriter::new(File::create(primary_path).unwrap());
     let mut fasta_writer_alternate = BufWriter::new(File::create(alternate_path).unwrap());
     let mut fasta_writer_duplicated = BufWriter::new(File::create(dup_path).unwrap());
+    let mut total_bases_primary = 0;
+    let mut number_primary = 0;
+    let mut number_alternate = 0;
+    let mut number_duplicated = 0;
+    let mut largest_contig_size = 0;
+    let mut contig_sizes = vec![];
+    let mut num_circular_1m = 0;
 
     while let Some(record) = fasta_records.next() {
         let record = record.unwrap();
         let header = String::from_utf8(record.id().to_vec()).unwrap();
         let seq = record.seq().iter().map(|x| *x as char).collect::<String>();
         let id_opt = contig_name_to_id_map.get(&header);
+        if header.contains("circular") && seq.len() > 1_000_000{
+            num_circular_1m += 1;
+        }
 
         if let Some(id) = id_opt{
             if let Some(val) = duplicate_indices.get(id){
                 let af = if val.1.align_fraction_query > val.1.align_fraction_ref {val.1.align_fraction_query} else {val.1.align_fraction_ref};
                 let ani = val.1.ani * 100.;
+                number_duplicated += 1;
                 write!(&mut fasta_writer_duplicated, ">{} secondary_to:({}) aligned_frac:{:.2} ani:{:.2}\n{}\n", header, val.0, af*100., ani, seq).unwrap();
             }
             else if let Some(val) = alternate_indices.get(id){
                 let af = if val.1.align_fraction_query > val.1.align_fraction_ref {val.1.align_fraction_query} else {val.1.align_fraction_ref};
                 let ani = val.1.ani * 100.;
+                number_alternate += 1;
                 write!(&mut fasta_writer_alternate, ">{} secondary_to:[{}] aligned_frac:{:.2} ani:{:.2}\n{}\n", header, val.0, af*100., ani, seq).unwrap();
             }
             else{
+                total_bases_primary += seq.len();
+                number_primary += 1;
                 write!(&mut fasta_writer_primary, ">{}\n{}\n", header, seq).unwrap();
             }
         }
         else{
+            total_bases_primary += seq.len();
+            number_primary += 1;
             write!(&mut fasta_writer_primary, ">{}\n{}\n", header, seq).unwrap();
         }
+
+        contig_sizes.push(seq.len());
+        if seq.len() > largest_contig_size{
+            largest_contig_size = seq.len();
+        }
     }
+
+    contig_sizes.sort_by(|a, b| b.cmp(a));
+    let mut iter_sum_size = 0;
+    let mut num_geq_100 = 0;
+    let mut num_geq_1000 = 0;
+    let mut n50 = None;
+
+    for (_, &size) in contig_sizes.iter().enumerate(){
+        if size > 100_000{
+            num_geq_100 += 1;
+        }
+        if size > 1_000_000{
+            num_geq_1000 += 1;
+        }
+        iter_sum_size += size;
+        if iter_sum_size > total_bases_primary / 2 && n50.is_none() {
+            n50 = Some(size);
+        }
+    }
+
+    log::info!("-------------- FINAL primary assembly statistics --------------");
+    log::info!("N50: {}", n50.unwrap_or(0));
+    log::info!("Largest contig has size: {}", largest_contig_size);
+    log::info!("Number of primary contigs: {}", number_primary);
+    log::info!("Number of alt/dup contigs: {} and {}", number_alternate, number_duplicated);
+    log::info!(
+        "Number of circular contigs >= 1M: {}",
+        num_circular_1m
+    );
+    log::info!(
+        "Number of contigs >= 1M: {}",
+        num_geq_1000
+    );
+    log::info!(
+        "Number of contigs >= 100k: {}",
+        num_geq_100
+    );
+    log::info!("Total bases within assembly is {}", total_bases_primary);
+    log::info!("-------------------------------------------------");
+
 }

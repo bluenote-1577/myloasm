@@ -365,8 +365,8 @@ pub fn align_seq_to_ref_slice(
 
 
 pub fn align_seq_to_ref_slice_local(
-    reference_sliced: &[u8],
     query_sliced: &[u8],
+    reference_sliced: &[u8],
     gaps: &Gaps,
 ) -> (usize, usize, Vec<OpLen>) {
     let mut cigar; 

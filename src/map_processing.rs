@@ -251,7 +251,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     }
 
     // --------|xxxxx>
-    if depths[depths.len() - 1].start > ENDPOINT_MAPPING_FUZZ {
+    if depths[depths.len() - 1].start < reference_length - ENDPOINT_MAPPING_FUZZ {
         let depth_stop_left = lapper.count(
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ,
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ - 1,

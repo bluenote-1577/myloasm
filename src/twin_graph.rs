@@ -344,13 +344,22 @@ impl OverlapTwinGraph{
             }
 
             //SWITCH TODO
+            // Require both nodes to have good overlaps in order to remove the edge.
+            // In other words, require
+
+            //   -->x          
+            //   o ----> z     o ----> z
+            //       y -->         y -->
+
+            // Remove o->z in first case. Do not remove o->z in second. 
+
             if (node1_good_found && node2_good_found) || !rescue {
                 edges_to_remove.insert(i);
                 self.edges[i] = None;
             }
         }
 
-        log::debug!("Pruning {} lax overlaps", edges_to_remove.len());
+        log::trace!("Pruning {} lax overlaps", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
 
         let mut singleton_nodes_to_remove = vec![];
@@ -538,8 +547,9 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
         compare_snpmers: true,
         retain_chain: false,
         force_one_to_one_alignments: true,
-        supplementary_threshold_score: Some(1500.),
+        supplementary_threshold_score: Some(500.),
         supplementary_threshold_ratio: Some(0.25),
+        secondary_threshold: None,
     };
 
     outer_read_indices.into_par_iter().for_each(|&i| { 
@@ -731,6 +741,17 @@ where T: Write + Send
     let hang_start = hang1_start.max(hang2_start);
     let hang_end = hang1_end.max(hang2_end);
 
+    //let (ext_s1, ext_e1, ext_s2, ext_e2) = alignment::extend_ends_chain(&twin_reads[twlap.i1].dna_seq, &twin_reads[twlap.i2].dna_seq, twlap, args);
+
+    //let aln_len1 = ext_e1 - ext_s1 + 1;
+    //let aln_len2 = ext_e2 - ext_s2 + 1;
+
+    //let mini_chain = twlap.minimizer_chain.as_ref().unwrap();
+
+    // println!("EXT {}, {}, {}, {} READ {}", ext_s1, ext_e1, ext_s2, ext_e2, &read1.id);
+    // println!("OLRANGE {}, {}, {}, {} READ {}", twlap.start1, twlap.end1, twlap.start2, twlap.end2, &read1.id);
+    // println!("HANG {}, {}, {}, {} READ {}", hang1_start, hang1_end, hang2_start, hang2_end, &read1.id);
+
     // let (hang1_start, hang1_end) = (OVERLAP_HANG_LENGTH, OVERLAP_HANG_LENGTH);
     // let (hang2_start, hang2_end) = (OVERLAP_HANG_LENGTH, OVERLAP_HANG_LENGTH);
     
@@ -759,6 +780,8 @@ where T: Write + Send
         else if twlap.end1 + hang_end > read1.base_length && twlap.end2 + hang_end > read2.base_length 
         {
             let ol_config = OverlapConfig {
+                //hang1: read1.base_length - twlap.end1 - 1,
+                //hang2: read2.base_length - twlap.end2 - 1,
                 hang1: read1.base_length - twlap.end1 - 1,
                 hang2: read2.base_length - twlap.end2 - 1,
                 forward1: true,
@@ -781,6 +804,8 @@ where T: Write + Send
     } else {
         if twlap.start1 < hang_start && twlap.end2 + hang_end > read2.base_length {
             let ol_config = OverlapConfig {
+                //hang1: twlap.start1,
+                //hang2: read2.base_length - twlap.end2 - 1,
                 hang1: twlap.start1,
                 hang2: read2.base_length - twlap.end2 - 1,
                 forward1: false,
@@ -802,6 +827,8 @@ where T: Write + Send
         } 
         else if twlap.end1 + hang_end > read1.base_length  && twlap.start2 < hang_start{
             let ol_config = OverlapConfig {
+                //hang1: read1.base_length - twlap.end1 - 1,
+                //hang2: twlap.start2,
                 hang1: read1.base_length - twlap.end1 - 1,
                 hang2: twlap.start2,
                 forward1: true,
@@ -827,7 +854,7 @@ where T: Write + Send
         let mut bufwriter = writer.lock().unwrap();
         let mut possibilties_string = String::new();
         for possib in overlap_possibilities.iter(){
-            possibilties_string.push_str(&format!("{}:{}-{}:{} ", possib.read_i, possib.forward1, possib.read_j, possib.forward2));
+            possibilties_string.push_str(&format!("{}:{}-{}:{} HANG {} {}", possib.read_i, possib.forward1, possib.read_j, possib.forward2, possib.hang1, possib.hang2));
         }
         writeln!(bufwriter,
             "{} {} {} {} fsv:{} SHARE:{} DIFF:{} MINI: {}, LEN1:{} {}-{} LEN2:{} {}-{}, REVERSE: {}, Possibilties: {}",

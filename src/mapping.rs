@@ -1,8 +1,10 @@
 use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::MAX_GAP_CHAINING;
+use crate::constants::MAX_MULTIPLICITY_KMER;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
+use crate::constants::USE_SOLID_KMERS;
 use crate::graph::GraphNode;
 use crate::map_processing::*;
 use crate::polishing::alignment;
@@ -10,11 +12,13 @@ use crate::seeding;
 use crate::twin_graph::same_strain;
 use crate::types::*;
 use crate::unitig;
+use crate::utils::log_memory_usage;
 use crate::unitig::NodeSequence;
 use bio_seq::codec::Codec;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rayon::prelude::*;
+use rust_htslib::utils;
 use rust_lapper::Interval;
 use rust_lapper::Lapper;
 use std::collections::HashSet;
@@ -154,6 +158,9 @@ pub fn find_exact_matches_with_full_index(
 
     for (i, (pos, s)) in seq1.iter().enumerate() {
         if let Some(indices) = index.get(s) {
+            if indices.len() > MAX_MULTIPLICITY_KMER {
+                continue;
+            }
             if indices.len() > max_mult {
                 max_mult = indices.len();
             }
@@ -307,13 +314,17 @@ pub fn dp_anchors(
                 (start1 as i32 - (end1) as i32).abs() - (start2 as i32 - (end2) as i32).abs();
             let gap_penalty = gap_penalty_signed.abs();
 
+            let kmer_dist1_score = (start1 as i32 - end1 as i32).abs().min(match_score);
+            let kmer_dist2_score = (start2 as i32 - end2 as i32).abs().min(match_score);
+            let kmer_overlap_score = kmer_dist1_score.min(kmer_dist2_score);
+
             let large_indel = false;
             if gap_penalty > MAX_GAP_CHAINING as i32 {
                 //large_indel = true;
                 continue;
             }
 
-            let score = dp[j] + match_score - gap_cost * gap_penalty;
+            let score = dp[j] + kmer_overlap_score - gap_cost * gap_penalty;
             if score > dp[i] {
                 dp[i] = score;
                 prev[i] = Some(j);
@@ -459,26 +470,31 @@ fn find_optimal_chain(
 
             reference_intervals.push(interval);
 
-            if tr_options.force_one_to_one_alignments{
-                let l_q = chain.first().unwrap().pos1;
-                let r_q = chain.last().unwrap().pos1;
-                let interval_q = Interval {
-                    start: l_q.min(r_q),
-                    stop: l_q.max(r_q),
-                    val: true,
-                };
+            let l_q = chain.first().unwrap().pos1;
+            let r_q = chain.last().unwrap().pos1;
+            let interval_q = Interval {
+                start: l_q.min(r_q),
+                stop: l_q.max(r_q),
+                val: true,
+            };
 
                 if query_intervals.iter().any(|x| {
                     let intersect = x.intersect(&interval_q);
                     intersect as f64 / (interval_q.stop - interval_q.start) as f64 > 0.25
                 })
                 {
-                    continue;
+                    if tr_options.force_one_to_one_alignments{
+                        continue;
+                    }
+                    else{
+                        let secondary_ratio = tr_options.secondary_threshold.unwrap_or(0.50);
+                        if (score as f64) < secondary_ratio * (max_score as f64) {
+                            continue;
+                        }
+                    }
                 }
 
-                query_intervals.push(interval_q);
-            }
-
+            query_intervals.push(interval_q);
 
             chains.push(ChainInfo {
                 chain,
@@ -509,7 +525,7 @@ pub fn compare_twin_reads(
             &anchors.anchors,
             args.c as i32,
             1,
-            Some((anchors.max_mult * 10).min(50)),
+            Some((anchors.max_mult * 10).min(MAX_MULTIPLICITY_KMER)),
             options,
         );
     } else {
@@ -518,7 +534,7 @@ pub fn compare_twin_reads(
             &anchors.0,
             args.c as i32,
             1,
-            Some((anchors.1 * 10).min(50)),
+            Some((anchors.1 * 10).min(MAX_MULTIPLICITY_KMER)),
             options,
         );
     }
@@ -669,9 +685,9 @@ pub fn compare_twin_reads(
         let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
         let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
         let start1 = l1.min(r1);
-        let end1 = l1.max(r1);
+        let end1 = l1.max(r1) + k as u32 - 1;
         let start2 = l2.min(r2);
-        let end2 = l2.max(r2);
+        let end2 = l2.max(r2) + k as u32 - 1;
         let shared_minimizers = mini_chain.len();
         let mut mini_chain_return = None;
         if options.retain_chain {
@@ -720,6 +736,7 @@ fn unitigs_to_tr(
     unitig_graph: &unitig::UnitigGraph,
     snpmer_set: &FxHashSet<u64>,
     solid_kmers: &HashSet<u64>,
+    high_freq_kmers: &HashSet<u64>,
     args: &Cli,
 ) -> FxHashMap<usize, TwinRead> {
     let mut tr_unitigs = FxHashMap::default();
@@ -736,13 +753,27 @@ fn unitigs_to_tr(
             let mut solid_mini_indices = FxHashSet::default();
             let mut solid_snpmer_indices = FxHashSet::default();
             for (index, mini) in tr.minimizer_kmers.iter().enumerate(){
-                if solid_kmers.contains(&mini) {
-                    solid_mini_indices.insert(index);
+                if USE_SOLID_KMERS{
+                    if solid_kmers.contains(&mini) {
+                        solid_mini_indices.insert(index);
+                    }
+                }
+                else{
+                    if !high_freq_kmers.contains(&mini) {
+                        solid_mini_indices.insert(index);
+                    }
                 }
             }
             for (index, snpmer) in tr.snpmer_kmers.iter().enumerate() {
-                if snpmer_set.contains(&snpmer) {
-                    solid_snpmer_indices.insert(index);
+                if USE_SOLID_KMERS{
+                    if snpmer_set.contains(&snpmer) {
+                        solid_snpmer_indices.insert(index);
+                    }
+                }
+                else{
+                    if !high_freq_kmers.contains(&snpmer) {
+                        solid_snpmer_indices.insert(index);
+                    }
                 }
             }
             tr.retain_mini_indices(solid_mini_indices);
@@ -811,8 +842,9 @@ pub fn map_reads_to_outer_reads(
         let mini = read.minimizers_vec();
         //let start = std::time::Instant::now();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index);
+        drop(mini);
         //let anchor_finding_time = start.elapsed().as_micros();
-        let mut unitig_hits = vec![];
+        let mut unitig_hits : Vec<TwinOverlap> = vec![];
         *counter.lock().unwrap() += 1;
         if *counter.lock().unwrap() % 10000 == 0 {
             log::info!(
@@ -820,20 +852,21 @@ pub fn map_reads_to_outer_reads(
                 *counter.lock().unwrap(),
                 twin_reads.len()
             );
+            log_memory_usage(false, "10k reads mapped");
         }
 
         //let start = std::time::Instant::now();
-        for (contig_id, anchors) in mini_anchors.iter() {
+        for (contig_id, anchors) in mini_anchors.into_iter() {
             if anchors.anchors.len() < 10 {
                 continue;
             }
             for twin_ol in compare_twin_reads(
                 read,
-                &tr_outer[&(*contig_id as usize)],
-                Some(anchors),
+                &tr_outer[&(contig_id as usize)],
+                Some(&anchors),
                 None,
                 rid,
-                *contig_id as usize,
+                contig_id as usize,
                 &tr_options,
                 args,
             ) {
@@ -842,10 +875,14 @@ pub fn map_reads_to_outer_reads(
                 }
                 unitig_hits.push(twin_ol);
             }
+
+            drop(anchors);
         }
+
         //let overlap_time = start.elapsed().as_micros();
         for hit in unitig_hits.into_iter() {
             {
+                //log::trace!("{} {} {} {} {} {}", hit.i1, hit.i2, hit.start1, hit.end1, hit.start2, hit.end2);
                 let max_overlap = check_maximal_overlap(
                     hit.start1 as usize,
                     hit.end1 as usize,
@@ -897,7 +934,7 @@ pub fn map_reads_to_outer_reads(
 
         let mut all_local_intervals = boundaries
             .into_iter()
-            .map(|x| BareInterval {
+            .map(|x : (u32,u32)| BareInterval {
                 start: x.0,
                 stop: x.1,
             })
@@ -912,7 +949,7 @@ pub fn map_reads_to_outer_reads(
 
         let max_intervals = maximal_boundaries
             .into_iter()
-            .map(|x| Interval {
+            .map(|x : (u32, u32, BareMappingOverlap)| Interval {
                 start: x.0 as u32,
                 stop: x.1 as u32,
                 val: x.2,
@@ -971,7 +1008,7 @@ pub fn map_to_dereplicate(
     }
 
     //Convert unitigs to twinreads
-    let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, args);
+    let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     let mini_index = get_minimizer_index(&tr_unitigs);
     let contained_contigs = Mutex::new(FxHashSet::default());
     let mut tr_options = CompareTwinReadOptions::default();
@@ -1004,6 +1041,7 @@ pub fn map_to_dereplicate(
             if *contig_id as usize == *q_id as usize{
                 continue;
             }
+            //TODO change strictness
             if anchors.anchors.len() < q_unitig.base_length / args.c / 10{
                 continue;
             }
@@ -1052,6 +1090,7 @@ pub fn map_to_dereplicate(
 
                 let range_query = end1 - start1;
                 let frac = range_query as f64 / q_unitig.base_length as f64;
+                //TODO change frac
                 if frac > 0.95 && ss_strict && contig_ref.base_length > q_unitig.base_length * 5{
                     let mut contained_contigs = contained_contigs.lock().unwrap();
                     contained_contigs.insert(*q_id);
@@ -1065,7 +1104,6 @@ pub fn map_to_dereplicate(
     log::debug!("SMALL CONTIG REMOVAL: Removing {} small contigs that are too similer to larger contigs (or singletons that have no coverage)", vec_remove.len());
     unitig_graph.remove_nodes(&vec_remove, false);
 }
-
 
 pub fn map_reads_to_unitigs(
     unitig_graph: &mut unitig::UnitigGraph,
@@ -1088,7 +1126,7 @@ pub fn map_reads_to_unitigs(
     }
 
     //Convert unitigs to twinreads
-    let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, args);
+    let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     let mini_index = get_minimizer_index(&tr_unitigs);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
 
@@ -1101,6 +1139,12 @@ pub fn map_reads_to_unitigs(
             if anchors.anchors.len() < 10{
                 continue;
             }
+
+            // if read.id.contains("8a4ba6cd-f730-4f92-af9b-5d59da3f29e7") {
+            //     dbg!(contig_id);
+            //     dbg!(&anchors.anchors);
+            // }
+            
             for twinol in compare_twin_reads(
                 read,
                 &tr_unitigs[&(*contig_id as usize)],
@@ -1112,6 +1156,7 @@ pub fn map_reads_to_unitigs(
                 args
             ) {
                 log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}", &read.id, &tr_unitigs[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2);
+                
                 //Disallow large indels because they may cause windowed POA to fail
                 if twinol.end2 - twinol.start2 < MIN_READ_LENGTH || twinol.large_indel{
                     continue;
@@ -1164,7 +1209,37 @@ pub fn map_reads_to_unitigs(
             retained_hits.push(hit);
         }
 
+        retained_hits.sort_by(|a, b| b.chain_score.partial_cmp(&a.chain_score).unwrap());
+        let mut query_intervals : Vec<Interval<u32, bool>> = vec![];
+        let mut max_score = 0;
+        let max_chain = retained_hits.first();
+        if let Some(max_chain) = max_chain{
+            max_score = max_chain.chain_score;
+            query_intervals.push(Interval{
+                start: max_chain.start1 as u32,
+                stop: max_chain.end1 as u32,
+                val: true
+            });
+        }
+
         for hit in retained_hits {
+
+            let interval = Interval{
+                start: hit.start1 as u32,
+                stop: hit.end1 as u32,
+                val: true
+            };
+
+            //Not repopulating the query intervals for now, could change later
+            if query_intervals.iter().any(|x| {
+                let intersect = x.intersect(&interval);
+                intersect as f64 / (interval.stop - interval.start) as f64 > 0.50
+            }) {
+                if (hit.chain_score as f64) < (max_score as f64) * 0.70 {
+                    break;
+                }
+            }
+
             let alignment_result = alignment::get_full_alignment(
                 &twin_reads[hit.i1].dna_seq,
                 &tr_unitigs[&hit.i2].dna_seq,

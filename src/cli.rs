@@ -5,7 +5,7 @@ use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
 #[derive(Parser, Debug)]
 #[command(
     name = "myloasm",
-    about = "myloasm - strain-resolved metagenomic long-read assembly with noisy sequences.",
+    about = "myloasm - high-resolution long-read metagenomic assembly with even low-fidelity reads.",
     version,
     author
 )]
@@ -80,7 +80,7 @@ pub struct Cli {
     pub contain_subsample_rate: usize,
 
     /// Minimum overlap length for graph construction
-    #[arg(long, default_value_t=1000, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=500, help_heading = "Overlap Parameters")]
     pub min_ol: usize,
 
     /// Minimum overlap length for graph construction
@@ -122,6 +122,15 @@ pub struct Cli {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
 pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+pub enum Preset{
     Error,
     Warn,
     Info,
