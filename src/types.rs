@@ -60,6 +60,35 @@ pub const BYTE_TO_SEQ: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Kmer48{
+    data: [u8; 6],
+}
+
+impl Kmer48{
+    pub fn from_u64(n: u64) -> Self {
+        let bytes = n.to_le_bytes();
+        if bytes[6..8].iter().any(|&b| b != 0) {
+            panic!("Kmer48 can only be created from a u64 with the last two bytes as 0");
+        }
+        Self {
+            data: [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]],
+        }
+    }
+
+    pub fn to_u64(self) -> u64 {
+        let mut bytes = [0; 8];
+        bytes[0..6].copy_from_slice(&self.data);
+        u64::from_le_bytes(bytes)
+    }
+}
+
+impl From<u64> for Kmer48 {
+    fn from(value: u64) -> Self {
+        Kmer48::from_u64(value)
+    }
+}
+
 #[inline]
 pub fn mm_hash_64(key: u64) -> usize {
     let mut key = key;
@@ -115,7 +144,24 @@ pub type MMHashSet<K> = HashSet<K, MMBuildHasher>;
 
 // Take a bit-encoded k-mer (k <= 32) and decode it as a string of ACGT
 
-pub fn decode_kmer(kmer: Kmer64, k: u8) -> String {
+pub fn decode_kmer64(kmer: Kmer64, k: u8) -> String {
+    let mut seq = String::new();
+    for i in 0..k {
+        let c = (kmer >> (i * 2)) & 0b11;
+        seq.push(match c {
+            0 => 'A',
+            1 => 'C',
+            2 => 'G',
+            3 => 'T',
+            _ => unreachable!(),
+        });
+    }
+    //reverse string
+    seq.chars().rev().collect()
+}
+
+pub fn decode_kmer48(kmer: Kmer48, k: u8) -> String {
+    let kmer = kmer.to_u64();
     let mut seq = String::new();
     for i in 0..k {
         let c = (kmer >> (i * 2)) & 0b11;
@@ -203,9 +249,9 @@ pub type Percentage = f64;
 pub struct TwinRead {
     //pub minimizers: Vec<(usize, u64)>,
     pub minimizer_positions: Vec<u32>,
-    pub minimizer_kmers: Vec<u64>,
+    pub minimizer_kmers: Vec<Kmer48>,
     //pub snpmers: Vec<(usize, u64)>,
-    pub snpmer_kmers: Vec<u64>,
+    pub snpmer_kmers: Vec<Kmer48>,
     pub snpmer_positions: Vec<u32>,
     pub id: String,
     pub base_id: String,
@@ -378,17 +424,17 @@ impl TwinRead{
         self.snpmer_positions.shrink_to_fit();
     }
 
-    pub fn minimizers(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+    pub fn minimizers(&self) -> impl Iterator<Item = (u32, Kmer48)> + '_ {
         assert!(self.minimizer_positions.len() == self.minimizer_kmers.len());
         self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y))
     }
 
-    pub fn minimizers_vec(&self) -> Vec<(u32, u64)> {
+    pub fn minimizers_vec(&self) -> Vec<(u32, Kmer48)> {
         assert!(self.minimizer_positions.len() == self.minimizer_kmers.len());
         self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
     }
 
-    pub fn snpmers(&self) -> impl Iterator<Item = (u32, u64)> + '_ {
+    pub fn snpmers(&self) -> impl Iterator<Item = (u32, Kmer48)> + '_ {
         assert!(self.snpmer_positions.len() == self.snpmer_kmers.len());
         self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y))
     }
@@ -462,10 +508,10 @@ pub fn retain_vec_indices<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct KmerGlobalInfo {
     pub snpmer_info: Vec<SnpmerInfo>,
-    pub solid_kmers: HashSet<Kmer64>,
+    pub solid_kmers: HashSet<Kmer48>,
     pub use_solid_kmers: bool,
     pub high_freq_thresh: f64,
-    pub high_freq_kmers: HashSet<Kmer64>,
+    pub high_freq_kmers: HashSet<Kmer48>,
     pub read_files: Vec<PathBuf>,
 }
 

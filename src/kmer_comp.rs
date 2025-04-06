@@ -365,12 +365,12 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
 
     if log::log_enabled!(log::Level::Trace) {
         for twin_read in twin_reads.iter(){
-            let decoded_snpmers = twin_read.snpmers().map(|x| (x.0, decode_kmer(x.1, twin_read.k))).collect::<Vec<_>>();
+            let decoded_snpmers = twin_read.snpmers().map(|x| (x.0, decode_kmer48(x.1, twin_read.k))).collect::<Vec<_>>();
             log::trace!("{} {:?}", twin_read.id, decoded_snpmers);
         }
     }
 
-    log::info!("Number of reads filtered due to repetitiveness: {}", num_reads_removed_repetitive.lock().unwrap());
+    log::debug!("Number of reads filtered due to repetitiveness: {}", num_reads_removed_repetitive.lock().unwrap());
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
     log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
     let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_kmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
@@ -379,30 +379,6 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
 
     return twin_reads;
-}
-
-fn minhash_top_snpmers(twin_read: &mut TwinRead, max_fraction: f64){
-    let top = (twin_read.base_length as f64 * max_fraction).ceil() as usize;
-    if twin_read.snpmer_kmers.len() < top{
-        return;
-    }
-
-    log::trace!("MinHashing read {}. Top {} snpmers for read of length {} with {} snpmers", &twin_read.id, top, twin_read.base_length, twin_read.snpmer_kmers.len());
-
-    let split_mask = !(3 << (twin_read.k - 1));
-
-    let mut splitmers_hash = twin_read.snpmer_kmers.iter().map(|x| mm_hash_64(x & split_mask)).collect::<Vec<_>>();
-    splitmers_hash.sort();
-
-    if top >= splitmers_hash.len(){
-        return;
-    }
-
-    let hash_cutoff = splitmers_hash[top];
-    let retain_positions = twin_read.snpmer_kmers.iter().enumerate().filter(|x| splitmers_hash[x.0] <= hash_cutoff).map(|x| x.0).collect::<FxHashSet<_>>();
-
-    twin_read.snpmer_kmers = twin_read.snpmer_kmers.iter().enumerate().filter(|x| retain_positions.contains(&x.0)).map(|x| *x.1).collect::<Vec<_>>();
-    twin_read.snpmer_positions = twin_read.snpmer_positions.iter().enumerate().filter(|x| retain_positions.contains(&x.0)).map(|x| *x.1).collect::<Vec<_>>();
 }
 
 
@@ -446,13 +422,13 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         if counts[0] > 0 && counts[1] > 0{
             let count = counts[0] + counts[1];
             if count < high_freq_thresh{
-                solid_kmers.insert(kmer);
+                solid_kmers.insert(Kmer48::from_u64(kmer));
                 let v = new_map_counts_bases.entry(split_kmer).or_insert(CountsAndBases{counts: SmallVec::new(), bases: SmallVec::new()});
                 v.counts.push(counts);
                 v.bases.push(mid_base);
             }
             else {
-                high_freq_kmers.insert(kmer);
+                high_freq_kmers.insert(Kmer48::from_u64(kmer));
             }
         }
     }
@@ -490,7 +466,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
                     let mid_bases = bases;
                     let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
                     let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
-                    log::trace!("NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}", decode_kmer(snpmer1, k as u8), decode_kmer(snpmer2, k as u8), counts[0], counts[1]);
+                    log::trace!("NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}", decode_kmer64(snpmer1, k as u8), decode_kmer64(snpmer2, k as u8), counts[0], counts[1]);
                 }
                 return;
             }
@@ -530,7 +506,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
 
                 let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
                 let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
-                log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer(snpmer1, k as u8), counts[0], decode_kmer(snpmer2, k as u8), counts[1], p_value, odds);
+                log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer64(snpmer1, k as u8), counts[0], decode_kmer64(snpmer2, k as u8), counts[1], p_value, odds);
                 *potential_snps.lock().unwrap() += 1;
 
             }

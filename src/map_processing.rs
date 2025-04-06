@@ -1185,7 +1185,7 @@ mod tests {
     fn make_test_read() -> TwinRead {
         TwinRead {
             minimizer_positions: vec![10, 20, 30, 40, 50],
-            minimizer_kmers: vec![0, 0, 0, 0, 0],
+            minimizer_kmers: vec![0.into(), 0.into(), 0.into(), 0.into(), 0.into()],
             k: 21,
             ..Default::default()
         }

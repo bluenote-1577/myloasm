@@ -318,7 +318,7 @@ pub fn get_twin_read_syncmer(
     qualities: Option<Vec<u8>>,
     k: usize,
     c: usize,
-    snpmer_set: &FxHashSet<u64>,
+    snpmer_set: &FxHashSet<Kmer64>,
     id: String,
 ) -> Option<TwinRead> {
     let mut snpmer_positions = vec![];
@@ -452,7 +452,7 @@ pub fn get_twin_read_syncmer(
             // Check if middle s-mer has minimum hash
             if s_mer_hashes.iter().all(|h| *h >= middle_hash) {
                 //minimizers_in_read.push((i + 1 - k, canonical_kmer_marker));
-                minimizer_kmers.push(canonical_kmer_marker);
+                minimizer_kmers.push(Kmer48::from_u64(canonical_kmer_marker));
                 minimizer_positions.push((i + 1 - k) as u32);
             }
         }
@@ -462,7 +462,7 @@ pub fn get_twin_read_syncmer(
     let mut no_dup_snpmers_positions = vec![];
     for i in 0..snpmer_kmers.len(){
         if dedup_snpmers[&(snpmer_kmers[i] & split_mask)] == 1 {
-            no_dup_snpmers_kmers.push(snpmer_kmers[i]);
+            no_dup_snpmers_kmers.push(Kmer48::from_u64(snpmer_kmers[i]));
             no_dup_snpmers_positions.push(snpmer_positions[i]);
         }
     }

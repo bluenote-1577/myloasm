@@ -150,8 +150,8 @@ fn _smith_waterman(
 }
 
 pub fn find_exact_matches_with_full_index(
-    seq1: &[(u32, u64)],
-    index: &FxHashMap<u64, Vec<HitInfo>>,
+    seq1: &[(u32, Kmer48)],
+    index: &FxHashMap<Kmer48, Vec<HitInfo>>,
 ) -> FxHashMap<u32, Anchors> {
     let mut max_mult = 0;
     let mut matches = FxHashMap::default();
@@ -228,7 +228,7 @@ fn find_exact_matches_indexes_references(
 
 fn find_exact_matches_indexes<T>(seq1: T, seq2: T) -> (Vec<Anchor>, usize)
 where
-    T: Iterator<Item = (u32, u64)>,
+    T: Iterator<Item = (u32, Kmer48)>,
 {
     let mut max_mult = 0;
     let mut matches = Vec::new();
@@ -573,7 +573,7 @@ pub fn compare_twin_reads(
             for (i, (pos, snpmer)) in seq1.snpmers().enumerate() {
                 if pos as usize >= start1 && pos as usize <= end1 {
                     ind_redirect1.push(i);
-                    splitmers1.push((pos, snpmer & mask));
+                    splitmers1.push((pos, snpmer.to_u64() & mask));
                 }
             }
 
@@ -583,7 +583,7 @@ pub fn compare_twin_reads(
             for (i, (pos, snpmer)) in seq2.snpmers().enumerate() {
                 if pos as usize >= start2 && pos as usize <= end2 {
                     ind_redirect2.push(i);
-                    splitmers2.push((pos, snpmer & mask));
+                    splitmers2.push((pos, snpmer.to_u64() & mask));
                 }
             }
 
@@ -647,8 +647,8 @@ pub fn compare_twin_reads(
                             positions_read1_snpmer_diff.push(seq1.snpmer_positions[i as usize]);
                             positions_read2_snpmer_diff.push(seq2.snpmer_positions[j as usize]);
 
-                            let kmer1 = decode_kmer(seq1.snpmer_kmers[i as usize], seq1.k as u8);
-                            let kmer2 = decode_kmer(seq2.snpmer_kmers[j as usize], seq2.k as u8);
+                            let kmer1 = decode_kmer48(seq1.snpmer_kmers[i as usize], seq1.k as u8);
+                            let kmer2 = decode_kmer48(seq2.snpmer_kmers[j as usize], seq2.k as u8);
 
                             kmers_read1_diff.push(kmer1);
                             kmers_read2_diff.push(kmer2);
@@ -736,9 +736,9 @@ pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64, large_indel
 
 fn unitigs_to_tr(
     unitig_graph: &unitig::UnitigGraph,
-    snpmer_set: &FxHashSet<u64>,
-    solid_kmers: &HashSet<u64>,
-    high_freq_kmers: &HashSet<u64>,
+    snpmer_set: &FxHashSet<Kmer64>,
+    solid_kmers: &HashSet<Kmer48>,
+    high_freq_kmers: &HashSet<Kmer48>,
     args: &Cli,
 ) -> FxHashMap<usize, TwinRead> {
     let mut tr_unitigs = FxHashMap::default();
@@ -768,7 +768,7 @@ fn unitigs_to_tr(
             }
             for (index, snpmer) in tr.snpmer_kmers.iter().enumerate() {
                 if USE_SOLID_KMERS{
-                    if snpmer_set.contains(&snpmer) {
+                    if snpmer_set.contains(&snpmer.to_u64()) {
                         solid_snpmer_indices.insert(index);
                     }
                 }
@@ -786,7 +786,7 @@ fn unitigs_to_tr(
     return tr_unitigs;
 }
 
-pub fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<u64, Vec<HitInfo>> {
+pub fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<Kmer48, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
     for (&id, tr) in twinreads.iter() {
         for (i, (pos, mini)) in tr.minimizers().enumerate() {
@@ -803,7 +803,7 @@ pub fn get_minimizer_index(twinreads: &FxHashMap<usize, TwinRead>) -> FxHashMap<
 
 pub fn get_minimizer_index_ref(
     twinreads: &FxHashMap<usize, &TwinRead>,
-) -> FxHashMap<u64, Vec<HitInfo>> {
+) -> FxHashMap<Kmer48, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
     for (&id, tr) in twinreads.iter() {
         for (i, (pos, mini)) in tr.minimizers().enumerate() {

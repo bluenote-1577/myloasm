@@ -1090,7 +1090,7 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
 fn parallel_remove_contained(
     range: Vec<usize>,
     twin_reads: &[TwinRead],
-    inverted_index_hashmap: &FxHashMap<u64, FxHashSet<usize>>,
+    inverted_index_hashmap: &FxHashMap<Kmer48, FxHashSet<usize>>,
     bufwriter_dbg: &Mutex<BufWriter<File>>,
     contained_reads: &Mutex<FxHashSet<usize>>,
     outer_reads: &Mutex<Vec<usize>>,
