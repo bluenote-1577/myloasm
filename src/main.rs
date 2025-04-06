@@ -234,8 +234,8 @@ fn initialize_setup(args: &mut cli::Cli) -> (PathBuf, PathBuf) {
         .unwrap();
 
     if args.hifi {
-        args.snpmer_error_rate_lax = 0.001;
-        args.snpmer_threshold_lax = 100.;
+        args.snpmer_threshold_strict = 100.;
+        args.disable_error_overlap_rescue = true;
     }
     if args.r941 {
         args.snpmer_error_rate_lax = 0.05;

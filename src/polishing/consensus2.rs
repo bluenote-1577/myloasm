@@ -50,6 +50,15 @@ impl PoaConsensusBuilder {
                 let mut seqs = seq.lock().unwrap();
                 let mut quals = qual.lock().unwrap();
 
+                let max_len = seqs.iter().map(|x| x.len()).max().unwrap_or(0).min(self.window_overlap_len + self.bp_len);
+
+                if seqs.len() <= 3 {
+                    seqs.retain(|y| y.len() > max_len * 4 / 5);
+                    quals.retain(|y| y.len() > max_len * 4 / 5);
+                }
+
+                log::trace!("Processing block {} of {}: {:?}",i, self.contig_name, seqs.iter().map(|x| x.len()).collect::<Vec<_>>());
+
                 let mut qual_map = FxHashMap::default();
                 for (i, qual) in quals.iter().enumerate() {
                     let mean_qual = qual.iter().map(|x| *x as i32).sum::<i32>() / qual.len() as i32;
@@ -73,20 +82,33 @@ impl PoaConsensusBuilder {
                 seqs.truncate(MAX_OL_POLISHING);
                 quals.truncate(MAX_OL_POLISHING);
 
-                let cons = poa_consensus(
-                    &seqs,
-                    &quals,
-                    consensus_max_length,
-                    alignment_type,
-                    match_score,
-                    mismatch_score,
-                    gap_open,
-                    gap_extend,
-                );
+                let cons;
+                if seqs.len() == 0{
+                    cons = vec![];
+                }
+                else if seqs.len() == 1{
+                    // - 1 because last byte is null terminator
+                    cons = seqs[0][0..seqs[0].len()-1].to_vec();
+                }
+                else{
+                    cons = poa_consensus(
+                        &seqs,
+                        &quals,
+                        consensus_max_length,
+                        alignment_type,
+                        match_score,
+                        mismatch_score,
+                        gap_open,
+                        gap_extend,
+                    );
+                }
+
+                log::trace!("Consensus for block {} complete", i);
 
                 consensuses.lock().unwrap().push((i, cons));
             });
 
+        log::debug!("Consensus building complete for {}", self.contig_name);
         let mut consensuses = consensuses.into_inner().unwrap();
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();

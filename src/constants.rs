@@ -8,7 +8,7 @@ pub const SAMPLING_RATE_COV: usize = 10;
 pub const MINIMIZER_END_NTH_COV: usize = 20;
 pub const MINIMIZER_END_NTH_OVERLAP: usize = 30;
 pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
-pub const MID_BASE_THRESHOLD_READ: u8 = 17; // 98%
+pub const MID_BASE_THRESHOLD_READ: u8 = 23; // 98%
 pub const MID_BASE_THRESHOLD_INITIAL: u8 = 10; // 90%
 pub const MAX_BUBBLE_UNITIGS_FINAL_STAGE: usize = 5;
 pub const TS_DASHES_BLANK_COLONS_DOT_BLANK: &str = "%Y-%m-%d %H:%M:%S%.3f";
@@ -25,8 +25,8 @@ pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.99, 0.9975, 1.0];
 pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.333, 0.333, 0.333];
 pub const MIN_COV_READ: usize = 5;
 pub const MIN_COV_READ_SMALL: usize = 3;
-pub const SUB_MATRIX: block_aligner::scores::NucMatrix = block_aligner::scores::NucMatrix::new_simple(6, -4);
-pub const GAPS: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -1 };
+pub const SUB_MATRIX: block_aligner::scores::NucMatrix = block_aligner::scores::NucMatrix::new_simple(3, -2);
+pub const GAPS: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -2 };
 pub const MIN_BLOCK_SIZE: usize = 32;
 pub const MAX_BLOCK_SIZE: usize = 128;
 pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -1 };
@@ -42,5 +42,6 @@ pub const POLISHED_CONTIGS_NAME: &str = "initial_polished.fa";
 pub const USE_SOLID_KMERS: bool = false;
 
 pub const MAX_KMER_COUNT_IN_READ: usize = 500;
-
 pub const MAX_MULTIPLICITY_KMER: usize = 1000;
+
+pub const MINIMUM_MINIMIZER_FRACTION: f64 = 0.10;

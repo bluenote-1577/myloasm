@@ -70,18 +70,14 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
 
             else if (ani_result.align_fraction_ref > 0.90 || ani_result.align_fraction_query > 0.90) && ani_result.ani > 0.99 {
 
-                // Keep non-duplicated circular contigs as primary
-                if ani_result.query_contig.contains("circular") || ani_result.ref_contig.contains("circular"){
-                    continue;
-                }
-
                 let length_id_query = (ani_result.quant_50_contig_len_q, query_id, &ani_result.query_contig);
                 let length_id_ref = (ani_result.quant_50_contig_len_r, ref_id, &ani_result.ref_contig);
                 let smaller = if length_id_query < length_id_ref {length_id_query} else {length_id_ref};
                 let larger = if smaller == length_id_query {length_id_ref} else {length_id_query};
 
+                // Don't allow circular contigs to be considered alternate if they are not duplicates
                 // If smaller is the query, remove the reference
-                if smaller.0 < 500_000.{
+                if smaller.0 < 500_000. && !smaller.2.contains("circular"){
                     alternate_indices.insert(smaller.1, (larger.2, ani_result));
                     contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
                     contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);
@@ -119,13 +115,13 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
                 let af = if val.1.align_fraction_query > val.1.align_fraction_ref {val.1.align_fraction_query} else {val.1.align_fraction_ref};
                 let ani = val.1.ani * 100.;
                 number_duplicated += 1;
-                write!(&mut fasta_writer_duplicated, ">{} secondary_to:({}) aligned_frac:{:.2} ani:{:.2}\n{}\n", header, val.0, af*100., ani, seq).unwrap();
+                write!(&mut fasta_writer_duplicated, ">{} secondary_to:|{}| aligned_frac:{:.2} ani:{:.2}\n{}\n", header, val.0, af*100., ani, seq).unwrap();
             }
             else if let Some(val) = alternate_indices.get(id){
                 let af = if val.1.align_fraction_query > val.1.align_fraction_ref {val.1.align_fraction_query} else {val.1.align_fraction_ref};
                 let ani = val.1.ani * 100.;
                 number_alternate += 1;
-                write!(&mut fasta_writer_alternate, ">{} secondary_to:[{}] aligned_frac:{:.2} ani:{:.2}\n{}\n", header, val.0, af*100., ani, seq).unwrap();
+                write!(&mut fasta_writer_alternate, ">{} secondary_to:|{}| aligned_frac:{:.2} ani:{:.2}\n{}\n", header, val.0, af*100., ani, seq).unwrap();
             }
             else{
                 total_bases_primary += seq.len();

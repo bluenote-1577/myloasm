@@ -630,7 +630,7 @@ pub fn compare_twin_reads(
             }
 
             //Only if log level is trace
-            if log::log_enabled!(log::Level::Trace) && false {
+            if log::log_enabled!(log::Level::Trace) && true {
                 if diff_snpmer < 10 && shared_snpmer > 100 {
                     let mut positions_read1_snpmer_diff = vec![];
                     let mut positions_read2_snpmer_diff = vec![];
@@ -640,7 +640,9 @@ pub fn compare_twin_reads(
 
                     for anchor in split_chain_opt.unwrap().chain.iter() {
                         let i = anchor.i;
+                        let i = ind_redirect1[i as usize];
                         let j = anchor.j;
+                        let j = ind_redirect2[j as usize];
                         if seq1.snpmer_kmers[i as usize] != seq2.snpmer_kmers[j as usize] {
                             positions_read1_snpmer_diff.push(seq1.snpmer_positions[i as usize]);
                             positions_read2_snpmer_diff.push(seq2.snpmer_positions[j as usize]);
@@ -1041,10 +1043,7 @@ pub fn map_to_dereplicate(
             if *contig_id as usize == *q_id as usize{
                 continue;
             }
-            //TODO change strictness
-            if anchors.anchors.len() < q_unitig.base_length / args.c / 10{
-                continue;
-            }
+
             let contig_ref = &tr_unitigs[&(*contig_id as usize)];
             for uni_ol in compare_twin_reads(
                 q_unitig,
@@ -1056,6 +1055,10 @@ pub fn map_to_dereplicate(
                 &tr_options,
                 args
             ) {
+                //TODO change strictness
+                if uni_ol.shared_minimizers < q_unitig.base_length / args.c / 10{
+                    continue;
+                }
                 let ss_strict = same_strain(
                     uni_ol.shared_minimizers,
                     uni_ol.diff_snpmers,
@@ -1080,7 +1083,7 @@ pub fn map_to_dereplicate(
                     contig_ref.base_length,
                     start2,
                     end2,
-                    end2 - start2,
+                    end1 - start1,
                     end2 - start2,
                     255,
                     uni_ol.shared_minimizers,
@@ -1090,8 +1093,10 @@ pub fn map_to_dereplicate(
 
                 let range_query = end1 - start1;
                 let frac = range_query as f64 / q_unitig.base_length as f64;
+                let close_fraction = frac > 0.98;
+                let close_to_both_ends = end1 + 100 >= q_unitig.base_length && start1 <= 100;
                 //TODO change frac
-                if frac > 0.95 && ss_strict && contig_ref.base_length > q_unitig.base_length * 5{
+                if (close_to_both_ends || close_fraction) && ss_strict && contig_ref.base_length > q_unitig.base_length * 5{
                     let mut contained_contigs = contained_contigs.lock().unwrap();
                     contained_contigs.insert(*q_id);
                     return;
@@ -1259,7 +1264,7 @@ pub fn map_reads_to_unitigs(
                 tr_unitigs[&hit.i2].base_length,
                 alignment_result.as_ref().unwrap().r_start,
                 alignment_result.as_ref().unwrap().r_end,
-                hit.end2 - hit.start2,
+                hit.end1 - hit.start1,
                 hit.end2 - hit.start2,
                 255,
                 hit.shared_minimizers,

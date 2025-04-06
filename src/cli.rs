@@ -79,14 +79,21 @@ pub struct Cli {
     #[arg(long, default_value_t=30, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
+    /// Cut overlaps with > (c * this) number of bases between minimizers
+    #[arg(long, default_value_t=8., help_heading = "Overlap Parameters")]
+    pub absolute_minimizer_cut_ratio: f64,
+
+    /// Cut overlaps with > 5 times more bases between minimizers than the best overlap
+    #[arg(long, default_value_t=5., help_heading = "Overlap Parameters")]
+    pub relative_minimizer_cut_ratio: f64,
+
     /// Minimum overlap length for graph construction
     #[arg(long, default_value_t=500, help_heading = "Overlap Parameters")]
     pub min_ol: usize,
 
-    /// Minimum overlap length for graph construction
-    #[arg(long, default_value_t=500, help_heading = "Overlap Parameters")]
-    pub min_ol_secondary: usize,
-
+    /// Disables a SNPmer error overlap rescue heuristic during graph construction
+    #[arg(long, help_heading = "Overlap Parameters")]
+    pub disable_error_overlap_rescue: bool,
 
     /// Maximum bubble length to pop; keep alternates
     #[arg(long, default_value_t=500000, help_heading = "Graph Parameters")]
@@ -111,8 +118,8 @@ pub struct Cli {
     #[arg(long, default_value_t = 1)]
     pub min_reads_contig: usize,
     
-    /// HiFi mode (--snpmer-threshold 100 --snpmer-error-rate 0.001)
-    #[arg(long, help_heading = "Preset Parameters", hide=true)]
+    /// HiFi mode (--snpmer-threshold-strict 100 --snpmer-error-rate 0.001)
+    #[arg(long, help_heading = "Preset Parameters")]
     pub hifi: bool,
 
     /// R9 (old nanopore) mode (--snpmer-error-rate 0.05)

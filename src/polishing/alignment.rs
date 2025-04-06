@@ -85,23 +85,35 @@ pub fn extend_ends_chain(
         .rev()
         .map(|&x| x)
         .collect::<Vec<u8>>();
-    let left_cigar =
-        align_seq_to_ref_slice(&r_left_slice_u8_rev, &q_left_slice_u8_rev, &GAPS, Some(30));
-    let (add_length_ref_l, add_length_q_l) = get_length_from_cigar(&left_cigar);
+    let left_cigar_flipped =
+        align_seq_to_ref_slice(&r_left_slice_u8_rev, &q_left_slice_u8_rev, &GAPS, Some(100));
+    let (add_length_ref_l, add_length_q_l) = get_length_from_cigar(&left_cigar_flipped);
     let left_start_q = prev_q_pos as usize - add_length_q_l;
     let left_start_r = prev_r_pos as usize - add_length_ref_l;
 
     // --- RIGHT EXTEND ----
     // qlen = 3, end = 1, k = 2, gap = 0
-    let right_gap = (qlen - prev_q_pos - k).min(r_seq.len() as u32 - prev_r_pos - k) as usize;
-    let pqpos = (prev_q_pos + k) as usize;
-    let prpos = (prev_r_pos + k) as usize;
+    let end_q_pos = if overlap.chain_reverse {
+        qlen - chain[0].pos1 - k
+    } else {
+        chain[end_ind].pos1
+    };
+
+    let end_r_pos = if overlap.chain_reverse {
+        chain[0].pos2 
+    } else {
+        chain[end_ind].pos2
+    };
+
+    let right_gap = (qlen - end_q_pos - k).min(r_seq.len() as u32 - end_r_pos - k) as usize;
+    let pqpos = (end_q_pos + k) as usize;
+    let prpos = (end_r_pos + k) as usize;
 
     let q_right_slice = &q_seq[pqpos..pqpos + right_gap];
     let r_right_slice = &r_seq[prpos..prpos + right_gap];
     let q_right_slice_u8 = dna_slice_to_u8(q_right_slice);
     let r_right_slice_u8 = dna_slice_to_u8(r_right_slice);
-    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(30));
+    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(10));
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
 
     let q_end = pqpos + add_length_q_r;
@@ -118,6 +130,8 @@ pub fn get_full_alignment(
     overlap: &TwinOverlap,
     args: &Cli,
 ) -> Option<AlignmentResult> {
+    //TODO
+    log::trace!("Getting alignment between r{} and r{}", overlap.i1, overlap.i2);
     let k = args.kmer_size as u32;
     let chain = overlap.minimizer_chain.as_ref().unwrap();
     let q_seq;
@@ -176,12 +190,16 @@ pub fn get_full_alignment(
         .map(|&x| x)
         .collect::<Vec<u8>>();
     let left_cigar =
-        align_seq_to_ref_slice(&r_left_slice_u8_rev, &q_left_slice_u8_rev, &GAPS, Some(30));
+        align_seq_to_ref_slice(&r_left_slice_u8_rev, &q_left_slice_u8_rev, &GAPS, Some(10));
+    let left_cigar = vec![]; //TODO
     let (add_length_ref_l, add_length_q_l) = get_length_from_cigar(&left_cigar);
     let left_start_q = prev_q_pos as usize - add_length_q_l;
     let left_start_r = prev_r_pos as usize - add_length_ref_l;
     let left_cigar = left_cigar.into_iter().rev().collect::<Vec<OpLen>>();
     cigar_vec = left_cigar;
+
+    //TODO
+    log::trace!("Left cigar: {}", fmt(&cigar_vec));
 
     // --- CHAIN + EXTEND ---- 
     cigar_vec.push(OpLen {
@@ -229,6 +247,9 @@ pub fn get_full_alignment(
         prev_q_pos = q_pos;
         prev_r_pos = r_pos;
     }
+
+    //TODO
+    log::trace!("Chain cigar: {}", fmt(&cigar_vec));
     
     // --- RIGHT EXTEND ----
     // qlen = 3, end = 1, k = 2, gap = 0
@@ -240,7 +261,14 @@ pub fn get_full_alignment(
     let r_right_slice = &r_seq[prpos..prpos + right_gap];
     let q_right_slice_u8 = dna_slice_to_u8(q_right_slice);
     let r_right_slice_u8 = dna_slice_to_u8(r_right_slice);
-    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(30));
+    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(10));
+    let right_cigar = vec![]; //TODO
+
+    log::trace!(
+        "Right cigar: {}",
+        fmt(&right_cigar)
+    );
+
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
     extend_cigar(&mut cigar_vec, right_cigar);
 
@@ -267,7 +295,7 @@ pub fn get_full_alignment(
     assert!(cigar_length_r == (r_end - r_start));
     assert!(cigar_length_q == (q_end - q_start));
 
-    //Seed-chain-extend implementation
+        //Seed-chain-extend implementation
 
     return Some(AlignmentResult {
         cigar: OpLenVec::new(cigar_vec),
@@ -278,11 +306,13 @@ pub fn get_full_alignment(
     });
 }
 
+
 fn extend_cigar(cigar: &mut Vec<OpLen>, new_cigar: Vec<OpLen>) {
     for op_len in new_cigar {
         if cigar.last().unwrap().op == op_len.op {
             cigar.last_mut().unwrap().len += op_len.len;
-        } else {
+        } 
+        else {
             cigar.push(op_len);
         }
     }
@@ -311,17 +341,19 @@ pub fn align_seq_to_ref_slice(
     xdrop: Option<i32>,
 ) -> Vec<OpLen> {
     let mut cigar; 
+    let bs = 16;
     if xdrop.is_some(){
-        let mut a = Block::<true, true>::new(query_sliced.len(), reference_sliced.len(), MAX_BLOCK_SIZE);
+        let mut a = Block::<true, true>::new(query_sliced.len(), reference_sliced.len(), bs);
         let score_mat = SUB_MATRIX;
-        let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, MAX_BLOCK_SIZE);
-        let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, MAX_BLOCK_SIZE);
+        let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, bs);
+        let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, bs);
         a.align(
             &query_pad,
             &reference_pad,
             &score_mat,
             *gaps,
-            MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE,
+            //MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE,
+            2 as usize..=4 as usize,
             xdrop.unwrap_or(i32::MAX),
         );
         let res = a.res();
@@ -359,7 +391,14 @@ pub fn align_seq_to_ref_slice(
     );
 
     }
-    return cigar.to_vec();
+    let mut cig = cigar.to_vec();
+    cig.iter_mut().for_each(|op_len| {
+        if op_len.op == Operation::Eq || op_len.op == Operation::X {
+            op_len.op = Operation::M;
+        }
+    });
+
+    return cig;
 }
 
 
