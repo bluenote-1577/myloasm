@@ -199,7 +199,7 @@ pub fn get_full_alignment(
     cigar_vec = left_cigar;
 
     //TODO
-    log::trace!("Left cigar: {}", fmt(&cigar_vec));
+    //log::trace!("Left cigar: {}", fmt(&cigar_vec));
 
     // --- CHAIN + EXTEND ---- 
     cigar_vec.push(OpLen {
@@ -249,7 +249,7 @@ pub fn get_full_alignment(
     }
 
     //TODO
-    log::trace!("Chain cigar: {}", fmt(&cigar_vec));
+    //log::trace!("Chain cigar: {}", fmt(&cigar_vec));
     
     // --- RIGHT EXTEND ----
     // qlen = 3, end = 1, k = 2, gap = 0
@@ -264,10 +264,10 @@ pub fn get_full_alignment(
     let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(10));
     let right_cigar = vec![]; //TODO
 
-    log::trace!(
-        "Right cigar: {}",
-        fmt(&right_cigar)
-    );
+    // log::trace!(
+    //     "Right cigar: {}",
+    //     fmt(&right_cigar)
+    // );
 
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
     extend_cigar(&mut cigar_vec, right_cigar);

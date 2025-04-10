@@ -245,7 +245,6 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let twin_read_vec = Arc::new(Mutex::new(vec![]));
 
     let files_owned = fastq_files.clone();
-    let hpc = args.homopolymer_compression;
     let solid_kmers_take = std::mem::take(&mut kmer_info.solid_kmers);
     let high_freq_kmers_take = std::mem::take(&mut kmer_info.high_freq_kmers);
     let arc_solid = Arc::new(solid_kmers_take);
@@ -259,11 +258,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
                 let seq;
-                if hpc{
-                    seq = homopolymer_compression(rec.seq().to_vec());
-                } else {
-                    seq = rec.seq().to_vec();
-                }
+                seq = rec.seq().to_vec();
                 if seq.len() < MIN_READ_LENGTH{
                     continue;
                 }
@@ -363,7 +358,8 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
     twin_reads.sort_by(|a,b| a.id.cmp(&b.id));
 
-    if log::log_enabled!(log::Level::Trace) {
+    //This is for hefty debugging purposes only; too verbose.
+    if log::log_enabled!(log::Level::Trace) && false{
         for twin_read in twin_reads.iter(){
             let decoded_snpmers = twin_read.snpmers().map(|x| (x.0, decode_kmer48(x.1, twin_read.k))).collect::<Vec<_>>();
             log::trace!("{} {:?}", twin_read.id, decoded_snpmers);

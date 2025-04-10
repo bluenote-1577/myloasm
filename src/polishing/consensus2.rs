@@ -57,7 +57,7 @@ impl PoaConsensusBuilder {
                     quals.retain(|y| y.len() > max_len * 4 / 5);
                 }
 
-                log::trace!("Processing block {} of {}: {:?}",i, self.contig_name, seqs.iter().map(|x| x.len()).collect::<Vec<_>>());
+                //log::trace!("Processing block {} of {}: {:?}",i, self.contig_name, seqs.iter().map(|x| x.len()).collect::<Vec<_>>());
 
                 let mut qual_map = FxHashMap::default();
                 for (i, qual) in quals.iter().enumerate() {
@@ -103,12 +103,12 @@ impl PoaConsensusBuilder {
                     );
                 }
 
-                log::trace!("Consensus for block {} complete", i);
+                //log::trace!("Consensus for block {} complete", i);
 
                 consensuses.lock().unwrap().push((i, cons));
             });
 
-        log::debug!("Consensus building complete for {}", self.contig_name);
+        log::trace!("Consensus building complete for {}", self.contig_name);
         let mut consensuses = consensuses.into_inner().unwrap();
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();

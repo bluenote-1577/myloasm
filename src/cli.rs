@@ -13,24 +13,20 @@ use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
 #[derive(Default, Clone)]
 pub struct Cli {
     /// Input FASTQ files
-    #[arg(num_args = 1..)]
+    #[arg(num_args = 1.., required = true, value_name = "FASTQ/FASTA")]
     pub input_files: Vec<String>,
 
-    /// K-mer size (must be odd)
-    #[arg(short, long, default_value = "21")]
+    /// K-mer size (must be odd and < 24)
+    #[arg(short, long, default_value = "21", help_heading = "Basic Parameters")]
     pub kmer_size: usize,
 
-    /// Compression ratio
-    #[arg(short, long, default_value = "11")]
+    /// Compression ratio (1/c k-mers selected). 
+    #[arg(short, long, default_value = "11", help_heading = "Basic Parameters")]
     pub c: usize,
 
     /// Number of threads to use for processing
     #[arg(short, long, default_value = "20")]
     pub threads: usize,
-
-    /// Enable homopolymer compression
-    #[arg(long, hide=true)]
-    pub homopolymer_compression: bool,
 
     /// Output directory for results
     #[arg(short, long, default_value = "output")]
@@ -48,15 +44,16 @@ pub struct Cli {
     #[arg(long, default_value_t = 3, help_heading = "Graph Parameters")]
     pub tip_read_cutoff: usize,
 
-    // No polishing
-    #[arg(long, default_value_t=false, help_heading = "Overlap Parameters")]
+    /// No polishing (not recommended)
+    #[arg(long, default_value_t=false, help_heading = "Misc")]
     pub no_polish: bool,
 
-    #[arg(long, default_value_t=false, help_heading = "Overlap Parameters")]
+    /// Disable usage of SNPmers (not recommended)
+    #[arg(long, default_value_t=false, help_heading = "Misc")]
     pub no_snpmers: bool,
 
-    /// Disallow reads with < this accuracy from Q-scores for the overlap step. 
-    #[arg(long, default_value_t=90.)]
+    /// Disallow reads with < % identity for graph building (estimated from base qualities). 
+    #[arg(long, default_value_t=90., help_heading = "Input/Output Parameters")]
     pub quality_value_cutoff: f64,
 
     /// Snpmer identity threshold for containment
@@ -76,14 +73,14 @@ pub struct Cli {
     pub snpmer_error_rate_strict: f64,
 
 
-    #[arg(long, default_value_t=30, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=35, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
     /// Cut overlaps with > (c * this) number of bases between minimizers
     #[arg(long, default_value_t=8., help_heading = "Overlap Parameters")]
     pub absolute_minimizer_cut_ratio: f64,
 
-    /// Cut overlaps with > 5 times more bases between minimizers than the best overlap
+    /// Cut overlaps with > (this) times more bases between minimizers than the best overlap
     #[arg(long, default_value_t=5., help_heading = "Overlap Parameters")]
     pub relative_minimizer_cut_ratio: f64,
 
@@ -103,23 +100,24 @@ pub struct Cli {
     #[arg(long, default_value_t=50000, help_heading = "Graph Parameters")]
     pub small_bubble_threshold: usize,
 
-    /// Small bubble length to pop; discard alternates
+    /// Cut z-edges that are < this times smaller than the adjacent overlaps
     #[arg(long, default_value_t=1.0, help_heading = "Graph Parameters")]
     pub z_edge_threshold: f64,
 
+    /// Soft clips with < this # of bases are allowed for alignment
     #[arg(long, default_value_t=200, help_heading = "Alignment Parameters")]
     pub maximal_end_fuzz: usize, 
 
     /// Bloom filter size in GB
-    #[arg(short, long, default_value_t=10.)]
+    #[arg(short, long, default_value_t=10., help_heading = "Misc")]
     pub bloom_filter_size: f64,
 
     /// Minimum number of reads in output contigs
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 1, help_heading = "Input/Output Parameters")]
     pub min_reads_contig: usize,
     
     /// HiFi mode (--snpmer-threshold-strict 100 --snpmer-error-rate 0.001)
-    #[arg(long, help_heading = "Preset Parameters")]
+    #[arg(long, help_heading = "Preset Parameters", hide = true)]
     pub hifi: bool,
 
     /// R9 (old nanopore) mode (--snpmer-error-rate 0.05)

@@ -45,3 +45,5 @@ pub const MAX_KMER_COUNT_IN_READ: usize = 500;
 pub const MAX_MULTIPLICITY_KMER: usize = 1000;
 
 pub const MINIMUM_MINIMIZER_FRACTION: f64 = 0.10;
+
+pub const MAGIC_EXIST_STRING: &str = "exist";

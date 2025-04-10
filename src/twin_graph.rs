@@ -1,4 +1,3 @@
-use std::path::Path;
 use fxhash::hash64;
 use crate::cli::Cli;
 use crate::constants::{MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
@@ -14,6 +13,10 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use crate::mapping::*;
 use crate::map_processing;
+use std::path::PathBuf;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+
 
 #[derive(Debug, Clone, PartialEq, Default, Hash, Eq, Serialize, Deserialize)]
 pub struct OverlapConfig{
@@ -426,7 +429,7 @@ impl OverlapTwinGraph{
                         self.edges[i] = None;
                     }
                     else{
-                        log::debug!("Rescuing edge {}-{} diff snpmers:{} snpmer threshold:{} fsv:{} ol_len:{}", edge.node1, edge.node2, edge.diff_snpmers, snpmer_threshold, edge.edge_id_est(c), edge.overlap_len_bases);
+                        log::trace!("Rescuing edge {}-{} diff snpmers:{} snpmer threshold:{} fsv:{} ol_len:{}", edge.node1, edge.node2, edge.diff_snpmers, snpmer_threshold, edge.edge_id_est(c), edge.overlap_len_bases);
                     }
                 }
             }
@@ -435,15 +438,15 @@ impl OverlapTwinGraph{
         log::trace!("Pruning {} lax overlaps", edges_to_remove.len());
         self.remove_edges(edges_to_remove);
 
-        let mut singleton_nodes_to_remove = vec![];
-        for (i, node) in self.nodes.iter(){
-            if node.both_edges().collect::<Vec<_>>().is_empty(){
-                log::trace!("Node {} has no edges after lax cuts", node.index);
-                //singleton_nodes_to_remove.push(*i);
-            }
-        }
+        // let mut singleton_nodes_to_remove = vec![];
+        // for (i, node) in self.nodes.iter(){
+        //     if node.both_edges().collect::<Vec<_>>().is_empty(){
+        //         log::trace!("Node {} has no edges after lax cuts", node.index);
+        //         //singleton_nodes_to_remove.push(*i);
+        //     }
+        // }
 
-        self.remove_nodes(&singleton_nodes_to_remove, false);
+        // self.remove_nodes(&singleton_nodes_to_remove, false);
     }   
 
     pub fn transitive_reduction(&mut self) {
@@ -572,7 +575,7 @@ impl OverlapTwinGraph{
     fn get_edges_sorted_by_length(&self, node_id: NodeIndex, direction: &Direction) -> Vec<(usize, EdgeIndex)> {
         let mut sorted_all_edges = vec![];
         let node_data = self.nodes.get(&node_id).unwrap();
-        for (l, edge_ind) in node_data.edges_direction(&direction).into_iter().enumerate()
+        for (_, edge_ind) in node_data.edges_direction(&direction).into_iter().enumerate()
         {
             let edge = self.edges[*edge_ind].as_ref().unwrap();
             let n1 = self.nodes.get(&edge.node1).unwrap();
@@ -595,12 +598,11 @@ enum Mark {
     Eliminated,
 }
 
-pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices: &[usize], args: &Cli, overlap_file_str: Option<&str>) -> Vec<OverlapConfig>{
+pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices: &[usize], args: &Cli, overlap_file_path: Option<&PathBuf>) -> Vec<OverlapConfig>{
 
-    let bufwriter = if let Some(overlap_file_str) = overlap_file_str{
-        let overlaps_file = Path::new(args.output_dir.as_str()).join(overlap_file_str);
-        let file = File::create(overlaps_file).unwrap();
-        Mutex::new(Box::new(BufWriter::new(file)) as Box<dyn Write + Send>)
+    let bufwriter = if let Some(overlap_file_path) = overlap_file_path{
+        let file = File::create(overlap_file_path).unwrap();
+        Mutex::new(Box::new(GzEncoder::new(BufWriter::new(file), Compression::default())) as Box<dyn Write + Send>)
         //Mutex::new(BufWriter::new(std::fs::File::create(overlaps_file).unwrap()))
     }
     else{
@@ -954,7 +956,7 @@ where T: Write + Send
     return best_overlap;
 }
 
-pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &[TwinRead], outer_reads: Option<&Vec<usize>>,  args: &Cli) -> OverlapTwinGraph
+pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &[TwinRead], outer_reads: Option<&Vec<usize>>, args: &Cli) -> OverlapTwinGraph
 {
     let mut nodes = FxHashMap::default();
     let mut edges = vec![];
@@ -1045,7 +1047,7 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
     return graph;
 }
 
-pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], args: &Cli) -> Vec<usize>{
+pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf,  args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
     let inverted_index_hashmap =
@@ -1066,9 +1068,18 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
     //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
 
     //open file for writing
-    let name = if outer_indices.is_none() { "all-cont.txt" } else { "subset-cont.txt" };
-    let output_path = Path::new(args.output_dir.as_str()).join(name);
-    let bufwriter_dbg = Mutex::new(BufWriter::new(File::create(output_path).unwrap()));
+    let name = if outer_indices.is_none() { "all-cont.txt.gz" } else { "subset-cont.txt.gz" };
+    //let output_path = Path::new(args.output_dir.as_str()).join(name);
+    let output_path = temp_dir.join(name);
+    let bufwriter_dbg;
+    if first_iteration{
+        //write to null
+        bufwriter_dbg = Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>);
+    }
+    else{
+        let writer = BufWriter::new(File::create(&output_path).unwrap());
+        bufwriter_dbg = Mutex::new(Box::new(GzEncoder::new(writer, Compression::default())) as Box<dyn Write + Send>);
+    }
     let contained_reads = Mutex::new(FxHashSet::default());
     let outer_reads = Mutex::new(vec![]);
     let reads_with_contained_read = Mutex::new(FxHashSet::default());
@@ -1087,17 +1098,18 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
     return outer_reads.into_inner().unwrap();
 }
 
-fn parallel_remove_contained(
+fn parallel_remove_contained<T>(
     range: Vec<usize>,
     twin_reads: &[TwinRead],
     inverted_index_hashmap: &FxHashMap<Kmer48, FxHashSet<usize>>,
-    bufwriter_dbg: &Mutex<BufWriter<File>>,
+    bufwriter_dbg: &Mutex<T>,
     contained_reads: &Mutex<FxHashSet<usize>>,
     outer_reads: &Mutex<Vec<usize>>,
     reads_with_contained_read: &Mutex<FxHashSet<usize>>,
     downsample_factor: u64,
     args: &Cli,
-){
+) where T : Write + Send
+{
     let comparison_options = CompareTwinReadOptions::default();
     range.into_par_iter().for_each(|i| {
         let mut contained = false;
@@ -1164,7 +1176,9 @@ fn parallel_remove_contained(
         });
 
         let sorting_filtering_time = start.elapsed();
-        writeln!(bufwriter_dbg.lock().unwrap(), "CONTAIN: {} NUMBER OF HITS {}. THRESHOLD: {}", &read1.id, top_indices.len(), read1.snpmer_id_threshold.unwrap_or(100.)).unwrap();
+        if log::log_enabled!(log::Level::Trace) {
+            writeln!(bufwriter_dbg.lock().unwrap(), "CONTAIN: {} NUMBER OF HITS {}. THRESHOLD: {}", &read1.id, top_indices.len(), read1.snpmer_id_threshold.unwrap_or(100.)).unwrap();
+        }
 
         let start = std::time::Instant::now();
         let num_tries = 50;
@@ -1204,7 +1218,7 @@ fn parallel_remove_contained(
             }
 
             // only do this when log is config to trace
-            if log::log_enabled!(log::Level::Debug) {
+            if log::log_enabled!(log::Level::Trace) {
                 writeln!(
                     bufwriter_dbg.lock().unwrap(),
                     "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}, order_count: {}, snpmer_thresh: {}",
@@ -1234,7 +1248,12 @@ fn parallel_remove_contained(
             //Can't be reflexive.
             if r1_contained_r2(&twin_overlap, read1, read2, same_strain, args.c){
                 let comparing_time = start.elapsed();
-                writeln!(bufwriter_dbg.lock().unwrap(), "{} {} CONTAINED. Times {} {} {}", read1.id, read2.id, inverted_indexing_time.as_micros(), sorting_filtering_time.as_micros(), comparing_time.as_micros()).unwrap();
+                if log::log_enabled!(log::Level::Trace) {
+                    writeln!(bufwriter_dbg.lock().unwrap(), "{} {} CONTAINED. Times {} {} {}", read1.id, read2.id, inverted_indexing_time.as_micros(), sorting_filtering_time.as_micros(), comparing_time.as_micros()).unwrap();
+                }
+                else{
+                    writeln!(bufwriter_dbg.lock().unwrap(), "{} -> {}", read1.id, read2.id).unwrap();
+                }
                 contained = true;
                 contained_reads.lock().unwrap().insert(i);
                 reads_with_contained_read.lock().unwrap().insert(*index);

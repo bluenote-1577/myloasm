@@ -17,6 +17,7 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::panic;
 use std::sync::Mutex;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UnitigNode {
@@ -2106,7 +2107,7 @@ impl UnitigGraph {
         if let Some(largest_contig) = largest_contig {
             let largest_contig_size = largest_contig.1.cut_length();
             let num_contigs = contig_sizes.len();
-            log::info!("-------------- (Unpolished) Assembly statistics --------------");
+            log::info!("Unpolished Assembly statistics - NOT FINAL");
             log::info!("N50: {}", n50_size);
             log::info!("Largest contig has size: {}", largest_contig_size);
             log::info!("Number of contigs: {}", num_contigs);
@@ -2123,7 +2124,6 @@ impl UnitigGraph {
                 num_circ_contigs_geq_100k
             );
             log::info!("Total bases within assembly is {}", n50 * 2);
-            log::info!("-------------------------------------------------");
         } else {
             log::info!("WARNING: No contigs found.");
             return;

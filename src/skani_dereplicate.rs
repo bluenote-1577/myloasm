@@ -8,11 +8,11 @@ use std::io::Write;
 use skani::params;
 pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
 
-    let path = Path::new(args.output_dir.as_str()).join(polished_fasta);
-    assert!(path.exists());
+    let initial_fasta_path = Path::new(args.output_dir.as_str()).join(polished_fasta);
+    assert!(initial_fasta_path.exists());
 
     let command_params = params::CommandParams {
-        ref_files: vec![path.to_str().unwrap().to_string()],
+        ref_files: vec![initial_fasta_path.to_str().unwrap().to_string()],
         individual_contig_q: true,
         individual_contig_r: true,
         min_aligned_frac: 0.30,
@@ -86,10 +86,12 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
         }
     }
 
-    let mut fasta_records = needletail::parse_fastx_file(path).unwrap();
+    let mut fasta_records = needletail::parse_fastx_file(&initial_fasta_path).unwrap();
+    let alternate_assembly_dir = Path::new(args.output_dir.as_str()).join("alternate_assemblies");
+    std::fs::create_dir_all(&alternate_assembly_dir).unwrap();
     let primary_path = Path::new(args.output_dir.as_str()).join("assembly_primary.fa");
-    let alternate_path = Path::new(args.output_dir.as_str()).join("assembly_alternate.fa");
-    let dup_path = Path::new(args.output_dir.as_str()).join("duplicated_contigs.fa");
+    let alternate_path = alternate_assembly_dir.join("assembly_alternate.fa");
+    let dup_path = alternate_assembly_dir.join("duplicated_contigs.fa");
     let mut fasta_writer_primary = BufWriter::new(File::create(primary_path).unwrap());
     let mut fasta_writer_alternate = BufWriter::new(File::create(alternate_path).unwrap());
     let mut fasta_writer_duplicated = BufWriter::new(File::create(dup_path).unwrap());
@@ -179,5 +181,8 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
     );
     log::info!("Total bases within assembly is {}", total_bases_primary);
     log::info!("-------------------------------------------------");
+
+    // Remove the polished fasta
+    let _ = std::fs::remove_file(initial_fasta_path);
 
 }

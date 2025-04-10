@@ -8,6 +8,7 @@ use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
 use std::io::Write;
+use flate2::write::GzEncoder;
 use rust_lapper::Interval;
 use std::io::BufWriter;
 use std::path::Path;
@@ -18,6 +19,9 @@ use rust_lapper::Lapper;
 use std::sync::Mutex;
 use std::collections::BTreeMap;
 use fxhash::FxHashSet;
+use flate2::Compression;
+use std::path::PathBuf;
+
 
 pub struct TwinReadMapping {
     pub tr_index: usize,
@@ -416,12 +420,13 @@ pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, 
     return (first_mini, last_mini);
 }
 
-pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, args: &Cli)
+pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, temp_dir: &PathBuf, args: &Cli)
 -> (Vec<TwinRead>, Vec<usize>){
     let tr_map_info_dict = tr_map_info.iter().map(|x| (x.tr_index, x)).collect::<FxHashMap<usize, &TwinReadMapping>>();
     let new_twin_reads_bools = Mutex::new(vec![]);
-    let cov_file = Path::new(args.output_dir.as_str()).join("read_coverages.txt");
-    let writer = Mutex::new(BufWriter::new(std::fs::File::create(cov_file).unwrap()));
+    let cov_file = Path::new(temp_dir).join("read_coverages.txt.gz");
+    let buf = BufWriter::new(std::fs::File::create(cov_file).unwrap());
+    let writer = Mutex::new(GzEncoder::new(buf, Compression::default()));
 
     twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
         if tr_map_info_dict.contains_key(&i){

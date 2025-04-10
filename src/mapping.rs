@@ -15,9 +15,11 @@ use crate::unitig;
 use crate::utils::log_memory_usage;
 use crate::unitig::NodeSequence;
 use bio_seq::codec::Codec;
+use flate2::write::GzEncoder;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rayon::prelude::*;
+use flate2::Compression;
 use rust_htslib::utils;
 use rust_lapper::Interval;
 use rust_lapper::Lapper;
@@ -25,6 +27,7 @@ use std::collections::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -994,11 +997,17 @@ pub fn map_to_dereplicate(
     unitig_graph: &mut unitig::UnitigGraph,
     kmer_info: &KmerGlobalInfo,
     _twin_reads: &[TwinRead],
+    temp_dir: &PathBuf,
     args: &Cli,
 ) {
 
-    let mapping_file = Path::new(args.output_dir.as_str()).join("dereplicate_unitigs.paf");
-    let mapping_file = Mutex::new(BufWriter::new(std::fs::File::create(mapping_file).unwrap()));
+    let mapping_file = temp_dir.join("dereplicate_unitigs.paf.gz");
+    let mapping_file = Mutex::new(
+        GzEncoder::new(
+            BufWriter::new(std::fs::File::create(mapping_file).unwrap()),
+            Compression::default()
+        )
+    );
 
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
@@ -1114,10 +1123,16 @@ pub fn map_reads_to_unitigs(
     unitig_graph: &mut unitig::UnitigGraph,
     kmer_info: &KmerGlobalInfo,
     twin_reads: &[TwinRead],
+    temp_dir: &PathBuf,
     args: &Cli,
 ) {
-    let mapping_file = Path::new(args.output_dir.as_str()).join("map_to_unitigs.paf");
-    let mapping_file = Mutex::new(BufWriter::new(std::fs::File::create(mapping_file).unwrap()));
+    let mapping_file = temp_dir.join("map_to_unitigs.paf.gz");
+    let mapping_file = Mutex::new(
+        GzEncoder::new(
+            BufWriter::new(std::fs::File::create(mapping_file).unwrap()),
+            Compression::default()
+        )
+    );
     let mut tr_options = CompareTwinReadOptions::default();
     tr_options.retain_chain = true;
 

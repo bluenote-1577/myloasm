@@ -1,0 +1,4 @@
+(2025-04-08 13:59:56.029) INFO [myloasm] COMMAND: ./target/debug/myloasm
+(2025-04-08 13:59:56.030) INFO [myloasm] VERSION: 0.0.1
+(2025-04-08 13:59:56.035) INFO [myloasm] Starting assembly...
+(2025-04-08 13:59:56.058) ERROR [myloasm] No input files provided. See --help for usage.
