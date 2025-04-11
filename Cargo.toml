@@ -33,6 +33,7 @@ ordered-float = { version = "4.0", default-features = false }
 rust-spoa = { path = "src/rust-spoa" }
 tikv-jemallocator = "0.4.0"
 skani = { path = "src/skani" }
+sysinfo = "0.34.2"
 
 #crossbeam-utils = "*"
 

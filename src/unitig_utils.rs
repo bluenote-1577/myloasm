@@ -396,7 +396,7 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
             count += 1;
         }
 
-        let iqr = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
+        let _iqr = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
         //let harmonic_mean_sample_size = 2. / (1. / larger.len() as f64 + 1. / smaller.len() as f64);
         //let weight1 = 1. + iqr / harmonic_mean_sample_size.sqrt() / 4.;
         //let max_sample_size = larger.len().max(smaller.len());

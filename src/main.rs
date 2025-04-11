@@ -33,6 +33,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 use tikv_jemallocator::Jemalloc;
+use sysinfo::System;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -218,6 +219,8 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     let cli_args: Vec<String> = std::env::args().collect();
     log::info!("COMMAND: {}", cli_args.join(" "));
     log::info!("VERSION: {}", env!("CARGO_PKG_VERSION"));
+    log::info!("SYSTEM NAME: {}", System::name().unwrap_or(format!("Unknown")));
+    log::info!("SYSTEM HOST NAME: {}", System::host_name().unwrap_or(format!("Unknown")));
 
     // Validate k-mer size
     if args.kmer_size % 2 == 0 {

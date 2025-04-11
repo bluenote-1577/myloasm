@@ -1,6 +1,7 @@
 use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::MAX_GAP_CHAINING;
+use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MAX_MULTIPLICITY_KMER;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
@@ -852,12 +853,16 @@ pub fn get_minimizer_index(
 
     minimizer_to_hit_count.sort_by(|a, b| b.cmp(&a));
     let threshold = minimizer_to_hit_count[minimizer_to_hit_count.len() / 100_000];
-    log::debug!(
+    log::trace!(
         "Minimizer index size: {}. Threshold: {}",
         minimizer_to_hit_count.len(),
         threshold
     );
-    mini_index.retain(|_, v| v.len() < threshold);
+
+    // Only threshold when necessary
+    if mini_index.len() > 500_000{
+        mini_index.retain(|_, v| v.len() < threshold);
+    }
 
     return mini_index;
 }

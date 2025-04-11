@@ -331,7 +331,7 @@ impl OverlapTwinGraph{
                 continue;
             }
         }
-        log::debug!("Pruning {} low minimizer overlaps", edges_to_remove.len());
+        log::trace!("Pruning {} low minimizer overlaps", edges_to_remove.len());
 
         for edge in edges_to_remove.iter(){
             let edge = self.edges[*edge].as_ref().unwrap();
@@ -1046,7 +1046,7 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
     graph.prune_lax_overlaps(args.c, Some(twin_reads), args.snpmer_threshold_strict, args.snpmer_error_rate_strict, args.disable_error_overlap_rescue);
     graph.transitive_reduction();
 
-    log::debug!("Number of nodes in initial read overlap graph: {}", graph.nodes.len());
+    log::trace!("Number of nodes in initial read overlap graph: {}", graph.nodes.len());
 
     return graph;
 }
