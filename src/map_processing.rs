@@ -1,4 +1,5 @@
 use crate::cli::Cli;
+use crate::constants::QUALITY_SEQ_BIN;
 use crate::constants::READ_BLOCK_SIZE_FOR_COVERAGE;
 use crate::constants::ENDPOINT_MAPPING_FUZZ;
 use crate::constants::IDENTITY_THRESHOLDS;
@@ -7,6 +8,7 @@ use crate::constants::MINIMIZER_END_NTH_COV;
 use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
+use crate::utils;
 use std::io::Write;
 use flate2::write::GzEncoder;
 use rust_lapper::Interval;
@@ -308,7 +310,9 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             new_read.est_id = twin_read.est_id;
 
             if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
-                new_read.qual_seq = Some(qual_seq[last_break..bp_start].to_owned());
+                let start_qual = utils::div_rounded(last_break, QUALITY_SEQ_BIN);
+                let end_qual = utils::div_rounded(bp_start, QUALITY_SEQ_BIN);
+                new_read.qual_seq = Some(qual_seq[start_qual..end_qual].to_owned());
             }
 
             new_read.base_length = new_read.dna_seq.len();
@@ -1190,7 +1194,7 @@ mod tests {
     fn make_test_read() -> TwinRead {
         TwinRead {
             minimizer_positions: vec![10, 20, 30, 40, 50],
-            minimizer_kmers: vec![0.into(), 0.into(), 0.into(), 0.into(), 0.into()],
+            //minimizer_kmers: vec![0.into(), 0.into(), 0.into(), 0.into(), 0.into()],
             k: 21,
             ..Default::default()
         }

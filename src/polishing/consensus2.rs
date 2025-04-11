@@ -371,15 +371,16 @@ impl PoaConsensusBuilder {
             //TODO assume qualities exist
             let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
             let query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
+
             let query_seq_u8: Vec<u8>;
-            let query_quals_u8: Vec<u8>;
+            let mut query_quals_u8_binned: Vec<u8>;
             if ol.reverse {
                 query_seq_u8 = query_seq
                     .to_revcomp()
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
                     .collect();
-                query_quals_u8 = query_quals
+                query_quals_u8_binned = query_quals
                     .to_revcomp()
                     .iter()
                     .map(|x| (x as u8) * 3 + 33)
@@ -389,8 +390,23 @@ impl PoaConsensusBuilder {
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
                     .collect();
-                query_quals_u8 = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
+                query_quals_u8_binned = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
             }
+
+            let bin_size = QUALITY_SEQ_BIN;
+            let mut query_quals_u8 = query_quals_u8_binned
+                .iter()
+                .flat_map(|x| vec![*x; bin_size])
+                .collect::<Vec<u8>>();
+
+            if query_quals_u8.len() > query_seq.len() {
+                query_quals_u8.truncate(query_seq.len());
+            }
+            else if query_quals_u8.len() < query_seq.len() {
+                let last_qual = query_quals_u8[query_quals_u8.len() - 1];
+                query_quals_u8.extend(vec![last_qual; query_seq.len() - query_quals_u8.len()]);
+            }
+
             self.add_seq(
                 query_seq_u8,
                 query_quals_u8,
@@ -962,7 +978,7 @@ mod tests {
     fn circular_join_basic_test(){
         let mut args = Cli::default();
         args.c = 5;
-        args.kmer_size = 10;
+        args.kmer_size = 17;
         {
             let random_string = b"GCATGCGTTCAACGTAGGCCGTACTAGCTGCGTAATCGACGGAATGGCAGTATCGCGATAACGCTTGAAACGCTACGAGCCATAGCGGTATCGTAGCAACGCTAATCGGCATAGCTATCGATGCAGTCGCTATAGCTAGCTAGCGATCGGCCGATAGCGATCGATCGGCTAGCGGCATCGATAGCGGCCGATCGCGATCAGCATGGCCGATGCGATCGCGTATCAGCGCGATCGAGCCGATCGATCGCGTCCGATGCATGCAACGATCGGCATATCACGCGCGATCGACTAGCGATCGATCGCGTACGCATCGATCGAGCGATCGACTGATCGCTAGCTGCATGCATACGCTAGCTGCAGCTAGCATCGATCGCTATGCTAGCTAGCATCGAGCTGATCGTAGCATCGATCGATCGATCGATCGATCGAGCTATCGATCGATACGCGATCGATCGATCGCGATCGATCGATCGATCGCGATCGATCGCGATCGACTGCGATCGCTAGCTAGCTAGCTATGCTAGCTAGCTGCTAGTCGACGATCGATCGATCGATCGATCTAGCTAGCATCGCTAGCTGATCGTAGCTAGCTAGCATCGATCGA".to_vec();
             let mut seq = random_string.clone();
@@ -974,7 +990,7 @@ mod tests {
 
             dbg!(seq.len());
 
-            join_circular_ends(&mut seq, random_string.len(), 10, 10, "test", &args);
+            join_circular_ends(&mut seq, random_string.len(), 11, 11, "test", &args);
 
             assert_eq!(seq.len(), 1000 + random_string.len());
         }

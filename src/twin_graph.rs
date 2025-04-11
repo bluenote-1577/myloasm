@@ -614,22 +614,26 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
     // Contained reads may still lurk in the outer reads, remove again for sure.
     let contained_reads_again = Mutex::new(FxHashSet::default());
 
-    let inverted_index = get_minimizer_index_ref(&outer_twin_reads);
+    let inverted_index = get_minimizer_index(None, Some(&outer_twin_reads));
     
     let overlaps = Mutex::new(vec![]);
 
-    let comparison_options = CompareTwinReadOptions{
-        compare_snpmers: true,
-        retain_chain: false,
-        force_one_to_one_alignments: true,
-        supplementary_threshold_score: Some(500.),
-        supplementary_threshold_ratio: Some(0.25),
-        secondary_threshold: None,
-    };
 
     outer_read_indices.into_par_iter().for_each(|&i| { 
         let read = &twin_reads[i];
-        let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec(), &inverted_index);
+        let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec(), &inverted_index, None, Some(&outer_twin_reads));
+
+        let comparison_options = CompareTwinReadOptions{
+            compare_snpmers: true,
+            retain_chain: false,
+            force_one_to_one_alignments: true,
+            supplementary_threshold_score: Some(500.),
+            supplementary_threshold_ratio: Some(0.25),
+            secondary_threshold: None,
+            read1_mininimizers: None, // indexed anchors
+            read1_snpmers: Some(read.snpmers_vec()),
+        };
+
         for (outer_ref_id, anchors) in mini_anchors.into_iter(){
 
             //Only compare once. I think we get slightly different results if we
@@ -1050,21 +1054,27 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
 pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf,  args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
-    let inverted_index_hashmap =
+    let mut inverted_index_hashmap =
         twin_reads
             .iter()
             .enumerate()
             .filter(|x| x.1.est_id.is_none() 
             || x.1.est_id.unwrap() > args.quality_value_cutoff)
             .fold(FxHashMap::default(), |mut acc, (i, x)| {
-                for y in x.minimizer_kmers.iter(){
+                for y in x.minimizer_kmers().iter(){
                     if hash64(y) > u64::MAX / downsample_factor {
                         continue;
                     }
-                    acc.entry(*y).or_insert(FxHashSet::default()).insert(i);
+                    acc.entry(*y).or_insert(FxHashSet::default()).insert(i as u32);
                 }
                 acc
             });
+    
+    let mut kmer_to_count = inverted_index_hashmap.iter().map(|(_,v)| v.len()).collect::<Vec<_>>();
+    kmer_to_count.sort_by(|a,b| b.cmp(&a));
+    let threshold = kmer_to_count[kmer_to_count.len() / 100_000];
+    inverted_index_hashmap.retain(|_,v| v.len() < threshold);
+    log::debug!("Number of kmer indices in inverted index: {}. Threshold: {}", inverted_index_hashmap.len(), threshold);
     //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
 
     //open file for writing
@@ -1072,7 +1082,7 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
     //let output_path = Path::new(args.output_dir.as_str()).join(name);
     let output_path = temp_dir.join(name);
     let bufwriter_dbg;
-    if first_iteration{
+    if first_iteration && !log::log_enabled!(log::Level::Trace) {
         //write to null
         bufwriter_dbg = Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>);
     }
@@ -1082,7 +1092,6 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
     }
     let contained_reads = Mutex::new(FxHashSet::default());
     let outer_reads = Mutex::new(vec![]);
-    let reads_with_contained_read = Mutex::new(FxHashSet::default());
 
     let range = if let Some(special_indices) = outer_indices {
         special_indices
@@ -1090,7 +1099,7 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
         (0..twin_reads.len()).into_iter().collect::<Vec<_>>()
     };
 
-    parallel_remove_contained(range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, &reads_with_contained_read, downsample_factor, args);
+    parallel_remove_contained(range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, downsample_factor, args);
     let num_contained_reads = contained_reads.lock().unwrap().len();
     log::info!("{} reads are contained; {} outer reads", num_contained_reads, outer_reads.lock().unwrap().len());
 
@@ -1101,16 +1110,14 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
 fn parallel_remove_contained<T>(
     range: Vec<usize>,
     twin_reads: &[TwinRead],
-    inverted_index_hashmap: &FxHashMap<Kmer48, FxHashSet<usize>>,
+    inverted_index_hashmap: &FxHashMap<Kmer48, FxHashSet<u32>>,
     bufwriter_dbg: &Mutex<T>,
     contained_reads: &Mutex<FxHashSet<usize>>,
     outer_reads: &Mutex<Vec<usize>>,
-    reads_with_contained_read: &Mutex<FxHashSet<usize>>,
     downsample_factor: u64,
     args: &Cli,
 ) where T : Write + Send
 {
-    let comparison_options = CompareTwinReadOptions::default();
     range.into_par_iter().for_each(|i| {
         let mut contained = false;
         let read1 = &twin_reads[i];
@@ -1118,17 +1125,22 @@ fn parallel_remove_contained<T>(
             return;
         }
 
+        let mut comparison_options = CompareTwinReadOptions::default();
+        comparison_options.read1_mininimizers = Some(read1.minimizers_vec());
+        comparison_options.read1_snpmers = Some(read1.snpmers_vec());
+
         let start = std::time::Instant::now();
         let mut index_count_map = FxHashMap::default();
         let mut index_range_map = FxHashMap::default();
-        for y in read1.minimizers() {
+
+        for y in comparison_options.read1_mininimizers.as_ref().unwrap().iter() {
             //Downsample to 100 compression factor
             if hash64(&y.1) > u64::MAX / downsample_factor{
                 continue;
             }
             if let Some(indices) = inverted_index_hashmap.get(&y.1) {
                 for &index in indices {
-                    if index == i {
+                    if index == i as u32 {
                         continue;
                     }
                     *index_count_map.entry(index).or_insert(0) += 1;
@@ -1147,12 +1159,14 @@ fn parallel_remove_contained<T>(
         let start = std::time::Instant::now();
         let mut top_indices = index_count_map.iter().collect::<Vec<_>>();
 
-        top_indices.retain(|(index,_)| twin_reads[**index].base_length > read1.base_length);
+        top_indices.retain(|(index,_)| twin_reads[(**index) as usize].base_length > read1.base_length);
         //top_indices.retain(|(_,count)| **count > read1.minimizers.len() as u32 / 10 && **count > 5);
         top_indices.retain(|(index,_)| {
             let range = index_range_map.get(&index).unwrap();
-            range[1] > range[0] && (range[1] - range[0]) as f64 + (60. * args.contain_subsample_rate as f64) > read1.base_length as f64 * 0.80
+            range[1] > range[0] && (range[1] - range[0]) as f64 + (20. * args.contain_subsample_rate as f64) > read1.base_length as f64 * 0.90
         });
+
+        top_indices.truncate(500);
 
         top_indices.sort_by(|a, b| {
             let lr_a = index_range_map.get(&a.0).unwrap();
@@ -1185,11 +1199,13 @@ fn parallel_remove_contained<T>(
         let mut num_fails = 0;
         let mut max_ol = 0;
         for (index, order_count) in top_indices.into_iter() {
+            
             if contained{
                 break;
             }
-            let read2 = &twin_reads[*index];
-            let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, *index, &comparison_options, args);
+
+            let read2 = &twin_reads[(*index) as usize];
+            let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, (*index) as usize, &comparison_options, args);
             if twin_overlaps.is_empty(){
                 continue;
             }
@@ -1256,7 +1272,6 @@ fn parallel_remove_contained<T>(
                 }
                 contained = true;
                 contained_reads.lock().unwrap().insert(i);
-                reads_with_contained_read.lock().unwrap().insert(*index);
                 break;
             }
             

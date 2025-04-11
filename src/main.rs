@@ -53,7 +53,7 @@ fn main() {
     std::fs::create_dir_all(&cleaning_unitig_temp).expect("Could not create temp directory for cleaning and unitigs");
     let twin_read_container = get_twin_reads_from_kmer_info(&mut kmer_info, &args, &output_dir, &cleaning_unitig_temp);
     let twin_reads = &twin_read_container.twin_reads;
-    log_memory_usage(true, "STAGE 2: Obtained twin reads");
+    log_memory_usage(true, "STAGE 3: Obtained clean twin reads");
 
     // Step 3: Get overlaps between outer twin reads and construct raw unitig graph
     let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &cleaning_unitig_temp, &output_dir);
@@ -104,7 +104,7 @@ fn main() {
     std::fs::create_dir_all(&mapping_dir).expect("Could not create temp directory for mapping");
     mapping::map_to_dereplicate(&mut contig_graph, &kmer_info, &twin_reads, &mapping_dir, &args);
     
-    log_memory_usage(true, "STAGE 3: Obtained unpolished contigs");
+    log_memory_usage(true, "STAGE 4: Obtained unpolished contigs");
     contig_graph.print_statistics(&args);
     contig_graph.to_fasta(mapping_dir.join("final_contigs_nopolish.fa"), &args);
 
@@ -118,7 +118,7 @@ fn main() {
     log::info!("Beginning final alignment of reads to graph...");
     let start = Instant::now();
     mapping::map_reads_to_unitigs(&mut contig_graph, &kmer_info, &twin_reads, &mapping_dir, &args);
-    log_memory_usage(true, "STAGE 4: Mapped reads to contigs");
+    log_memory_usage(true, "STAGE 5: Mapped reads to contigs");
 
     log::info!(
         "Time elapsed for aligning reads to graph is {:?}",
@@ -237,6 +237,7 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     if args.r941 {
         args.snpmer_error_rate_lax = 0.05;
         args.contain_subsample_rate = 20;
+        args.absolute_minimizer_cut_ratio = 0.03;
     }
 
     return output_dir.to_path_buf();
@@ -302,7 +303,7 @@ fn get_twin_reads_from_kmer_info(
         log::info!("Getting twin reads from snpmers...");
         let twin_reads_raw = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
         let num_reads = twin_reads_raw.len();
-        log_memory_usage(true, "STAGE 1.25: Initially obtained twin reads");
+        log_memory_usage(true, "STAGE 1.5: Initially obtained dirty twin reads");
 
         // (2): removed contained reads
         log::info!("Removing contained reads - round 1...");
@@ -314,7 +315,7 @@ fn get_twin_reads_from_kmer_info(
         let start = Instant::now();
         let outer_mapping_info =
             mapping::map_reads_to_outer_reads(&outer_read_indices_raw, &twin_reads_raw, &args);
-        log_memory_usage(true, "STAGE 1.5: Finished mapping reads to outer reads");
+        log_memory_usage(true, "STAGE 2: Finished mapping reads to outer reads");
 
         // (4): split chimeric twin reads based on mappings to outer reads
         log::info!("Processing mappings...");

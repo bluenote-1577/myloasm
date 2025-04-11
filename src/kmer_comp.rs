@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use smallvec::SmallVec;
 use smallvec::smallvec;
 use crate::cli::Cli;
-use crate::constants::MAX_FRACTION_OF_SNPMERS_IN_READ;
 use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
@@ -294,19 +293,22 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             if twin_read.is_some(){
 
                                 let mut kmer_counter_map = FxHashMap::default();
-                                for mini in twin_read.as_ref().unwrap().minimizer_kmers.iter(){
+                                for mini in twin_read.as_ref().unwrap().minimizer_kmers().iter(){
                                     *kmer_counter_map.entry(*mini).or_insert(0) += 1;
                                 }
 
                                 let mut solid_mini_indices = FxHashSet::default();
-                                for (i, mini) in twin_read.as_ref().unwrap().minimizer_kmers.iter().enumerate(){
-                                    if USE_SOLID_KMERS{
+                                for (i, mini) in twin_read.as_ref().unwrap().minimizer_kmers().iter().enumerate(){
+                                    if kmer_counter_map[mini] > MAX_KMER_COUNT_IN_READ{
+                                        continue;
+                                    }
+                                    if USE_SOLID_KMERS {
                                         if solid.contains(&mini){
                                             solid_mini_indices.insert(i);
                                         }
                                     }
                                     else{
-                                        if !highfreq.contains(&mini) && kmer_counter_map[mini] < MAX_KMER_COUNT_IN_READ {
+                                        if !highfreq.contains(&mini) {
                                             solid_mini_indices.insert(i);
                                         }
                                     }
@@ -318,7 +320,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                                 }
 
                                 let mut solid_snpmer_indices = FxHashSet::default();
-                                for (i, snpmer) in twin_read.as_ref().unwrap().snpmer_kmers.iter().enumerate(){
+                                for (i, snpmer) in twin_read.as_ref().unwrap().snpmer_kmers().iter().enumerate(){
                                     if USE_SOLID_KMERS{
                                         if solid.contains(&snpmer){
                                             solid_snpmer_indices.insert(i);
@@ -361,7 +363,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     //This is for hefty debugging purposes only; too verbose.
     if log::log_enabled!(log::Level::Trace) && false{
         for twin_read in twin_reads.iter(){
-            let decoded_snpmers = twin_read.snpmers().map(|x| (x.0, decode_kmer48(x.1, twin_read.k))).collect::<Vec<_>>();
+            let decoded_snpmers = twin_read.snpmers_vec().into_iter().map(|x| (x.0, decode_kmer48(x.1, twin_read.k))).collect::<Vec<_>>();
             log::trace!("{} {:?}", twin_read.id, decoded_snpmers);
         }
     }
@@ -369,7 +371,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     log::debug!("Number of reads filtered due to repetitiveness: {}", num_reads_removed_repetitive.lock().unwrap());
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
     log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
-    let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_kmers.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
+    let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_positions.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
     log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());

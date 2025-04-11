@@ -21,3 +21,8 @@ pub fn log_memory_usage(info: bool, message: &str) {
         log::info!("Memory usage: unknown (WARNING)");
     }
 }
+
+#[inline]
+pub fn div_rounded(a: usize, b: usize) -> usize {
+    (a + b / 2) / b
+}

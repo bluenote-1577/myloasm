@@ -2844,7 +2844,11 @@ impl UnitigGraph {
             let to_edges = self.nodes[&edge.to_unitig].edges_direction(&to_direction);
 
             for (i, edge_id_adj) in from_edges.iter().chain(to_edges.iter()).enumerate() {
-                let mincount_adj = min_by_nodeid_edgemap.get(edge_id_adj).unwrap_or(&&0.);
+                let mincount_adj = min_by_nodeid_edgemap.get(edge_id_adj);
+                if mincount_adj.is_none(){
+                    continue;
+                }
+                let mincount_adj = mincount_adj.unwrap();
 
                 if (**count as f64) / (*mincount_adj) < ol_thresh {
                     let mut max_forward_adj;
@@ -3360,8 +3364,6 @@ mod tests {
 
             for _ in 0..num_reads {
                 let generic_read = TwinRead {
-                    minimizer_kmers: vec![],
-                    snpmer_kmers: vec![],
                     minimizer_positions: vec![],
                     snpmer_positions: vec![],
                     dna_seq: Seq::new(),

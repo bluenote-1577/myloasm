@@ -73,7 +73,7 @@ pub struct Cli {
     pub snpmer_error_rate_strict: f64,
 
 
-    #[arg(long, default_value_t=35, help_heading = "Overlap Parameters")]
+    #[arg(long, default_value_t=44, help_heading = "Overlap Parameters")]
     pub contain_subsample_rate: usize,
 
     /// Cut overlaps with > (c * this) number of bases between minimizers

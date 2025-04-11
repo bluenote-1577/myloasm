@@ -60,22 +60,26 @@ pub const BYTE_TO_SEQ: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Kmer48{
     data: [u8; 6],
 }
 
 impl Kmer48{
+    // Be careful about endian
+    #[inline]
     pub fn from_u64(n: u64) -> Self {
         let bytes = n.to_le_bytes();
-        if bytes[6..8].iter().any(|&b| b != 0) {
-            panic!("Kmer48 can only be created from a u64 with the last two bytes as 0");
-        }
+
+        debug_assert!(bytes[6..8].iter().all(|&b| b == 0));
+
         Self {
             data: [bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]],
         }
     }
 
+    // Assume Kmer48 is stored as little endian. So AAA = ...0000000_11_11_11
     pub fn to_u64(self) -> u64 {
         let mut bytes = [0; 8];
         bytes[0..6].copy_from_slice(&self.data);
@@ -242,6 +246,7 @@ pub struct TigRead {
 
 
 pub type Percentage = f64;
+pub type Fraction = f32;
 
 //TODO: we restructure minimizers and snpmmer positions to another vector
 //and change to u32 to save space
@@ -249,9 +254,9 @@ pub type Percentage = f64;
 pub struct TwinRead {
     //pub minimizers: Vec<(usize, u64)>,
     pub minimizer_positions: Vec<u32>,
-    pub minimizer_kmers: Vec<Kmer48>,
+    //pub minimizer_kmers: Vec<Kmer48>,
     //pub snpmers: Vec<(usize, u64)>,
-    pub snpmer_kmers: Vec<Kmer48>,
+    //pub snpmer_kmers: Vec<Kmer48>,
     pub snpmer_positions: Vec<u32>,
     pub id: String,
     pub base_id: String,
@@ -412,46 +417,105 @@ impl ComplementMut for QualCompact3{
 
 impl Complement for QualCompact3 {}
 
+#[inline]
+fn reverse_bit_pairs(n: u64, k: usize) -> u64 {
+    let even_mask : u64 =  0xAAAAAAAAAAAAAAAAu64;
+    let odd_mask: u64 =  0x5555555555555555u64;
+
+    let odd_bits_rev = (n & odd_mask).reverse_bits() >> (64 - 2 * k);
+    let even_bits_rev = (n & even_mask).reverse_bits() >> (64 - 2 * k);
+
+    return (odd_bits_rev >> 1) | (even_bits_rev << 1);
+
+}
+
 impl TwinRead{
+
+    #[inline]
+    pub fn kmer_from_position(&self, pos:u32, k: usize) -> Kmer48{
+        let pos = pos as usize;
+
+        //match various values of k from 17 - 23, odd
+        //bio-seq stores CA = 0001.
+        //our representation is CA = 0100.
+        // Internally, we want CA = 8 HEX = 0100. So 
+        let kmer = match k{
+            17 => {
+                reverse_bit_pairs(Kmer::<Dna, 17, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
+            }
+            19 => {
+                reverse_bit_pairs(Kmer::<Dna, 19, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
+            }
+            21 => {
+                reverse_bit_pairs(Kmer::<Dna, 21, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
+            }
+            23 => {
+                reverse_bit_pairs(Kmer::<Dna, 23, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
+            }
+            _ => {
+                panic!("Invalid kmer size")
+            }
+        };
+
+        // get canonical k-mer based on sides
+        let reverse_kmer = reverse_bit_pairs(kmer ^ (u64::MAX), k);
+        let mid_mask = !(3 << (k - 1));
+        if reverse_kmer & mid_mask < kmer & mid_mask{
+            Kmer48::from_u64(reverse_kmer)
+        }
+        else{
+            Kmer48::from_u64(kmer)
+        }
+    }
+
     pub fn clear(&mut self){
-        self.minimizer_kmers.clear();
-        self.snpmer_kmers.clear();
         self.minimizer_positions.clear();
         self.snpmer_positions.clear();
-        self.minimizer_kmers.shrink_to_fit(); 
-        self.snpmer_kmers.shrink_to_fit();
         self.minimizer_positions.shrink_to_fit();
         self.snpmer_positions.shrink_to_fit();
     }
 
-    pub fn minimizers(&self) -> impl Iterator<Item = (u32, Kmer48)> + '_ {
-        assert!(self.minimizer_positions.len() == self.minimizer_kmers.len());
-        self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y))
+    pub fn minimizer_kmers(&self) -> Vec<Kmer48> {
+        self.minimizer_positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
     }
+
+    pub fn snpmer_kmers(&self) -> Vec<Kmer48> {
+        self.snpmer_positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
+    }
+
+    // pub fn minimizers(&self) -> impl Iterator<Item = (u32, Kmer48)>+ '_ {
+    //     //self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y))
+    //     self.minimizer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize)))
+    // }
 
     pub fn minimizers_vec(&self) -> Vec<(u32, Kmer48)> {
-        assert!(self.minimizer_positions.len() == self.minimizer_kmers.len());
-        self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
+        //self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
+        self.minimizer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
     }
 
-    pub fn snpmers(&self) -> impl Iterator<Item = (u32, Kmer48)> + '_ {
-        assert!(self.snpmer_positions.len() == self.snpmer_kmers.len());
-        self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y))
+    // pub fn snpmers(&self) -> impl Iterator<Item = (u32, Kmer48)> + '_ {
+    //     //self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y))
+    //     self.snpmer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize)))
+    // }
+    
+    pub fn snpmers_vec(&self) -> Vec<(u32, Kmer48)> {
+        //self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
+        self.snpmer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
     }
 
     // Retain only the minimizers at the given INDICES, not positions
     pub fn retain_mini_indices(&mut self, positions: FxHashSet<usize>) {
-        retain_vec_indices(&mut self.minimizer_kmers, &positions);
+        //retain_vec_indices(&mut self.minimizer_kmers, &positions);
         retain_vec_indices(&mut self.minimizer_positions, &positions);
-        self.minimizer_kmers.shrink_to_fit();
+        //self.minimizer_kmers.shrink_to_fit();
         self.minimizer_positions.shrink_to_fit();
     }
 
     // Retain only the snpmers at the given INDICES, not positions
     pub fn retain_snpmer_indices(&mut self, positions: FxHashSet<usize>) {
-        retain_vec_indices(&mut self.snpmer_kmers, &positions);
+        //retain_vec_indices(&mut self.snpmer_kmers, &positions);
         retain_vec_indices(&mut self.snpmer_positions, &positions);
-        self.snpmer_kmers.shrink_to_fit();
+        //self.snpmer_kmers.shrink_to_fit();
         self.snpmer_positions.shrink_to_fit();
     }
 
@@ -464,34 +528,28 @@ impl TwinRead{
         // new_read.snpmers.shrink_to_fit();
 
         let mut mini_positions_filtered = Vec::new();
-        let mut mini_kmers_filtered = Vec::new();
         let mut snp_positions_filtered = Vec::new();
-        let mut snp_kmers_filtered = Vec::new();
 
-        for (pos, kmer) in other_read.minimizers(){
+        for &pos in other_read.minimizer_positions.iter(){
             if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
                 mini_positions_filtered.push(pos - last_break as u32);
-                mini_kmers_filtered.push(kmer);
             }
         }
 
-        for (pos, kmer) in other_read.snpmers(){
+        for &pos in other_read.snpmer_positions.iter(){
             if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
                 snp_positions_filtered.push(pos - last_break as u32);
-                snp_kmers_filtered.push(kmer);
             }
         }
 
         //shirnk to fit
         mini_positions_filtered.shrink_to_fit();
-        mini_kmers_filtered.shrink_to_fit();
         snp_positions_filtered.shrink_to_fit();
-        snp_kmers_filtered.shrink_to_fit();
 
         self.minimizer_positions = mini_positions_filtered;
-        self.minimizer_kmers = mini_kmers_filtered;
+        //self.minimizer_kmers = mini_kmers_filtered;
         self.snpmer_positions = snp_positions_filtered;
-        self.snpmer_kmers = snp_kmers_filtered;
+        //self.snpmer_kmers = snp_kmers_filtered;
     }
 }
 
@@ -544,7 +602,6 @@ pub struct TwinOverlap{
     pub snpmers_in_both: (usize, usize),
     pub diff_snpmers: usize,
     pub chain_reverse: bool,
-    pub intersect: (usize, usize),
     pub chain_score: i32,
     pub large_indel: bool,
     pub minimizer_chain: Option<Vec<Anchor>>,
@@ -561,6 +618,13 @@ pub struct SnpmerHit {
 pub struct CountsAndBases{
     pub counts: SmallVec<[[u32;2];2]>,
     pub bases: SmallVec<[u8; 4]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
+pub struct AnchorBuilder{
+    pub i: u32,
+    pub j: u32,
+    pub pos1: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
@@ -611,7 +675,7 @@ pub struct MappingInfo {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BareMappingOverlap{
-    pub snpmer_identity: f32,
+    pub snpmer_identity: Fraction,
 }
 
 impl Eq for BareMappingOverlap{}
@@ -810,7 +874,10 @@ pub struct CompareTwinReadOptions{
     pub supplementary_threshold_score: Option<f64>,
     pub supplementary_threshold_ratio: Option<f64>, 
     // When not forcing 1-to-1 alignments, allow query overlaps only if secondary threshold is below a certain amount
-    pub secondary_threshold: Option<f64> 
+    pub secondary_threshold: Option<f64>,
+    //Preload
+    pub read1_mininimizers: Option<Vec<(u32,Kmer48)>>,
+    pub read1_snpmers: Option<Vec<(u32,Kmer48)>>,
 }
 
 impl Default for CompareTwinReadOptions{
@@ -822,6 +889,44 @@ impl Default for CompareTwinReadOptions{
             supplementary_threshold_score: Some(500.0),
             supplementary_threshold_ratio: Some(0.25),
             secondary_threshold: Some(0.50),
+            read1_mininimizers: None,
+            read1_snpmers: None,
+
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn convert_from_u64() {
+        let kmer = Kmer48::from_u64(1);
+        assert_eq!(kmer.data, [1, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn bioseq_vs_ours(){
+        let kmer_bioseq = Kmer::<Dna, 5, u64>::unsafe_from_seqslice(dna!("ACGTG"));
+        let kmer_bioseq_u64 = kmer_bioseq.bs;
+        println!("{:08b}", kmer_bioseq_u64);
+        let kmer_ours = 0b00_01_10_11_10;
+        let reversed_bioseq = reverse_bit_pairs(kmer_bioseq_u64, 5);
+        println!("{:08b}", reversed_bioseq);
+
+        assert_eq!(reverse_bit_pairs(kmer_bioseq_u64, 5), kmer_ours);
+    }
+
+    #[test]
+    fn reverse_comp_kmer(){
+        // ACGTG
+        let kmer_ours = 0b00_01_10_11_10;
+        //reverse comp is CACGT
+        let goal = 0b01_00_01_10_11;
+        let kmer_ours_rev_comp = reverse_bit_pairs(kmer_ours ^ (u64::MAX), 5);
+
+        assert_eq!(kmer_ours_rev_comp, goal);
     }
 }

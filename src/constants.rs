@@ -42,7 +42,8 @@ pub const POLISHED_CONTIGS_NAME: &str = "initial_polished.fa";
 pub const USE_SOLID_KMERS: bool = false;
 
 pub const MAX_KMER_COUNT_IN_READ: usize = 500;
-pub const MAX_MULTIPLICITY_KMER: usize = 1000;
+pub const MAX_MULTIPLICITY_KMER: usize = MAX_KMER_COUNT_IN_READ;
+pub const QUALITY_SEQ_BIN: usize = 4;
 
 pub const MINIMUM_MINIMIZER_FRACTION: f64 = 0.10;
 

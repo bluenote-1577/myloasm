@@ -110,7 +110,12 @@ pub fn get_base_info_overlaps(
             hang_ind += 2;
         }
         if range.0 >= range.1 {
-            carryover -= range.0 - range.1;
+            if range.0 - range.1 > carryover{  
+                carryover = 0;
+            }
+            else{
+                carryover -= range.0 - range.1;
+            }
             range = (0, 0);
         } else {
             carryover = 0;
