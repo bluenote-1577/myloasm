@@ -896,6 +896,27 @@ impl Default for CompareTwinReadOptions{
     }
 }
 
+pub struct HeavyCutOptions<'a> 
+{
+    pub samples: usize,
+    pub temperature: f64,
+    pub steps: usize,
+    pub max_forward: usize,
+    pub max_reads_forward: usize,
+    pub safe_length_back: usize,
+    pub ol_thresh: f64,
+    pub tip_threshold: usize,
+    pub strain_repeat_map: Option<&'a FxHashMap<NodeIndex, FxHashSet<NodeIndex>>>,
+    pub special_small: bool,
+    pub max_length_search: usize,
+    pub require_safety: bool,
+    pub only_tips: bool,
+    pub cut_tips: bool,
+    pub debug: bool,
+}
+
+
+
 
 #[cfg(test)]
 mod tests {

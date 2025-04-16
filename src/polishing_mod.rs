@@ -45,9 +45,8 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
 
         let mut circ_string = String::new();
 
-        if contig.is_circular(){
-            let edge_id = contig.in_edges()[0];
-            let edge = final_graph.edges[edge_id].as_ref().unwrap();
+        if let Some(circ_edge_id) = contig.get_circular_edge(){
+            let edge = final_graph.edges[circ_edge_id].as_ref().unwrap();
             join_circular_ends(&mut final_seq, edge.overlap.overlap_len_bases, edge.overlap.hang1, edge.overlap.hang2, &format!("u{}", &contig.node_id), args); 
             circ_string = "circular".to_string();
         }

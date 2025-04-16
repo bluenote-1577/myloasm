@@ -30,9 +30,10 @@ pub trait GraphNode {
     fn out_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
 
     //Can break if in_edges[0] is a non-circular edge...
-    fn is_circular(&self) -> bool{
+    fn is_circular_strict(&self) -> bool{
         self.in_edges().len() == 1 && self.out_edges().len() == 1 && self.in_edges()[0] == self.out_edges()[0]
     }
+
 
     fn has_circular_walk(&self) -> bool{
         let mut edges = FxHashSet::default();
@@ -45,6 +46,19 @@ pub trait GraphNode {
             }
         }
         return false;
+    }
+
+    fn get_circular_edge(&self) -> Option<EdgeIndex>{
+        let mut edges = FxHashSet::default();
+        for edge in self.in_edges(){
+            edges.insert(*edge);
+        }
+        for edge in self.out_edges(){
+            if edges.contains(edge){
+                return Some(*edge)
+            }
+        }
+        return None;
     }
 }
 

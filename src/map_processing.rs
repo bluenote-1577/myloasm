@@ -215,7 +215,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     } else {
         0
     };
-    if depths[0].stop > ENDPOINT_MAPPING_FUZZ && (depths[1].val > 3 || depth_start_right > 3) && depths[0].val == 1 {
+    if depths[0].stop > ENDPOINT_MAPPING_FUZZ && (depths[1].val > 3 || depth_start_right > 3) && depths[0].val <= 1 {
         breakpoints.push(Breakpoints {
             pos1: depths[0].start as usize,
             pos2: depths[0].stop as usize,
@@ -232,21 +232,27 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         let cov = interval.val as usize;
         let cond1 = last_cov > 3 && next_cov > 3 && cov == 1;
         let cond2;
+        let cond5;
+        let cond6; 
         if start > 200 && stop + 200 < reference_length as usize {
             // let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
             // let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
 
             let left_count = coverages_at_sampling[(start as usize - 200) / sampling as usize].1;
             let right_count = coverages_at_sampling[(start as usize + 200) / sampling as usize].1;
-            cond2 = left_count > 3 && right_count > 3 && cov == 1;
+            cond2 = left_count > 3 && right_count > 3 && cov <= 1;
+            cond5 = (left_count > cov * 10 && right_count > cov * 10) && cov <= 2;
+            cond6 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3;
         } else {
             cond2 = false;
+            cond5 = false;
+            cond6 = false;
         }
-        let cond3 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov < 3;
-        let cond4 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov == 3;
+        let cond3 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 2;
+        let cond4 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 3;
         if start > 200
             && start as usize + 200 < reference_length as usize
-            && (cond1 || cond2 || cond3 || cond4)
+            && (cond1 || cond2 || cond3 || cond4 || cond5 || cond6)
         {
             breakpoints.push(Breakpoints {
                 pos1: start as usize,
@@ -257,13 +263,13 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     }
 
     // --------|xxxxx>
-    if depths[depths.len() - 1].start < reference_length - ENDPOINT_MAPPING_FUZZ {
+    if depths[depths.len() - 1].start < reference_length - ENDPOINT_MAPPING_FUZZ && depths[depths.len() -1].start > ENDPOINT_MAPPING_FUZZ - 1{
         let depth_stop_left = lapper.count(
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ,
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ - 1,
         );
         if (depth_stop_left > 3 || depths[depths.len() - 2].val > 3)
-            && depths[depths.len() - 1].val == 1
+            && depths[depths.len() - 1].val <= 1
         {
             breakpoints.push(Breakpoints {
                 pos1: depths[depths.len() - 1].start as usize,
@@ -311,7 +317,7 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
 
             if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
                 let start_qual = utils::div_rounded(last_break, QUALITY_SEQ_BIN);
-                let end_qual = utils::div_rounded(bp_start, QUALITY_SEQ_BIN);
+                let end_qual = utils::div_rounded(bp_start, QUALITY_SEQ_BIN).min(qual_seq.len());
                 new_read.qual_seq = Some(qual_seq[start_qual..end_qual].to_owned());
             }
 
@@ -466,7 +472,12 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
             }
         }
         else{
-            new_twin_reads_bools.lock().unwrap().push((twin_read, false));
+            if twin_read.min_depth_multi.is_some(){
+                new_twin_reads_bools.lock().unwrap().push((twin_read, true));
+            }
+            else{
+                new_twin_reads_bools.lock().unwrap().push((twin_read, false));
+            }
         }
 
     });

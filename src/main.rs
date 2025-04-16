@@ -5,12 +5,7 @@ use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
-use myloasm::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
-use myloasm::constants::ID_THRESHOLD_ITERS;
-use myloasm::constants::MAGIC_EXIST_STRING;
-use myloasm::constants::MAX_BUBBLE_UNITIGS_FINAL_STAGE;
-use myloasm::constants::POLISHED_CONTIGS_NAME;
-use myloasm::constants::TS_DASHES_BLANK_COLONS_DOT_BLANK;
+use myloasm::constants::*;
 use myloasm::graph::GraphNode;
 use myloasm::kmer_comp;
 use myloasm::map_processing;
@@ -21,6 +16,7 @@ use myloasm::twin_graph;
 use myloasm::twin_graph::OverlapConfig;
 use myloasm::small_genomes;
 use myloasm::types;
+use myloasm::types::HeavyCutOptions;
 use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
@@ -77,6 +73,7 @@ fn main() {
     //heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
     let heavy_cleaning_temp_dir = Path::new(&args.output_dir).join("2-heavy_path_resolve");
     std::fs::create_dir_all(&heavy_cleaning_temp_dir).expect("Could not create temp directory for heavy cleaning");
+
     heavy_clean_with_walk(
         &mut unitig_graph,
         &twin_reads,
@@ -86,12 +83,27 @@ fn main() {
         &graph_dir,
     );
 
+    walk_tip_bubble(&mut unitig_graph, 
+        twin_reads, 
+        args.tip_length_cutoff * 30,
+        args.tip_read_cutoff * 30,
+        1_000_000,
+        usize::MAX,
+        Some(5),
+        &heavy_cleaning_temp_dir, 
+        true, 
+        &args
+    );
+    
     // Step 6.5: Small circular contig retrieval
     small_genomes::two_cycle_retrieval(&mut unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir);
+    let out_file = graph_dir.join("small_and_tip_bubble-3.gfa");
+    unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
+
 
     // Step 7: Progressive coverage filter
-    let mut contig_graph =
-        progressive_coverage_contigs(unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir, &output_dir);
+     let mut contig_graph =
+         progressive_coverage_contigs_circular(unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir, &output_dir);
 
     // Step 8: Align reads back to graph. TODO consensus and etc.
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
@@ -127,7 +139,7 @@ fn main() {
     );
 
     contig_graph.to_gfa(
-        graph_dir.join("final_contig_graph-3.gfa"),
+        output_dir.join("final_contig_graph.gfa"),
         true,
         false,
         &twin_reads,
@@ -311,7 +323,7 @@ fn get_twin_reads_from_kmer_info(
         // (2): removed contained reads
         log::info!("Removing contained reads - round 1...");
         let outer_read_indices_raw =
-            twin_graph::remove_contained_reads_twin(None, &twin_reads_raw, true, cleaning_temp_dir, &args);
+            twin_graph::remove_contained_reads_twin(None, None, &twin_reads_raw, true, cleaning_temp_dir, &args);
 
         // (3): map all reads to the outer (non-contained) reads
         log::info!("Mapping reads to non-contained (outer) reads - round 1...");
@@ -322,7 +334,7 @@ fn get_twin_reads_from_kmer_info(
 
         // (4): split chimeric twin reads based on mappings to outer reads
         log::info!("Processing mappings...");
-        let (mut split_twin_reads, _split_outer_read_indices) =
+        let (split_twin_reads, _split_outer_read_indices) =
             map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, cleaning_temp_dir, &args);
         log::info!(
             "Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
@@ -331,9 +343,10 @@ fn get_twin_reads_from_kmer_info(
         );
 
         // (5): the splitted chimeric reads may be contained within the original reads, so we remove contained reads again
-        log::info!("Mapping reads to non-contained (outer) reads - round 2...");
+        log::info!("Removing contained reads after splitting ...");
         let outer_read_indices = twin_graph::remove_contained_reads_twin(
             //Some(split_outer_read_indices),
+            None,
             None,
             &split_twin_reads,
             false, 
@@ -342,22 +355,62 @@ fn get_twin_reads_from_kmer_info(
         );
 
         // (6): map all reads to the outer new reads, which may be rescued or split chimeric reads
+        let start = Instant::now();
         let remap_indices = outer_read_indices
             .iter()
             .filter(|x| split_twin_reads[**x].min_depth_multi.is_none())
             .map(|x| *x)
             .collect::<Vec<_>>();
         log::info!(
-            "Mapping reads to {} candidate outer reads...",
+            "Round 2: Mapping reads to {} candidate outer reads...",
             remap_indices.len()
         );
         let chimeric_mapping_info =
             mapping::map_reads_to_outer_reads(&remap_indices, &split_twin_reads, &args);
 
-        // (7): fix the depths of the chimeric reads
-        for mapping_info in chimeric_mapping_info.iter() {
+        // (7): split the remapped reads again -- some of them may still be chimeric... 
+        let second_round_temp_dir = cleaning_temp_dir.join("remap_temp");
+        std::fs::create_dir_all(&second_round_temp_dir).expect("Could not create temp directory for remapping");
+        log::info!("Round 2: Processing mappings...");
+        let num_reads_after_split = split_twin_reads.len();
+        let (mut split_twin_reads_final, split_outer_read_indices_semifinal) =
+            map_processing::split_outer_reads(split_twin_reads, chimeric_mapping_info, &second_round_temp_dir, &args);
+        log::info!(
+            "Round 2: Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
+            split_twin_reads_final.len() as i64 - num_reads_after_split as i64,
+            start.elapsed()
+        );
+
+        // (8): remove contained reads one last time
+        log::info!("Round 2: Removing contained reads after splitting ...");
+        let outer_read_indices = twin_graph::remove_contained_reads_twin(
+            Some(split_outer_read_indices_semifinal.clone()),
+            Some(split_outer_read_indices_semifinal),
+            &split_twin_reads_final,
+            false, 
+            &second_round_temp_dir,
+            &args,
+        );
+
+        // (9): Final map all reads to the outer new reads, which may be rescued or split chimeric reads
+        let start = Instant::now();
+        let remap_indices_final = outer_read_indices
+            .iter()
+            .filter(|x| split_twin_reads_final[**x].min_depth_multi.is_none())
+            .map(|x| *x)
+            .collect::<Vec<_>>();
+        log::info!(
+            "Final round: Mapping reads to {} candidate outer reads...",
+            remap_indices.len()
+        );
+        let chimeric_mapping_info_final =
+            mapping::map_reads_to_outer_reads(&remap_indices_final, &split_twin_reads_final, &args);
+
+
+        // (10): fix the depths of the chimeric reads
+        for mapping_info in chimeric_mapping_info_final.iter() {
             let chimeric_index = mapping_info.tr_index;
-            let split_chimeric_read = &mut split_twin_reads[chimeric_index];
+            let split_chimeric_read = &mut split_twin_reads_final[chimeric_index];
             map_processing::populate_depth_from_map_info(
                 split_chimeric_read,
                 mapping_info,
@@ -366,21 +419,21 @@ fn get_twin_reads_from_kmer_info(
             );
         }
 
-        split_twin_reads.iter_mut().for_each(|x| {
+        split_twin_reads_final.iter_mut().for_each(|x| {
             if x.min_depth_multi.is_some() {
                 x.outer = true;
             }
         });
 
-        // (8): remove bad reads that have nothing mapped to them (this can bug for a variety of reasons)
+        // (11): remove bad reads that have nothing mapped to them (this can bug for a variety of reasons)
         let outer_and_have_coverage_indices = outer_read_indices
             .iter()
-            .filter(|x| split_twin_reads[**x].min_depth_multi.is_some())
+            .filter(|x| split_twin_reads_final[**x].min_depth_multi.is_some())
             .map(|x| *x)
             .collect::<Vec<_>>();
 
         twin_read_container = types::TwinReadContainer {
-            twin_reads: split_twin_reads,
+            twin_reads: split_twin_reads_final,
             outer_indices: outer_and_have_coverage_indices,
             tig_reads: vec![],
         };
@@ -579,7 +632,199 @@ fn light_progressive_cleaning(
     }
 }
 
-fn get_contigs_from_progressive_coverage(
+fn get_contigs_from_progressive_coverage_circular(
+    mut base_graph: unitig::UnitigGraph,
+    mut graph_per_coverage: FxHashMap<usize, unitig::UnitigGraph>
+) -> unitig::UnitigGraph {
+
+    let mut used_reads = FxHashSet::default();
+    let mut covs = graph_per_coverage.keys().cloned().collect::<Vec<_>>();
+    let mut newly_added_contigs = FxHashSet::default();
+    covs.sort();
+
+    // Iterate over indices separately to avoid borrowing conflicts
+    for cov in covs.into_iter().rev() {
+        let mut contigs_to_keep = FxHashSet::default();
+
+        // First pass: identify contigs to keep
+        for contig in graph_per_coverage[&cov].nodes.values() {
+            if (contig.min_read_depth_multi.unwrap().iter().sum::<f64>()
+                / (ID_THRESHOLD_ITERS as f64))
+                >= cov as f64 * 2.0
+            {
+                let mut unused = true;
+
+                for (read, _) in contig.read_indices_ori.iter() {
+                    if used_reads.contains(read) {
+                        unused = false;
+                        break;
+                    }
+                }
+
+                let mut circular = false;
+                for edge_id in contig.both_edges(){
+                    //check if a circular edge exists
+                    if graph_per_coverage[&cov].edges[*edge_id].is_none() {
+                        continue;
+                    }
+                    let edge = graph_per_coverage[&cov].edges[*edge_id].as_ref().unwrap();
+                    if edge.from_unitig == edge.to_unitig {
+                        circular = true;
+                        break;
+                    }
+                }
+
+                if !unused || !circular {
+                    continue;
+                }
+
+                contigs_to_keep.insert(contig.node_hash_id.clone());
+
+                log::debug!(
+                    "Keeping circular contig u{} with covs {:?} of size {} at threshold {}",
+                    contig.node_id,
+                    contig.min_read_depth_multi.unwrap(),
+                    contig.cut_length(),
+                    cov
+                );
+
+                for (read, _) in contig.read_indices_ori.iter() {
+                    used_reads.insert(read.clone());
+                }
+            }
+        }
+
+
+
+        // Second pass: remove nodes and non-circ edges from new graph
+        let edges_to_remove = graph_per_coverage[&cov]
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| {
+                if x.is_none() {
+                    return false;
+                }
+                let edge = x.as_ref().unwrap();
+                if edge.from_unitig == edge.to_unitig {
+                    return false;
+                }
+                return true;
+            })
+            .map(|x| x.0)
+            .collect::<FxHashSet<_>>();
+        graph_per_coverage.get_mut(&cov).unwrap().remove_edges(edges_to_remove);
+
+        let contigs_to_remove: Vec<_> = graph_per_coverage[&cov]
+            .nodes
+            .keys()
+            .filter(|x| !contigs_to_keep.contains(x))
+            .cloned()
+            .collect();
+
+        graph_per_coverage
+            .get_mut(&cov)
+            .unwrap()
+            .remove_nodes(&contigs_to_remove, false);
+
+        //Have to do work in order to preserve indices during updates
+        let mut new_node_hash_id_map = FxHashMap::default();
+        for (count, node) in graph_per_coverage
+            .get_mut(&cov)
+            .unwrap()
+            .nodes
+            .values_mut()
+            .enumerate()
+        {
+            for edge_index in node.in_edges_mut().iter_mut() {
+                *edge_index += base_graph.edges.len();
+            }
+            for edge_index in node.out_edges_mut().iter_mut() {
+                *edge_index += base_graph.edges.len();
+            }
+
+            let mut new_hash_id = count + base_graph.nodes.len();
+            while base_graph.nodes.contains_key(&new_hash_id) {
+                new_hash_id += base_graph.nodes.len();
+            }
+            new_node_hash_id_map.insert(node.node_hash_id, new_hash_id);
+            node.node_hash_id = new_hash_id;
+        }
+
+        for edge_index in 0..graph_per_coverage[&cov].edges.len() {
+            let edge_opt = &mut graph_per_coverage.get_mut(&cov).unwrap().edges[edge_index];
+            if edge_opt.is_none() {
+                continue;
+            }
+            let edge = &mut edge_opt.as_mut().unwrap();
+            let from_unitig_clone = edge.from_unitig.clone();
+            let to_unitig_clone = edge.to_unitig.clone();
+            edge.from_unitig = new_node_hash_id_map[&from_unitig_clone];
+            edge.to_unitig = new_node_hash_id_map[&to_unitig_clone];
+        }
+
+        base_graph.edges.extend(std::mem::take(
+            &mut graph_per_coverage.get_mut(&cov).unwrap().edges,
+        ));
+
+        for (_, node) in std::mem::take(&mut graph_per_coverage.get_mut(&cov).unwrap().nodes) {
+            if !newly_added_contigs.insert(node.node_hash_id){
+                panic!("Duplicate node hash id found");
+            }
+            base_graph.nodes.insert(node.node_hash_id, node);
+        }
+    }
+
+    // Lastly: remove nodes from base that are contained in a circ contig
+    let contigs_to_remove_base: Vec<_> = base_graph
+        .nodes
+        .iter()
+        .filter(|(_,v)| {
+            if newly_added_contigs.contains(&v.node_hash_id) {
+                return false;
+            }
+            for (read_id, _) in v.read_indices_ori.iter() {
+                if used_reads.contains(read_id) {
+                    return true;
+                }
+            }
+            return false;
+        })
+        .map(|x| x.0)
+        .cloned()
+        .collect();
+
+
+    for contig in newly_added_contigs.iter() {
+        let node = base_graph.nodes.get(contig).unwrap();
+        log::debug!(
+            "Should keep contig u{} with covs {:?} of size {}: hash id {}",
+            node.node_id,
+            node.min_read_depth_multi.unwrap(),
+            node.cut_length(),
+            node.node_hash_id
+        );
+    }
+
+    //debug removed nodes
+    for contig in contigs_to_remove_base.iter() {
+        let node = base_graph.nodes.get(contig).unwrap();
+        log::debug!(
+            "Removing contig u{} with covs {:?} of size {}: hash id {}",
+            node.node_id,
+            node.min_read_depth_multi.unwrap(),
+            node.cut_length(),
+            node.node_hash_id
+        );
+    }
+
+    base_graph.remove_nodes(&contigs_to_remove_base, false);
+
+    base_graph.re_unitig();
+    return base_graph
+}
+
+fn _get_contigs_from_progressive_coverage_old(
     mut graph_per_coverage: FxHashMap<usize, unitig::UnitigGraph>,
     _args: &cli::Cli,
     _temp_dir: &PathBuf,
@@ -690,11 +935,15 @@ fn get_contigs_from_progressive_coverage(
             continue;
         }
         let edge = edge.as_ref().unwrap();
-        if !final_unitig_graph.nodes[&edge.from_unitig].is_circular()
-            || !final_unitig_graph.nodes[&edge.to_unitig].is_circular()
-        {
+        if edge.from_unitig != edge.to_unitig{
             remove_edge_set.insert(id);
         }
+        //Old implementation, required perfect circularization. 
+        // if !final_unitig_graph.nodes[&edge.from_unitig].is_circular()
+        //     || !final_unitig_graph.nodes[&edge.to_unitig].is_circular()
+        // {
+        //     remove_edge_set.insert(id);
+        // }
     }
 
     final_unitig_graph.remove_edges(remove_edge_set);
@@ -718,8 +967,10 @@ fn heavy_clean_with_walk(
     let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
     let mut special_small;
-    let samples = 20;
-    let steps = 10;
+    let samples = SAMPLES;
+    let steps = BEAM_STEPS;
+    let safe_length_back = SAFE_LENGTH_BACK;
+    let max_length_search = MAX_LENGTH_SEARCH;
 
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
@@ -778,23 +1029,30 @@ fn heavy_clean_with_walk(
 
                 let strain_repeats = unitig_graph.get_strain_repeats(&overlap_adj_map, &args);
 
+                let heavy_cut_options = HeavyCutOptions{
+                    samples: samples,
+                    temperature: temperature,
+                    steps: steps,
+                    max_forward: args.tip_length_cutoff * multiplier,
+                    max_reads_forward: args.tip_read_cutoff * multiplier,
+                    safe_length_back: safe_length_back,
+                    ol_thresh: ol_threshold,
+                    tip_threshold: args.tip_length_cutoff * multiplier,
+                    strain_repeat_map: Some(&strain_repeats),
+                    special_small: special_small,
+                    max_length_search: max_length_search,
+                    require_safety: true,
+                    only_tips: false,
+                    cut_tips: true,
+                    debug: false
+                };
+
                 let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
-                    &args,
-                    samples,
-                    temperature,
-                    steps,
-                    temp_dir.join(format!("walk-edge-{}.txt", global_counter)),
-                    args.tip_length_cutoff * multiplier,
-                    args.tip_read_cutoff * multiplier,
-                    300_000,
-                    ol_threshold,
-                    args.tip_length_cutoff * multiplier,
-                    Some(&strain_repeats),
-                    true,
-                    special_small
-                );
-
+                    args, 
+                    temp_dir.join(format!("walk-edge-{}.txt", global_counter)), 
+                    heavy_cut_options);
+                
                 let length_after_cut = unitig_graph.nodes.len();
                 log::debug!(
                     "WALK-CLEAN: Cut {} nodes at multiplier {}, temperature {}, and threshold {}",
@@ -813,6 +1071,64 @@ fn heavy_clean_with_walk(
                 }
                 size_graph = unitig_graph.nodes.len();
             }
+        }
+    }
+
+    // Final heavy walk clean -- no safety but require stringent conditions. TODO testing. 
+    let ol_thresholds_unsafe = [0.001, 0.01, 0.05];
+    let last_temp = temperatures[temperatures.len() - 1];
+    let last_multiplier = aggressive_multipliers[aggressive_multipliers.len() - 1];
+    let cut_unsafe = false;
+
+    if cut_unsafe{
+        for ol_thresh in ol_thresholds_unsafe{
+            unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+            unitig_graph.to_gfa(
+                temp_dir.join(format!(
+                    "unsafe-heavy-t{}-o{}.gfa",
+                    last_temp, ol_thresh
+                )),
+                true,
+                false,
+                &twin_reads,
+                &args,
+            );
+
+            let strain_repeats = unitig_graph.get_strain_repeats(&overlap_adj_map, &args);
+            let cut_options_unsafe = HeavyCutOptions{
+                samples: samples,
+                temperature: last_temp,
+                steps: steps,
+                max_forward: args.tip_length_cutoff * last_multiplier,
+                max_reads_forward: args.tip_read_cutoff * last_multiplier,
+                safe_length_back: safe_length_back,
+                ol_thresh: ol_thresh,
+                tip_threshold: args.tip_length_cutoff * last_multiplier,
+                strain_repeat_map: Some(&strain_repeats),
+                special_small: false,
+                max_length_search: max_length_search,
+                require_safety: false,
+                only_tips: false,
+                cut_tips: true,
+                debug: true,
+            };
+
+            let length_before_cut = unitig_graph.nodes.len();
+            unitig_graph.random_walk_over_graph_and_cut(
+                args, 
+                temp_dir.join(format!("unsafe-walk-edge-{}.txt", global_counter)), 
+                cut_options_unsafe);
+            let length_after_cut = unitig_graph.nodes.len();
+            
+            log::debug!(
+                "WALK-CLEAN UNSAFE: Cut {} nodes at temperature {}, and threshold {}",
+                length_before_cut - length_after_cut,
+                last_temp,
+                ol_thresh
+            );
+
+            unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         }
     }
 
@@ -909,6 +1225,66 @@ fn _heavy_cleaning(
     );
 }
 
+fn walk_tip_bubble(
+    unitig_graph: &mut unitig::UnitigGraph,
+    twin_reads: &Vec<types::TwinRead>,
+    walk_tip_length_cutoff: usize,
+    walk_tip_read_cutoff: usize,
+    max_bubble_threshold: usize,
+    max_bubble_tigs: usize,
+    max_attempts: Option<usize>,
+    temp_dir: &PathBuf,
+    save_tips: bool,
+    args: &cli::Cli,
+) {
+    let get_seq_config = types::GetSequenceInfoConfig::default();
+    let mut size_graph = unitig_graph.nodes.len();
+    let mut counter = 0;
+    loop {
+        if let Some(max_attempts) = max_attempts {
+            if counter == max_attempts {
+                break;
+            }
+        }
+            let heavy_cut_options = HeavyCutOptions{
+                samples: SAMPLES,
+                temperature: 0.5,
+                steps: 2,
+                max_forward: walk_tip_length_cutoff,
+                max_reads_forward: walk_tip_read_cutoff,
+                safe_length_back: SAFE_LENGTH_BACK,
+                ol_thresh: 0.99,
+                tip_threshold: walk_tip_length_cutoff,
+                strain_repeat_map: None,
+                special_small: false,
+                max_length_search: 200_000,
+                require_safety: true,
+                only_tips: true, // ONLY TIPS
+                cut_tips: true,
+                debug: true
+            };
+
+        unitig_graph.random_walk_over_graph_and_cut(
+                args, 
+                temp_dir.join(format!("walk_for_tip_clean-{}.txt", counter)), 
+                heavy_cut_options);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+        unitig_graph.pop_bubbles(max_bubble_threshold, Some(max_bubble_tigs), save_tips);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        unitig_graph.cut_z_edges(args);
+        unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+        //unitig_graph.cut_z_edges_circular_only(args);
+        //unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        if unitig_graph.nodes.len() == size_graph {
+            break;
+        }
+        size_graph = unitig_graph.nodes.len();
+        counter += 1;
+    }
+}
+
 fn remove_tips_until_stable(
     unitig_graph: &mut unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
@@ -944,7 +1320,7 @@ fn remove_tips_until_stable(
     }
 }
 
-fn progressive_coverage_contigs(
+fn progressive_coverage_contigs_circular(
     unitig_graph: unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
@@ -960,25 +1336,13 @@ fn progressive_coverage_contigs(
         .max_by(|x, y| x.partial_cmp(y).unwrap())
         .unwrap_or(1.);
 
-    let tip_length_cutoff_heavy = args.tip_length_cutoff * 15;
-    let tip_read_cutoff_heavy = args.tip_read_cutoff;
+    let tip_length_cutoff_heavy = args.tip_length_cutoff * 30;
+    let tip_read_cutoff_heavy = args.tip_read_cutoff * 30;
     let bubble_threshold_heavy = 6_000_000;
 
     let mut cov_to_graph_map = FxHashMap::default();
     let mut unitig_graph_with_threshold = unitig_graph.clone();
-    remove_tips_until_stable(
-        &mut unitig_graph_with_threshold,
-        twin_reads,
-        tip_length_cutoff_heavy,
-        tip_read_cutoff_heavy,
-        bubble_threshold_heavy,
-        usize::MAX,
-        None,
-        &temp_dir,
-        true,
-        &args,
-    );
-
+    
     let up_to_30 = (0..30).collect::<Vec<_>>();
     let after_30 = (30..=max_cov as usize).step_by(2).collect::<Vec<_>>();
     let all_covs = up_to_30.iter().chain(after_30.iter());
@@ -1010,7 +1374,7 @@ fn progressive_coverage_contigs(
         unitig_graph_with_threshold
             .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
 
-        if cov_thresh < 50. && log::log_enabled!(log::Level::Trace) {
+        if cov_thresh < 20. {
             let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
             std::fs::create_dir_all(&prog_dir_cov).unwrap();
             unitig_graph_with_threshold.to_gfa(
@@ -1028,16 +1392,10 @@ fn progressive_coverage_contigs(
 
     // Includes end and beginning node.
     let mut unitig_graph =
-        get_contigs_from_progressive_coverage(cov_to_graph_map, &args, &temp_dir);
+        get_contigs_from_progressive_coverage_circular(unitig_graph, cov_to_graph_map);
+        //get_contigs_from_progressive_coverage_old(cov_to_graph_map, &args, &temp_dir);
     unitig_graph.get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
-    unitig_graph.to_gfa(
-        temp_dir.join("fnc_nomap.gfa"),
-        true,
-        true,
-        &twin_reads,
-        &args,
-    );
-
+    
     return unitig_graph;
 }
 

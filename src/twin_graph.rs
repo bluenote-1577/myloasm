@@ -756,8 +756,8 @@ where T : Write + Send
         }
     }
     
-    let best_overlap_forward = overlap_possib_out.into_iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) - (x.hang1 + x.hang2));
-    let best_overlap_backward = overlap_possib_in.into_iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) - (x.hang1 + x.hang2));
+    let best_overlap_forward = overlap_possib_out.into_iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) as i32 - (x.hang1 + x.hang2) as i32);
+    let best_overlap_backward = overlap_possib_in.into_iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) as i32 - (x.hang1 + x.hang2) as i32);
     let mut best_overlaps = vec![];
 
     if best_overlap_forward.is_some() && best_overlap_backward.is_none(){
@@ -782,7 +782,7 @@ where T : Write + Send
         }
         //Inconsistent; take best
         else{
-            let best_ol = [ol_f, ol_b].into_iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) - (x.hang1 + x.hang2)).unwrap();
+            let best_ol = [ol_f, ol_b].into_iter().max_by_key(|x| (x.overlap1_len + x.overlap2_len) as i32 - (x.hang1 + x.hang2) as i32).unwrap();
             best_overlaps.push(best_ol);
         }
     }
@@ -1051,15 +1051,26 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
     return graph;
 }
 
-pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf,  args: &Cli) -> Vec<usize>{
+pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf,  args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
+    let reads_to_index;
+    if let Some(ref_indices) = ref_indices{
+        reads_to_index = ref_indices.iter().map(|x| *x).collect::<FxHashSet<_>>();
+    }
+    else{
+        reads_to_index = (0..twin_reads.len()).collect::<FxHashSet<_>>();
+    }
     let mut inverted_index_hashmap =
         twin_reads
             .iter()
             .enumerate()
-            .filter(|x| x.1.est_id.is_none() 
-            || x.1.est_id.unwrap() > args.quality_value_cutoff)
+            .filter(
+                |x| 
+                reads_to_index.contains(&x.0) &&
+                (x.1.est_id.is_none()
+                 || x.1.est_id.unwrap() > args.quality_value_cutoff)
+            )
             .fold(FxHashMap::default(), |mut acc, (i, x)| {
                 for y in x.minimizer_kmers().iter(){
                     if hash64(y) > u64::MAX / downsample_factor {
@@ -1078,7 +1089,7 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
     //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
 
     //open file for writing
-    let name = if outer_indices.is_none() { "all-cont.txt.gz" } else { "subset-cont.txt.gz" };
+    let name = if query_indices.is_none() { "all-cont.txt.gz" } else { "subset-cont.txt.gz" };
     //let output_path = Path::new(args.output_dir.as_str()).join(name);
     let output_path = temp_dir.join(name);
     let bufwriter_dbg;
@@ -1093,13 +1104,14 @@ pub fn remove_contained_reads_twin(outer_indices: Option<Vec<usize>>, twin_reads
     let contained_reads = Mutex::new(FxHashSet::default());
     let outer_reads = Mutex::new(vec![]);
 
-    let range = if let Some(special_indices) = outer_indices {
+    let query_range = if let Some(special_indices) = query_indices{
         special_indices
     } else {
+        // ALl reads get queried
         (0..twin_reads.len()).into_iter().collect::<Vec<_>>()
     };
 
-    parallel_remove_contained(range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, downsample_factor, args);
+    parallel_remove_contained(query_range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, downsample_factor, args);
     let num_contained_reads = contained_reads.lock().unwrap().len();
     log::info!("{} reads are contained; {} outer reads", num_contained_reads, outer_reads.lock().unwrap().len());
 

@@ -5,7 +5,7 @@ pub const FORWARD_READ_SAFE_SEARCH_CUTOFF: usize = 10000;
 //foward_read_safe_search_cutoff: usize = 10000;
 pub const MAX_GAP_CHAINING: usize = 200;
 pub const SAMPLING_RATE_COV: usize = 10;
-pub const MINIMIZER_END_NTH_COV: usize = 20;
+pub const MINIMIZER_END_NTH_COV: usize = 30;
 pub const MINIMIZER_END_NTH_OVERLAP: usize = 30;
 pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
 pub const MID_BASE_THRESHOLD_READ: u8 = 23; // 98%
@@ -48,3 +48,8 @@ pub const QUALITY_SEQ_BIN: usize = 4;
 pub const MINIMUM_MINIMIZER_FRACTION: f64 = 0.10;
 
 pub const MAGIC_EXIST_STRING: &str = "exist";
+
+pub const SAMPLES: usize = 20;
+pub const BEAM_STEPS: usize = 10;
+pub const SAFE_LENGTH_BACK : usize = 300_000;
+pub const MAX_LENGTH_SEARCH: usize = 1_000_000;

@@ -909,7 +909,7 @@ pub fn map_reads_to_outer_reads(
 
         //let start = std::time::Instant::now();
         for (contig_id, anchors) in mini_anchors.into_iter() {
-            if anchors.anchors.len() < 10 {
+            if anchors.anchors.len() < 15 {
                 continue;
             }
             for twin_ol in compare_twin_reads(
@@ -1083,7 +1083,7 @@ pub fn map_to_dereplicate(
         let q_node_unitig = &unitig_graph.nodes[q_id];
 
         // Don't remove circular contigs
-        if q_node_unitig.is_circular(){
+        if q_node_unitig.has_circular_walk(){
             return;
         }
 

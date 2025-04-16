@@ -407,7 +407,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         log::error!("No k-mers found. Exiting.");
         std::process::exit(1);
     }
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 500000) - 1].max(100);
+    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
     log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 

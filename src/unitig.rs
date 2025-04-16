@@ -17,7 +17,6 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::panic;
 use std::sync::Mutex;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UnitigNode {
@@ -2088,13 +2087,13 @@ impl UnitigGraph {
         let num_circ_contigs_geq_1m = self
             .nodes
             .iter()
-            .filter(|(_, node)| node.is_circular() && node.cut_length() >= 1_000_000)
+            .filter(|(_, node)| node.has_circular_walk() && node.cut_length() >= 1_000_000)
             .count();
 
         let num_circ_contigs_geq_100k = self
             .nodes
             .iter()
-            .filter(|(_, node)| node.is_circular() && node.cut_length() >= 100_000)
+            .filter(|(_, node)| node.has_circular_walk() && node.cut_length() >= 100_000)
             .count();
 
         let num_1m_contigs = self
@@ -2714,13 +2713,14 @@ impl UnitigGraph {
                 }
             }
 
-            //Try half contain
+            //Try half contain, 
             for (contig_id_repeats, count) in strain_repeats_contig.iter() {
-                let contig = self.nodes.get(contig_id_repeats).unwrap();
-                if contig.cut_length() < min_contig_length {
+                let smaller_contig_repeat = self.nodes.get(contig_id_repeats).unwrap();
+                if smaller_contig_repeat.cut_length() < min_contig_length {
                     continue;
                 }
-                if count.len() > contig.read_indices_ori.len() / 2 {
+                if count.len() > smaller_contig_repeat.read_indices_ori.len() / 2
+                {
                     let contig_set = strain_repeats
                         .entry(*contig_id)
                         .or_insert(FxHashSet::default());
@@ -2758,40 +2758,26 @@ impl UnitigGraph {
     pub fn random_walk_over_graph_and_cut<T>(
         &mut self,
         args: &Cli,
-        samples: usize,
-        temperature: f64,
-        steps: usize,
         walk_file: T,
-        max_forward: usize,
-        max_reads_forward: usize,
-        safe_length_back: usize,
-        ol_thresh: f64,
-        tip_threshold: usize,
-        strain_repeat_map: Option<&FxHashMap<NodeIndex, FxHashSet<NodeIndex>>>,
-        beam: bool,
-        special_small: bool,
-    ) where
-        T: AsRef<std::path::Path>,
-    {
+        options: HeavyCutOptions,
+    ) where T: AsRef<std::path::Path> 
+    { 
         let mut walk_file = BufWriter::new(std::fs::File::create(walk_file).unwrap());
         let total_edgecount = Mutex::new(FxHashMap::default());
         let keys = self.nodes.keys().collect::<Vec<_>>();
         keys.into_par_iter().for_each(|node_id| {
             let edge_count;
-            if beam {
                 edge_count = self.beam_search_path_prob(
                     *node_id,
-                    1_000_000,
-                    temperature,
-                    15,
+           //         1_000_000,
+                    options.max_length_search,
+                    options.temperature,
+                    15, // unused
                     7,
-                    0.000000001,
+                    0.000000001, //unused
                     args.c,
-                    steps,
+                    options.steps,
                 );
-            } else {
-                edge_count = self.random_walk_sample(*node_id, samples, temperature, steps);
-            }
             for (edge, count) in edge_count {
                 let mut lockmap = total_edgecount.lock().unwrap();
                 let total_count = lockmap.entry(edge).or_insert(0.);
@@ -2820,6 +2806,20 @@ impl UnitigGraph {
 
         let mut sorted_edges = min_by_nodeid_edgemap.iter().collect::<Vec<_>>();
         sorted_edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        if options.only_tips{
+            //    edge    -> opp edge
+            // o >---< o 
+            sorted_edges.retain(|&edge| {
+                let edge = self.edges[*edge.0].as_ref().unwrap();
+                let unitig_from = &self.nodes[&edge.from_unitig];
+                let unitig_to = &self.nodes[&edge.to_unitig];
+                let unitig_from_opp_edges = unitig_from.edges_direction(&edge.node_edge_direction(&edge.from_unitig).reverse());
+                let unitig_to_opp_edges = unitig_to.edges_direction(&edge.node_edge_direction(&edge.to_unitig).reverse());
+                return unitig_from_opp_edges.len() == 0 || unitig_to_opp_edges.len() == 0;
+            });
+        }
+
         for (edge_id, count) in sorted_edges.iter() {
             let edge = self.edges[**edge_id].as_ref().unwrap();
             writeln!(
@@ -2830,7 +2830,6 @@ impl UnitigGraph {
             .unwrap();
         }
 
-        
         let connected_component_stats_unique = self.get_all_connected_components(true);
 
         let mut removed_edges = FxHashSet::default();
@@ -2845,31 +2844,44 @@ impl UnitigGraph {
 
             for (i, edge_id_adj) in from_edges.iter().chain(to_edges.iter()).enumerate() {
                 let mincount_adj = min_by_nodeid_edgemap.get(edge_id_adj);
-                if mincount_adj.is_none(){
+                if mincount_adj.is_none() || *mincount_adj.unwrap() == 0. {
                     continue;
                 }
                 let mincount_adj = mincount_adj.unwrap();
 
-                if (**count as f64) / (*mincount_adj) < ol_thresh {
-                    let mut max_forward_adj;
+                if (**count as f64) / (*mincount_adj) < options.ol_thresh {
+                    let max_forward_adj;
                     let max_reads_forward_adj;
 
-                    if **count / *mincount_adj < 0.01 {
-                        max_forward_adj = 2 * max_forward;
-                        max_reads_forward_adj = 2 * max_reads_forward;
+                    //Disabled this heuristic because it didn't work well. Keeping it here for now.
+                    if **count / *mincount_adj < 0.01 && false{
+                        max_forward_adj = 2 * options.max_forward;
+                        max_reads_forward_adj = 2 * options.max_reads_forward;
                     } else {
-                        max_forward_adj = max_forward;
-                        max_reads_forward_adj = max_reads_forward;
+                        max_forward_adj = options.max_forward;
+                        max_reads_forward_adj = options.max_reads_forward;
                     }
 
-                    let mut safe_length_adjusted = safe_length_back;
+                    let mut safe_length_adjusted = options.safe_length_back;
 
                     //Aggressive for small CCs
-                    if special_small{
+                    if options.special_small{
                         let unique_stats = connected_component_stats_unique.get(&edge.from_unitig).unwrap();
                         if unique_stats.length < 100_000 && unique_stats.num_reads < 100 {
                             safe_length_adjusted = 1000;
                         }
+                    }
+
+                    if !options.require_safety{
+                        if options.debug{
+                            log::debug!(
+                                "u{},u{} CUT ignoring safety",
+                                self.nodes[&edge.from_unitig].node_id,
+                                self.nodes[&edge.to_unitig].node_id
+                            );
+                        }
+                        removed_edges.insert(**edge_id);
+                        break;
                     }
 
                     self.safely_cut_edge(
@@ -2878,7 +2890,7 @@ impl UnitigGraph {
                         always_cut_ol_thresh,
                         None,
                         None,
-                        strain_repeat_map,
+                        options.strain_repeat_map,
                         false,
                         max_forward_adj,
                         max_reads_forward_adj,
@@ -2888,7 +2900,7 @@ impl UnitigGraph {
                     );
 
                     //Check tip condition
-                    if !removed_edges.contains(edge_id) {
+                    if !removed_edges.contains(edge_id) && options.cut_tips {
                         let unitig;
                         if i < from_edges.len() {
                             unitig = &self.nodes[&edge.from_unitig];
@@ -2906,9 +2918,16 @@ impl UnitigGraph {
                             .reverse();
                         let other_edges = other_unitig.edges_direction(&direction_edge_other);
                         if other_edges.len() == 0
-                            && other_unitig.unique_length.unwrap() < tip_threshold
+                            && other_unitig.unique_length.unwrap() < options.tip_threshold
                         {
                             removed_edges.insert(**edge_id);
+                            if options.debug{
+                                log::debug!(
+                                    "u{},u{} is a tip",
+                                    self.nodes[&edge.from_unitig].node_id,
+                                    self.nodes[&edge.to_unitig].node_id
+                                );
+                            }
                         }
                     } else {
                         break;
