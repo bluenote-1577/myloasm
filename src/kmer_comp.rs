@@ -6,6 +6,7 @@ use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
 use crate::twin_graph;
+use crate::utils;
 use rayon::prelude::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -430,6 +431,8 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
             }
         }
     }
+
+    utils::log_memory_usage(false, "Memory usage during snpmer detection");
 
     if args.no_snpmers{
         log::info!("Skipping snpmer detection.");

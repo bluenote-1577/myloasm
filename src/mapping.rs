@@ -890,6 +890,8 @@ pub fn map_reads_to_outer_reads(
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mut tr_options = CompareTwinReadOptions::default();
+        //TODO TRYING OUT
+        tr_options.force_one_to_one_alignments = true;
         tr_options.read1_snpmers = Some(read.snpmers_vec());
         let mini = read.minimizers_vec();
         //let start = std::time::Instant::now();

@@ -61,6 +61,11 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             reset_count = 0;
         }
 
+        if final_seq.len() == 0{
+            log::debug!("Contig u{} has no sequence after polishing, skipping...", contig.node_id);
+            return
+        }
+
         write!(&mut fasta_writer, ">u{} len:{} depth:{:?} {}\n", contig.node_id, final_seq.len(), contig.min_read_depth_multi.unwrap(), circ_string).unwrap();
         write!(&mut fasta_writer, "{}\n", std::str::from_utf8(&final_seq).unwrap()).unwrap();
         total_count +=1;

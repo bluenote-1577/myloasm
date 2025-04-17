@@ -336,6 +336,18 @@ fn get_twin_reads_from_kmer_info(
         log::info!("Processing mappings...");
         let (split_twin_reads, _split_outer_read_indices) =
             map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, cleaning_temp_dir, &args);
+
+        let num_non_chimera = split_twin_reads.iter().filter(|x| !x.split_chimera).count();
+        let num_chimera = split_twin_reads.len() - num_non_chimera;
+        let perc_chimera = num_chimera as f64 / split_twin_reads.len() as f64 * 100.0;
+
+        log::info!(
+            "Initial chimera detection: split {} possibly chimeric or noisy reads out of {} total reads ({:.2}%)",
+            num_chimera,
+            split_twin_reads.len(),
+            perc_chimera
+        );
+
         log::info!(
             "Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
             split_twin_reads.len() as i64 - num_reads as i64,
@@ -381,6 +393,8 @@ fn get_twin_reads_from_kmer_info(
             start.elapsed()
         );
 
+
+
         // (8): remove contained reads one last time
         log::info!("Round 2: Removing contained reads after splitting ...");
         let outer_read_indices = twin_graph::remove_contained_reads_twin(
@@ -393,7 +407,6 @@ fn get_twin_reads_from_kmer_info(
         );
 
         // (9): Final map all reads to the outer new reads, which may be rescued or split chimeric reads
-        let start = Instant::now();
         let remap_indices_final = outer_read_indices
             .iter()
             .filter(|x| split_twin_reads_final[**x].min_depth_multi.is_none())

@@ -444,10 +444,14 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
             let breakpoints = cov_mapping_breakpoints(&map_info.all_intervals, map_info.mapping_info.length as u32);
 
             //Broke right now 
-            if log::log_enabled!(log::Level::Trace) && false {
-                let depths = map_info.mapping_info.max_mapping_boundaries.as_ref().unwrap().depth().collect::<Vec<_>>();
+            if log::log_enabled!(log::Level::Trace) {
+                let depths = Lapper::new(map_info.all_intervals.iter().map(|x| Interval {
+                    start: x.start,
+                    stop: x.stop,
+                    val: false,
+                }).collect::<Vec<_>>());
                 let writer = &mut writer.lock().unwrap();
-                for depth in depths{
+                for depth in depths.depth(){
                     let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
                     for breakpoint in breakpoints.iter(){
                         string.push_str(format!("--{} to {}--", breakpoint.pos1, breakpoint.pos2).as_str());
