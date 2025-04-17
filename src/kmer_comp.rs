@@ -35,197 +35,6 @@ pub fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     return compressed_seq;
 }
 
-// pub fn read_to_split_kmers(
-//     k: usize,
-//     threads: usize,
-//     args: &Cli,
-// ) -> Vec<(u64,[u32;2])>{
-
-//     let homopolymer_comp = args.homopolymer_compression;
-//     let bf_size = args.bloom_filter_size * 1_000_000_000.;
-//     let map = Arc::new(DashMap::with_hasher(MMBuildHasher::default()));
-
-//     log::info!("Populating bloom filter of size {} GB and counting kmers.", args.bloom_filter_size);
-//     let filter = Arc::new(cbloom::Filter::with_size_and_hashers(bf_size as usize, 3));
-
-//     if bf_size > 0.{
-//         let counter = Arc::new(Mutex::new(0));
-//         for fastq_file in args.input_files.iter(){
-//             let (mut tx, rx) = spmc::channel();
-//             let file = fastq_file.to_owned();
-//             thread::spawn(move || {
-//                 let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
-//                 let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
-//                 while let Some(record) = reader.next() {
-//                     let rec = record.expect("Error reading record");
-//                     let seq;
-//                     if homopolymer_comp {
-//                         seq = homopolymer_compression(rec.seq().to_vec());
-//                     } else {
-//                         seq = rec.seq().to_vec();
-//                     }
-//                     tx.send(seq).unwrap();
-//                 }
-//             });
-
-//             let mut handles = Vec::new();
-//             for _ in 0..threads {
-//                 let filter = Arc::clone(&filter);
-//                 let map = Arc::clone(&map);
-//                 let rx = rx.clone();
-//                 let mut myhashmap = FxHashSet::default();
-//                 let clone_counter = Arc::clone(&counter);
-//                 handles.push(thread::spawn(move || {
-//                     loop{
-//                         match rx.recv() {
-//                             Ok(msg) => {
-//                                 let split_kmer_info = seeding::split_kmer_mid(msg, k);
-//                                 {
-//                                     let mut counter = clone_counter.lock().unwrap();
-//                                     *counter += 1;
-//                                     if *counter % 10000 == 0{
-//                                         log::info!("Processed {} reads.", counter);
-//                                     }
-//                                 }
-//                                 for kmer_i in split_kmer_info.iter() {
-//                                     if filter.maybe_insert(kmer_i.full_kmer) {
-//                                         myhashmap.insert(kmer_i.full_kmer);
-//                                     }
-//                                     //Batching might help with repetitive k-mers
-//                                     if myhashmap.len() > 300_000{
-//                                         for key in myhashmap.into_iter(){
-//                                             map.insert(key, [0,0]);
-//                                         }
-//                                         myhashmap = FxHashSet::default();
-//                                     }
-//                                 }
-//                             }
-//                             Err(_) => {
-//                                 for key in myhashmap.into_iter(){
-//                                     map.insert(key, [0,0]);
-//                                 }
-//                                 // When sender is dropped, recv will return an Err, and we can break the loop
-//                                 break;
-//                             }
-//                         }
-//                     }
-//                 }));
-//             }
-
-//             for handle in handles {
-//                 handle.join().unwrap();
-//             }
-//         }
-//     }
-
-//     log::debug!("Hashmap capacity: {}", map.capacity());
-//     log::debug!("Hashmap len: {}", map.len());
-//     log::debug!("Memory usage: {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
-
-//     drop(filter);
-//     map.shrink_to_fit();
-//     log::debug!("Shrunk Hashmap capacity: {}", map.capacity());
-//     log::debug!("Shrunk Hashmap len: {}", map.len());
-//     log::debug!("Memory usage: {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
-
-//     log::info!("Bloom filter populated. Counting kmers.");
-//     let counter = Arc::new(Mutex::new(0));
-//     //Round 2, actually count
-//     for fastq_file in args.input_files.iter(){
-//         let (mut tx, rx) = spmc::channel();
-//         let file = fastq_file.to_owned();
-//         thread::spawn(move || {
-//             let bufreader = BufReader::new(std::fs::File::open(file).expect("valid path"));
-//             let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
-//             while let Some(record) = reader.next() {
-//                 let rec = record.expect("Error reading record");
-//                 let seq;
-//                 if homopolymer_comp {
-//                     seq = homopolymer_compression(rec.seq().to_vec());
-//                 } else {
-//                     seq = rec.seq().to_vec();
-//                 }
-//                 tx.send(seq).unwrap();
-//             }
-//         });
-
-//         let mut handles = Vec::new();
-//         for _ in 0..threads {
-//             let clone_counter = Arc::clone(&counter);
-//             let rx = rx.clone();
-//             let map = Arc::clone(&map);
-//             handles.push(thread::spawn(move || {
-//                 loop{
-//                     match rx.recv() {
-//                         Ok(msg) => {
-//                             //Querying the hash table takes > 50x longer than splitting the kmer
-//                             let _start = std::time::Instant::now();
-//                             let split_kmer_info = seeding::split_kmer_mid(msg, k);
-//                             {
-//                                 let mut counter = clone_counter.lock().unwrap();
-//                                 *counter += 1;
-//                                 if *counter % 10000 == 0{
-//                                     log::info!("Processed {} reads.", counter);
-//                                 }
-//                             }
-//                             //println!("Split kmer time: {:?}", start.elapsed());
-//                             let _start = std::time::Instant::now();
-//                             if bf_size > 0.{
-//                                 for kmer_i in split_kmer_info.iter() {
-//                                     if let Some(mut counts) = map.get_mut(&kmer_i.full_kmer){
-//                                         if kmer_i.canonical{
-//                                             counts[0] += 1;
-//                                         }
-//                                         else{
-//                                             counts[1] += 1;
-//                                         }
-//                                     }   
-//                                 }
-//                             }
-//                             else{
-//                                 for kmer_i in split_kmer_info.iter(){
-//                                     let mut counts = map.entry(kmer_i.full_kmer).or_insert([0,0]);
-//                                     if kmer_i.canonical{
-//                                         counts[0] += 1;
-//                                     }
-//                                     else{
-//                                         counts[1] += 1;
-//                                     }
-//                                 }
-//                             }
-//                             //println!("Populating table time: {:?}", start.elapsed());
-//                         }
-//                         Err(_) => {
-//                             // When sender is dropped, recv will return an Err, and we can break the loop
-//                             break;
-//                         }
-//                     }
-//                 }
-//             }));
-//         }
-//         for handle in handles {
-//             handle.join().unwrap();
-//         }
-//     }
-
-//     log::debug!("Final Hashmap capacity: {}", map.capacity());
-//     log::debug!("Final Hashmap len: {}", map.len());
-//     log::debug!("Final Hash Memory usage: {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
-    
-//     let map_size_raw = map.len();
-//     let map = Arc::try_unwrap(map).unwrap();
-//     let new_map = map.into_iter().filter(|(_, v)| v[0] > 0 && v[1] > 0 && v[0] + v[1] > 2).collect::<Vec<(u64,[u32;2])>>();
-//     let map_size_retain = new_map.len();
-//     log::info!("Removed {} kmers with counts < 1 in both strands and <= 3 multiplicity.", map_size_raw - map_size_retain);
-//     if map_size_retain < map_size_raw / 1000 {
-//         log::warn!("Less than 0.1% of kmers have counts > 1 in both strands and > 2 multiplicity. This may indicate a problem with the input data or very low coverage.");
-//     }
-//     log::debug!("Final Hashmap capacity after vectorization: {}", new_map.capacity());
-//     log::debug!("Final Hashmap len after vectorization: {}", new_map.len());
-//     log::debug!("Final Hash Memory usage after vectorization : {:?} MB", memory_stats().unwrap().physical_mem as f32 / 1_000_000.);
-
-//     return new_map;
-// }
 
 pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Vec<TwinRead>{
 
@@ -380,6 +189,11 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     return twin_reads;
 }
 
+#[inline]
+pub fn retrieve_masked_kmer(kmer: u64, k: usize) -> u64{
+    let split_mask_extract = 3 << (k-1);
+    return kmer & !split_mask_extract;
+}
 
 #[inline]
 pub fn split_kmer(kmer: u64, k: usize) -> (u64, u8){
@@ -387,6 +201,185 @@ pub fn split_kmer(kmer: u64, k: usize) -> (u64, u8){
     let mid_base = (kmer & split_mask_extract) >> (k-1);
     let masked_kmer = kmer & !split_mask_extract;
     return (masked_kmer, mid_base as u8);
+}
+
+pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -> KmerGlobalInfo{
+
+    assert!(!USE_SOLID_KMERS);
+
+    log::info!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
+    let mut kmer_counts = vec![];
+    let high_freq_kmers = Arc::new(Mutex::new(HashSet::default()));
+    let paths_to_files = args.input_files.iter().map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap()).collect::<Vec<_>>();
+
+    for pair in big_kmer_map.iter(){
+        let counts = pair.1;
+        kmer_counts.push(counts[0] + counts[1]);
+    }
+
+    kmer_counts.par_sort_unstable();
+    if kmer_counts.len() == 0{
+        log::error!("No k-mers found. Exiting.");
+        std::process::exit(1);
+    }
+
+    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
+    log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
+    drop(kmer_counts);
+
+    log::info!("Finding snpmers...");
+    big_kmer_map.par_sort_unstable_by_key(|x| retrieve_masked_kmer(x.0, k));
+
+    log::trace!("Finished parallel sort");
+
+    let (mut tx, rx) = spmc::channel();
+    let high_freq_kmers_arc = Arc::clone(&high_freq_kmers);
+    thread::spawn(move || {
+        let mut current_split_kmer = None;
+        let mut kmer_pairs = vec![];
+        for pair in big_kmer_map.into_iter(){
+
+            let counts = pair.1;
+
+            if counts[0] + counts[1] > high_freq_thresh{ 
+                high_freq_kmers_arc.lock().unwrap().insert(Kmer48::from_u64(pair.0));
+            }
+
+            if counts[0] == 0 || counts[1] == 0{
+                continue;
+            }
+
+            let kmer = pair.0;
+            let split_kmer = retrieve_masked_kmer(kmer, k);
+
+            if current_split_kmer != Some(split_kmer) {
+                if kmer_pairs.len() > 1{
+                    tx.send(kmer_pairs).unwrap();
+                }
+                kmer_pairs = vec![];
+                current_split_kmer = Some(split_kmer);
+            }
+            kmer_pairs.push(pair);
+        }
+
+        if kmer_pairs.len() > 1{
+            tx.send(kmer_pairs).unwrap();
+        }
+    });
+
+
+    utils::log_memory_usage(false, "Memory usage during snpmer detection");
+
+    if args.no_snpmers{
+        log::info!("Skipping snpmer detection.");
+        return KmerGlobalInfo{
+            snpmer_info: vec![],
+            solid_kmers: HashSet::default(),
+            high_freq_kmers: Arc::try_unwrap(high_freq_kmers).unwrap().into_inner().unwrap(),
+            use_solid_kmers: USE_SOLID_KMERS,
+            high_freq_thresh: high_freq_thresh as f64,
+            read_files: paths_to_files
+        };
+    }
+
+    let potential_snps = Arc::new(Mutex::new(0));
+    let snpmers = Arc::new(Mutex::new(vec![]));
+
+    let mut handles = Vec::new();
+    let k = args.kmer_size;
+
+    for _ in 0..args.threads{
+        let rx = rx.clone();
+        let potential_snps = Arc::clone(&potential_snps);
+        let snpmers = Arc::clone(&snpmers);
+        handles.push(thread::spawn(move || {
+            loop{
+                match rx.recv() {
+                    Ok(msg) => {
+                        // SNPmers (not split) and counts
+                        let mut pairsvec = msg;
+                        pairsvec.sort_unstable_by(|a,b| (b.1[0] + b.1[1]).cmp(&(a.1[0] + a.1[1])));
+                        let n = pairsvec[0].1[0] + pairsvec[0].1[1];
+                        let succ = pairsvec[1].1[0] + pairsvec[1].1[1];
+                        let right_p_val_thresh1 = twin_graph::binomial_test(n as u64, succ as u64, 0.025);
+                        let right_p_val_thresh2 = twin_graph::binomial_test(n as u64, succ as u64, 0.050);
+                        let cond1 = right_p_val_thresh1 > 0.05;
+                        let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
+
+                        if cond1 || cond2{
+                            if log::log_enabled!(log::Level::Trace) {
+                                let snpmer1 = pairsvec[0].0;
+                                let snpmer2 = pairsvec[1].0;
+                                log::trace!("NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}", decode_kmer64(snpmer1, k as u8), decode_kmer64(snpmer2, k as u8), pairsvec[0].1, pairsvec[1].1);
+                            }
+                            continue;
+                        }
+
+                        let a = pairsvec[0].1[0];
+                        let b = pairsvec[1].1[0];
+                        let c = pairsvec[0].1[1];
+                        let d = pairsvec[1].1[1];
+                        let contingency_table = [
+                            a.max(c), b.max(d),
+                            c.min(a), d.min(b)
+                        ];
+                        let p_value = fishers_exact(&contingency_table).unwrap().two_tail_pvalue;
+                        let odds;
+                        if contingency_table[0] == 0 || contingency_table[1] == 0 || contingency_table[2] == 0 || contingency_table[3] == 0 {
+                            odds = 0.0;
+                        } else {
+                            odds = (contingency_table[0] as f64 * contingency_table[3] as f64) / (contingency_table[1] as f64 * contingency_table[2] as f64);
+                        }
+                        if odds == 0.{
+                            continue;
+                        }
+
+                        //Is snpmer
+                        if p_value > 0.005 || (odds < 1.5 && odds > 1./1.5){
+                            let splitmer = retrieve_masked_kmer(pairsvec[0].0, k);
+                            let mid_bases = pairsvec.iter().map(|x| split_kmer(x.0, k).1).collect::<Vec<_>>();
+                            let snpmer = SnpmerInfo{
+                                split_kmer: splitmer,
+                                mid_bases: smallvec![mid_bases[0] as u8, mid_bases[1] as u8],
+                                counts: smallvec![pairsvec[0].1[0] + pairsvec[0].1[1], pairsvec[1].1[0] + pairsvec[1].1[1]],
+                                k: k as u8,
+                            };
+                            snpmers.lock().unwrap().push(snpmer);
+
+                            let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
+                            let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
+                            log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer64(snpmer1, k as u8), pairsvec[0].1, decode_kmer64(snpmer2, k as u8), pairsvec[1].1, p_value, odds);
+                            *potential_snps.lock().unwrap() += 1;
+                        }
+                        else{
+                            log::trace!("NOT SNPMER c:{:?} c:{:?}, p:{}, odds:{}",  pairsvec[0].1, pairsvec[1].1, p_value, odds);
+                        }
+                    }
+                    Err(_) => {
+                        // When sender is dropped, recv will return an Err, and we can break the loop
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+
+    let mut snpmers = Arc::try_unwrap(snpmers).unwrap().into_inner().unwrap();
+    snpmers.sort();
+    log::info!("Number of snpmers: {}. ", potential_snps.lock().unwrap());
+    return KmerGlobalInfo{
+        snpmer_info: snpmers,
+        solid_kmers: HashSet::default(),
+        high_freq_kmers: Arc::try_unwrap(high_freq_kmers).unwrap().into_inner().unwrap(),
+        use_solid_kmers: USE_SOLID_KMERS,
+        high_freq_thresh: high_freq_thresh as f64,
+        read_files: paths_to_files
+    };
 }
 
 pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -> KmerGlobalInfo{

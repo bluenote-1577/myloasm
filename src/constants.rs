@@ -53,3 +53,4 @@ pub const SAMPLES: usize = 20;
 pub const BEAM_STEPS: usize = 10;
 pub const SAFE_LENGTH_BACK : usize = 300_000;
 pub const MAX_LENGTH_SEARCH: usize = 1_000_000;
+

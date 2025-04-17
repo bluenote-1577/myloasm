@@ -284,7 +284,8 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
         );
 
         let start = Instant::now();
-        kmer_info = kmer_comp::get_snpmers(big_kmer_map, args.kmer_size, &args);
+        //kmer_info = kmer_comp::get_snpmers(big_kmer_map, args.kmer_size, &args);
+        kmer_info = kmer_comp::get_snpmers_inplace_sort(big_kmer_map, args.kmer_size, &args);
         log::info!(
             "Time elapsed in for parsing snpmers is: {:?}",
             start.elapsed()
