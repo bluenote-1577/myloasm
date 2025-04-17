@@ -113,7 +113,7 @@ pub fn extend_ends_chain(
     let r_right_slice = &r_seq[prpos..prpos + right_gap];
     let q_right_slice_u8 = dna_slice_to_u8(q_right_slice);
     let r_right_slice_u8 = dna_slice_to_u8(r_right_slice);
-    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(10));
+    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(100));
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
 
     let q_end = pqpos + add_length_q_r;
@@ -191,7 +191,7 @@ pub fn get_full_alignment(
         .collect::<Vec<u8>>();
     let left_cigar =
         align_seq_to_ref_slice(&r_left_slice_u8_rev, &q_left_slice_u8_rev, &GAPS, Some(10));
-    let left_cigar = vec![]; //TODO
+    //let left_cigar = vec![]; //TODO
     let (add_length_ref_l, add_length_q_l) = get_length_from_cigar(&left_cigar);
     let left_start_q = prev_q_pos as usize - add_length_q_l;
     let left_start_r = prev_r_pos as usize - add_length_ref_l;
@@ -262,12 +262,12 @@ pub fn get_full_alignment(
     let q_right_slice_u8 = dna_slice_to_u8(q_right_slice);
     let r_right_slice_u8 = dna_slice_to_u8(r_right_slice);
     let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(10));
-    let right_cigar = vec![]; //TODO
+    //let right_cigar = vec![]; //TODO
 
-    // log::trace!(
-    //     "Right cigar: {}",
-    //     fmt(&right_cigar)
-    // );
+    //  log::trace!(
+    //      "Right cigar: {}",
+    //      fmt(&right_cigar)
+    //  );
 
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
     extend_cigar(&mut cigar_vec, right_cigar);
@@ -324,7 +324,7 @@ pub fn fmt(cigar: &[OpLen]) -> String {
         let c = match op_len.op {
             Operation::M => 'M',
             Operation::Eq => 'M',
-            Operation::X => 'M',
+            Operation::X => 'X',
             Operation::I => 'I',
             Operation::D => 'D',
             _ => continue,
@@ -359,12 +359,12 @@ pub fn align_seq_to_ref_slice(
         let res = a.res();
         cigar = Cigar::new(res.query_idx, res.reference_idx);
         a.trace().cigar_eq(
-        &query_pad,
-        &reference_pad,
-        res.query_idx,
-        res.reference_idx,
-        &mut cigar,
-    );
+            &query_pad,
+            &reference_pad,
+            res.query_idx,
+            res.reference_idx,
+            &mut cigar,
+        );
 
     }
     else{
@@ -392,6 +392,12 @@ pub fn align_seq_to_ref_slice(
 
     }
     let mut cig = cigar.to_vec();
+    //xdrop for blockaligner is weird because its fuzzy; remove this.
+    if xdrop.is_some(){
+        while cig.len() > 1 && cig.last().unwrap().op != Operation::M {
+            cig.pop();
+        }
+    }
     cig.iter_mut().for_each(|op_len| {
         if op_len.op == Operation::Eq || op_len.op == Operation::X {
             op_len.op = Operation::M;
@@ -431,6 +437,10 @@ pub fn align_seq_to_ref_slice_local(
         &mut cigar,
     );
 
+    log::trace!("cig:{}, queryend:{}, refend:{}", fmt(&cigar.to_vec()), 
+        res.query_idx, 
+        res.reference_idx,
+    );
     
     return (res.query_idx, res.reference_idx, cigar.to_vec());
 }

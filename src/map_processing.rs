@@ -343,9 +343,16 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizer_positions);
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
+    let max_intervals = mapping_info.mapping_info.max_mapping_boundaries.as_ref().unwrap();
+    let intervals = max_intervals.iter().map(|x| Interval {
+        start: x.0.start,
+        stop: x.0.stop,
+        val: x.1.clone(),
+    }).collect::<Vec<_>>();
+    let lapper = Lapper::new(intervals);
 
     for (i,id) in IDENTITY_THRESHOLDS.iter().enumerate() {
-        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(mapping_info.mapping_info.max_mapping_boundaries.as_ref().unwrap(), SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
         median_depth = median_depth_t;
         min_depths[i] = min_depth;
     }
@@ -369,7 +376,7 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
             let mut min_depth_prev = min_depths[ID_THRESHOLD_ITERS - 1];
             let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - step;
             loop{
-                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(mapping_info.mapping_info.max_mapping_boundaries.as_ref().unwrap(), SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
 
                 //if min_depth_try >= MIN_COV_READ as f64  && min_depth_try < min_depth_prev * 1.50 {
                 if min_depth_try <= min_depth_prev * 1.50 && min_depth_try >= MIN_COV_READ as f64 {
@@ -1230,13 +1237,10 @@ mod tests {
         let lapper_intervals_map = intervals.clone()
             .into_iter()
             .enumerate()
-            .map(|(i, (start, stop, identity, _))| Interval {
+            .map(|(i, (start, stop, identity, _))| ( BareInterval {
                 start,
                 stop,
-                val: BareMappingOverlap {
-                    snpmer_identity: identity,
-                },
-            })
+            }, BareMappingOverlap{snpmer_identity: identity, ..Default::default() }))
             .collect();
 
         let lapper_intervals = intervals
@@ -1258,7 +1262,7 @@ mod tests {
             mapping_info: MappingInfo {
                 median_depth: 0.0,
                 minimum_depth: 0.0,
-                max_mapping_boundaries: Some(Lapper::new(lapper_intervals_map)),
+                max_mapping_boundaries: Some(lapper_intervals_map),
                 max_alignment_boundaries: Some(Lapper::new(lapper_intervals)),
                 present: true,
                 length: 1000,

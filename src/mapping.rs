@@ -846,6 +846,10 @@ pub fn get_minimizer_index(
         panic!("No minimizer index provided");
     }
 
+    if mini_index.len() == 0{
+        return mini_index
+    }
+
     let mut minimizer_to_hit_count = mini_index
         .iter()
         .map(|(_, v)| v.len())
@@ -1007,21 +1011,20 @@ pub fn map_reads_to_outer_reads(
 
         let max_intervals = maximal_boundaries
             .into_iter()
-            .map(|x : (u32, u32, BareMappingOverlap)| Interval {
-                start: x.0 as u32,
-                stop: x.1 as u32,
-                val: x.2,
-            })
-            .collect::<Vec<Interval<u32, BareMappingOverlap>>>();
+            .map(|x : (u32, u32, BareMappingOverlap)| (BareInterval{
+                start: x.0,
+                stop: x.1,
+            }, x.2))
+            .collect::<Vec<_>>();
 
         num_maximal += max_intervals.len();
-        let lapper = Lapper::new(max_intervals);
+        //let lapper = Lapper::new(max_intervals);
 
         let map_info = MappingInfo {
             minimum_depth: -1.,
             median_depth: -1.,
             max_alignment_boundaries: None,
-            max_mapping_boundaries: Some(lapper),
+            max_mapping_boundaries: Some(max_intervals),
             present: true,
             length: outer_read_length,
         };
@@ -1120,7 +1123,7 @@ pub fn map_to_dereplicate(
                 args
             ) {
                 //TODO change strictness
-                if uni_ol.shared_minimizers < q_unitig.base_length / args.c / 10{
+                if (uni_ol.shared_minimizers as f64) < (q_unitig.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
                     continue;
                 }
                 let ss_strict = same_strain(

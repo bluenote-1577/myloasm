@@ -119,7 +119,10 @@ fn main() {
     
     log_memory_usage(true, "STAGE 4: Obtained unpolished contigs");
     contig_graph.print_statistics(&args);
-    contig_graph.to_fasta(mapping_dir.join("final_contigs_nopolish.fa"), &args);
+
+    if log::log_enabled!(log::Level::Trace) {
+        contig_graph.to_fasta(mapping_dir.join("final_contigs_nopolish.fa"), &args);
+    }
 
     if args.no_polish {
         log::warn!("No polishing requested. This is not recommended.");
@@ -214,6 +217,15 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
         }
     }
 
+    let binary_temp_dir = output_dir.join("binary_temp");
+    if !binary_temp_dir.exists(){
+        std::fs::create_dir_all(&binary_temp_dir).expect("Could not create temp directory for binary files");
+    } else {
+        if !binary_temp_dir.is_dir() {
+            panic!("Could not create temp directory for binary files. Exiting.");
+        }
+    }
+
     // Initialize logger with CLI-specified level
     let log_spec = format!("{},skani=info", args.log_level_filter().to_string());
     let filespec = FileSpec::default()
@@ -245,14 +257,14 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
         .build_global()
         .unwrap();
 
-    if args.hifi {
-        args.snpmer_threshold_strict = 100.;
-        args.disable_error_overlap_rescue = true;
-    }
     if args.r941 {
         args.snpmer_error_rate_lax = 0.05;
-        args.contain_subsample_rate = 20;
-        args.absolute_minimizer_cut_ratio = 0.03;
+        args.contain_subsample_rate = 21;
+        args.kmer_size = 17;
+        args.c = 7;
+        args.absolute_minimizer_cut_ratio = 50.;
+        args.relative_minimizer_cut_ratio = 10.;
+        args.min_reads_contig = 2;
     }
 
     return output_dir.to_path_buf();
@@ -261,17 +273,22 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
 fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGlobalInfo {
     let saved_input = args.input_files == [MAGIC_EXIST_STRING];
 
+    
+
+    let binary_temp_dir = output_dir.join("binary_temp");
+    let snpmer_info_path = binary_temp_dir.join("snpmer_info.bin");
+
     let kmer_info;
     if saved_input {
-        if !output_dir.join("snpmer_info.bin").exists() {
+        if !snpmer_info_path.exists() {
             log::error!("No input files provided. See --help for usage.");
             std::process::exit(1);
         }
     }
 
-    if saved_input && output_dir.join("snpmer_info.bin").exists() {
+    if saved_input && snpmer_info_path.exists() {
         kmer_info = bincode::deserialize_from(BufReader::new(
-            File::open(output_dir.join("snpmer_info.bin")).unwrap(),
+            File::open(snpmer_info_path).unwrap(),
         ))
         .unwrap();
         log::info!("Loaded snpmer info from file.");
@@ -291,7 +308,7 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
             start.elapsed()
         );
         bincode::serialize_into(
-            BufWriter::new(File::create(output_dir.join("snpmer_info.bin")).unwrap()),
+            BufWriter::new(File::create(snpmer_info_path).unwrap()),
             &kmer_info,
         )
         .unwrap();
@@ -307,10 +324,11 @@ fn get_twin_reads_from_kmer_info(
 ) -> types::TwinReadContainer {
     let saved_input = args.input_files == [MAGIC_EXIST_STRING];
     let twin_read_container;
+    let twin_read_bin_path = output_dir.join("binary_temp").join("twin_reads.bin");
 
-    if saved_input && output_dir.join("twin_reads.bin").exists() {
+    if saved_input && twin_read_bin_path.exists() {
         twin_read_container = bincode::deserialize_from(BufReader::new(
-            File::open(output_dir.join("twin_reads.bin")).unwrap(),
+            File::open(twin_read_bin_path).unwrap(),
         ))
         .unwrap();
         log::info!("Loaded twin reads from file.");
@@ -453,7 +471,7 @@ fn get_twin_reads_from_kmer_info(
         };
 
         bincode::serialize_into(
-            BufWriter::new(File::create(output_dir.join("twin_reads.bin")).unwrap()),
+            BufWriter::new(File::create(twin_read_bin_path).unwrap()),
             &twin_read_container,
         )
         .unwrap();
@@ -469,11 +487,12 @@ fn get_overlaps_from_twin_reads(
 ) -> Vec<OverlapConfig> {
     let twin_reads = &twin_read_container.twin_reads;
     let outer_read_indices = &twin_read_container.outer_indices;
+    let overlap_bin_path = output_dir.join("binary_temp").join("overlaps.bin");
 
     let overlaps;
-    if args.input_files == ["save"] && output_dir.join("overlaps.bin").exists() {
+    if args.input_files == ["save"] && overlap_bin_path.exists() {
         overlaps = bincode::deserialize_from(BufReader::new(
-            File::open(output_dir.join("overlaps.bin")).unwrap(),
+            File::open(overlap_bin_path).unwrap(),
         ))
         .unwrap();
         log::info!("Loaded overlaps from file.");
@@ -492,7 +511,7 @@ fn get_overlaps_from_twin_reads(
             start.elapsed()
         );
         bincode::serialize_into(
-            BufWriter::new(File::create(output_dir.join("overlaps.bin")).unwrap()),
+            BufWriter::new(File::create(overlap_bin_path).unwrap()),
             &overlaps,
         )
         .unwrap();

@@ -29,6 +29,7 @@ pub struct PoaConsensusBuilder {
     window_overlap_len: usize,
     contig_name: String,
     bp_len: usize,
+    genome: Vec<u8>,
 }
 
 impl PoaConsensusBuilder {
@@ -84,7 +85,15 @@ impl PoaConsensusBuilder {
 
                 let cons;
                 if seqs.len() == 0{
-                    cons = vec![];
+                    let start = i * self.bp_len;
+                    let end = (i+1) * self.bp_len + self.window_overlap_len;
+                    let end = end.min(self.genome.len());
+                    if start > end{
+                        cons = vec![];
+                    }
+                    else{
+                        cons = self.genome[start..end].to_vec();
+                    }
                 }
                 else if seqs.len() == 1{
                     // - 1 because last byte is null terminator
@@ -122,7 +131,7 @@ impl PoaConsensusBuilder {
             return vec![];
         }
 
-        let window_cut_ratio = 2;
+        let window_cut_ratio = 1000000;
         let breakpoints = Mutex::new(vec![]);
 
         (0..cons.len() - 1).into_par_iter().for_each(|i| {
@@ -186,7 +195,7 @@ impl PoaConsensusBuilder {
         return new_consensus;
     }
 
-    pub fn new(genome_length: usize, contig_name: String) -> Self {
+    pub fn new(genome_length: usize, contig_name: String, genome_string_u8: Vec<u8>) -> Self {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
@@ -195,6 +204,7 @@ impl PoaConsensusBuilder {
             genome_length,
             bp_len: 0,
             window_overlap_len: 0,
+            genome: genome_string_u8,
         }
     }
 
@@ -207,6 +217,7 @@ impl PoaConsensusBuilder {
             genome_length,
             bp_len: 0,
             window_overlap_len: 0,
+            genome: vec![],
         }
     }
 
@@ -987,6 +998,30 @@ mod tests {
             seq.extend(vec![b'T'; 250]);
             seq.extend(vec![b'C'; 250]);
             seq.extend(random_string.clone());
+
+            dbg!(seq.len());
+
+            join_circular_ends(&mut seq, random_string.len(), 11, 11, "test", &args);
+
+            assert_eq!(seq.len(), 1000 + random_string.len());
+        }
+    }
+
+    #[test]
+    fn circular_join_basic_test_fuzzy(){
+        let mut args = Cli::default();
+        args.c = 5;
+        args.kmer_size = 17;
+        {
+            let random_string = b"GCATGCGTTCAACGTAGGCCGTACTAGCTGCGTAATCGACGGAATGGCAGTATCGCGATAACGCTTGAAACGCTACGAGCCATAGCGGTATCGTAGCAACGCTAATCGGCATAGCTATCGATGCAGTCGCTATAGCTAGCTAGCGATCGGCCGATAGCGATCGATCGGCTAGCGGCATCGATAGCGGCCGATCGCGATCAGCATGGCCGATGCGATCGCGTATCAGCGCGATCGAGCCGATCGATCGCGTCCGATGCATGCAACGATCGGCATATCACGCGCGATCGACTAGCGATCGATCGCGTACGCATCGATCGAGCGATCGACTGATCGCTAGCTGCATGCATACGCTAGCTGCAGCTAGCATCGATCGCTATGCTAGCTAGCATCGAGCTGATCGTAGCATCGATCGATCGATCGATCGATCGAGCTATCGATCGATACGCGATCGATCGATCGCGATCGATCGATCGATCGCGATCGATCGCGATCGACTGCGATCGCTAGCTAGCTAGCTATGCTAGCTAGCTGCTAGTCGACGATCGATCGATCGATCGATCTAGCTAGCATCGCTAGCTGATCGTAGCTAGCTAGCATCGATCGA".to_vec();
+            let mut seq = b"ACGTA".to_vec();
+            seq.extend(&random_string.clone());
+            seq.extend(vec![b'G'; 250]);
+            seq.extend(vec![b'A'; 250]);
+            seq.extend(vec![b'T'; 250]);
+            seq.extend(vec![b'C'; 250]);
+            seq.extend(random_string.clone());
+            seq.extend(b"GTGTGG");
 
             dbg!(seq.len());
 
