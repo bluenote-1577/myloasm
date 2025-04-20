@@ -1,5 +1,6 @@
 use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
+use crate::constants::MAX_ALLOWABLE_SNPMER_ERROR_MISC;
 use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MAX_MULTIPLICITY_KMER;
@@ -23,6 +24,7 @@ use rayon::prelude::*;
 use flate2::Compression;
 use rust_lapper::Interval;
 use rust_lapper::Lapper;
+use skani::types::ContigIndex;
 use std::collections::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
@@ -1081,10 +1083,7 @@ pub fn map_to_dereplicate(
     
     tr_unitigs.par_iter().for_each(|(q_id, q_unitig)| {
 
-        let mut tr_options = CompareTwinReadOptions::default();
-        tr_options.read1_snpmers = Some(q_unitig.snpmers_vec());
-        tr_options.retain_chain = true;
-
+        
         let q_node_unitig = &unitig_graph.nodes[q_id];
 
         // Don't remove circular contigs
@@ -1103,15 +1102,26 @@ pub fn map_to_dereplicate(
             return;
         }
 
+        let mut tr_options = CompareTwinReadOptions::default();
+        tr_options.read1_snpmers = Some(q_unitig.snpmers_vec());
+        tr_options.retain_chain = true;
+
         let mini = q_unitig.minimizers_vec();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
+        let mut mini_anchor_sorted_indices = mini_anchors.keys().cloned().collect::<Vec<_>>();
+        mini_anchor_sorted_indices.sort_unstable_by_key(|x| mini_anchors[x].anchors.len());
+        mini_anchor_sorted_indices.reverse();
 
-        for (contig_id, anchors) in mini_anchors.iter() {
+        for contig_id in mini_anchor_sorted_indices.iter() {
+            let anchors = mini_anchors.get(contig_id).unwrap();
             if *contig_id as usize == *q_id as usize{
                 continue;
             }
 
             let contig_ref = &tr_unitigs[&(*contig_id as usize)];
+            if contig_ref.base_length < q_unitig.base_length * 3 / 2{
+                continue;
+            }
             for uni_ol in compare_twin_reads(
                 q_unitig,
                 contig_ref,
@@ -1135,6 +1145,14 @@ pub fn map_to_dereplicate(
                     args.snpmer_error_rate_strict,
                     uni_ol.large_indel,
                 );
+
+                //Allow 2 snpmer mismatches for these small contigs -- this level of variation is filtered into alternate anyways
+                // OR is snpmer error
+                let ss_strict = ss_strict || (uni_ol.diff_snpmers <= MAX_ALLOWABLE_SNPMER_ERROR_MISC && uni_ol.shared_snpmers > 0);
+
+                if uni_ol.end1 - uni_ol.start1 < q_unitig.base_length / 2 {
+                    continue;
+                }
                 
                 let (start1, end1, start2, end2) = alignment::extend_ends_chain(&q_unitig.dna_seq, &contig_ref.dna_seq, &uni_ol, args);
 
@@ -1205,6 +1223,8 @@ pub fn map_reads_to_unitigs(
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
+
+    log::info!("Index built; starting mapping");
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mut tr_options = CompareTwinReadOptions::default();

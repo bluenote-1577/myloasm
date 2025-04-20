@@ -54,3 +54,6 @@ pub const BEAM_STEPS: usize = 10;
 pub const SAFE_LENGTH_BACK : usize = 300_000;
 pub const MAX_LENGTH_SEARCH: usize = 1_000_000;
 
+pub const MAX_ALLOWABLE_SNPMER_ERROR_MISC: usize = 2;
+pub const MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER: usize = 200;
+

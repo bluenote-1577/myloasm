@@ -208,6 +208,7 @@ pub fn get_full_alignment(
     });
 
     for i in 1..chain.len() {
+        
         let q_pos = if overlap.chain_reverse {
             qlen - chain[end_ind - i].pos1 - k
         } else {
@@ -307,6 +308,7 @@ pub fn get_full_alignment(
 }
 
 
+#[inline]
 fn extend_cigar(cigar: &mut Vec<OpLen>, new_cigar: Vec<OpLen>) {
     for op_len in new_cigar {
         if cigar.last().unwrap().op == op_len.op {
@@ -353,7 +355,7 @@ pub fn align_seq_to_ref_slice(
             &score_mat,
             *gaps,
             //MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE,
-            2 as usize..=4 as usize,
+            4 as usize..=8 as usize,
             xdrop.unwrap_or(i32::MAX),
         );
         let res = a.res();
@@ -368,16 +370,18 @@ pub fn align_seq_to_ref_slice(
 
     }
     else{
-        let mut a = Block::<true, false>::new(query_sliced.len(), reference_sliced.len(), MAX_BLOCK_SIZE);
+        let max_bs = block_size_from_seq(query_sliced.len());
+        let min_bs = 4;
+        let mut a = Block::<true, false>::new(query_sliced.len(), reference_sliced.len(), max_bs);
         let score_mat = SUB_MATRIX;
-        let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, MAX_BLOCK_SIZE);
-        let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, MAX_BLOCK_SIZE);
+        let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, max_bs);
+        let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, max_bs);
         a.align(
             &query_pad,
             &reference_pad,
             &score_mat,
             *gaps,
-            MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE,
+            min_bs..=max_bs,
             xdrop.unwrap_or(i32::MAX),
         );
         let res = a.res();
@@ -405,6 +409,21 @@ pub fn align_seq_to_ref_slice(
     });
 
     return cig;
+}
+
+#[inline]
+pub fn block_size_from_seq(seq_length: usize) -> usize {
+    let mut block_size = 16;
+
+
+    if seq_length > 100{
+        block_size = 32;
+    }
+    else if seq_length > 500{
+        block_size = 128;
+    }
+    
+    return block_size;
 }
 
 

@@ -1,11 +1,12 @@
 use fxhash::hash64;
 use crate::cli::Cli;
-use crate::constants::{MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
+use crate::constants::{MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
 use fxhash::FxHashMap;
 use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
 use rayon::prelude::*;
 use std::sync::Mutex;
+use std::usize::MAX;
 use crate::types::*;
 use serde::{Serialize, Deserialize};
 use fxhash::FxHashSet;
@@ -420,11 +421,17 @@ impl OverlapTwinGraph{
                     self.edges[i] = None;
                 }
                 else{
+                    // 2 or SHARED / 200 allowed. 
+                    let max_allowable_diff_snpmers = (edge.shared_snpmers / MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER).max(MAX_ALLOWABLE_SNPMER_ERROR_MISC);
+                    // 0.05, but increased by 0.01 for each 200 SNPmers.
+                    let additional_fsv_hetero = (edge.shared_snpmers as f64 / MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER as f64) / 100.;
+                    let additional_fsv_hetero = additional_fsv_hetero.min(0.05);
+
                     if short_relative_to_good1 && short_relative_to_good2{
                         edges_to_remove.insert(i);
                         self.edges[i] = None;
                     }
-                    else if !same_strain_edge(edge, c, snpmer_threshold - 0.05, snpmer_error_rate_strict) || edge.diff_snpmers > 2{
+                    else if !same_strain_edge(edge, c, snpmer_threshold - 0.05 - additional_fsv_hetero, snpmer_error_rate_strict) || edge.diff_snpmers > max_allowable_diff_snpmers{
                         edges_to_remove.insert(i);
                         self.edges[i] = None;
                     }
