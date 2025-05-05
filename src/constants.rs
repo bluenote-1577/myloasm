@@ -32,13 +32,14 @@ pub const MAX_BLOCK_SIZE: usize = 128;
 pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -1 };
 pub const MAX_OL_POLISHING: usize = 75;
 pub const READ_BLOCK_SIZE_FOR_COVERAGE: usize = 50_000;
-pub const OVERLAP_HANG_LENGTH: usize = 750;
+pub const OVERLAP_HANG_LENGTH: usize = 500;
 
 //At most 1/20 k-mers are snpmers. 
 pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./20.;
 pub const SUPP_ALIGNMENT_SCORE_THRESHOLD: i32 = 2000;
 
 pub const POLISHED_CONTIGS_NAME: &str = "initial_polished.fa";
+pub const CIRC_STRICT_STRING: &str = "circular_yes";
 pub const USE_SOLID_KMERS: bool = false;
 
 pub const MAX_KMER_COUNT_IN_READ: usize = 500;
@@ -57,3 +58,4 @@ pub const MAX_LENGTH_SEARCH: usize = 1_000_000;
 pub const MAX_ALLOWABLE_SNPMER_ERROR_MISC: usize = 2;
 pub const MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER: usize = 200;
 
+pub const DEDUP_SNPMERS: bool = false;

@@ -125,7 +125,7 @@ fn first_iteration(
                             {
                                 let mut counter = clone_counter.lock().unwrap();
                                 *counter += 1;
-                                if *counter % 10000 == 0{
+                                if *counter % 100000 == 0{
                                     log::info!("Processed {} reads.", counter);
                                 }
                             }
@@ -260,8 +260,8 @@ fn second_iteration(
                         {
                             let mut counter = clone_counter.lock().unwrap();
                             *counter += 1;
-                            if *counter % 10000 == 0{
-                                log::info!("Processed {} reads.", counter);
+                            if *counter % 100000 == 0{
+                                log::debug!("Processed {} reads.", counter);
                             }
                         }
                     }

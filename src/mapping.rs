@@ -1,14 +1,15 @@
 use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
+use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MAX_ALLOWABLE_SNPMER_ERROR_MISC;
 use crate::constants::MAX_GAP_CHAINING;
-use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MAX_MULTIPLICITY_KMER;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
 use crate::graph::GraphNode;
 use crate::map_processing::*;
+use crate::twin_graph;
 use crate::polishing::alignment;
 use crate::seeding;
 use crate::twin_graph::same_strain;
@@ -24,7 +25,6 @@ use rayon::prelude::*;
 use flate2::Compression;
 use rust_lapper::Interval;
 use rust_lapper::Lapper;
-use skani::types::ContigIndex;
 use std::collections::HashSet;
 use std::io::BufWriter;
 use std::io::Write;
@@ -907,7 +907,7 @@ pub fn map_reads_to_outer_reads(
         let mut unitig_hits : Vec<TwinOverlap> = vec![];
         *counter.lock().unwrap() += 1;
         if *counter.lock().unwrap() % 10000 == 0 {
-            log::info!(
+            log::debug!(
                 "Processed {} reads / {} ...",
                 *counter.lock().unwrap(),
                 twin_reads.len()
@@ -1080,24 +1080,17 @@ pub fn map_to_dereplicate(
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let contained_contigs = Mutex::new(FxHashSet::default());
+
+    log::debug!("Built minimizer index of size {}", mini_index.len());
     
     tr_unitigs.par_iter().for_each(|(q_id, q_unitig)| {
-
         
         let q_node_unitig = &unitig_graph.nodes[q_id];
 
-        // Don't remove circular contigs
-        if q_node_unitig.has_circular_walk(){
-            return;
-        }
-
-        // Only for small contigs
-        if q_unitig.base_length > 100_000 && q_node_unitig.read_indices_ori.len() > 5 {
-            return;
-        }
-
         //Remove singletons with 0 coverage; probably errors
-        if q_node_unitig.read_indices_ori.len() == 1 && q_node_unitig.min_read_depth_multi.unwrap()[0] <= 1 as f64{
+        if q_node_unitig.read_indices_ori.len() == 1 && 
+        (q_node_unitig.min_read_depth_multi.unwrap()[0] <= 1 as f64
+        || q_node_unitig.min_read_depth_multi.unwrap()[ID_THRESHOLD_ITERS-1] <= 1 as f64){
             contained_contigs.lock().unwrap().insert(*q_id);
             return;
         }
@@ -1111,20 +1104,42 @@ pub fn map_to_dereplicate(
         let mut mini_anchor_sorted_indices = mini_anchors.keys().cloned().collect::<Vec<_>>();
         mini_anchor_sorted_indices.sort_unstable_by_key(|x| mini_anchors[x].anchors.len());
         mini_anchor_sorted_indices.reverse();
+        mini_anchor_sorted_indices.retain(|x| {
+            let r_unitig = &tr_unitigs[&(*x as usize)];
+            let r_node_unitig = &unitig_graph.nodes[&(*x as usize)];
+            if !(r_unitig.base_length < 100_000 || r_node_unitig.read_indices_ori.len() < 5) {
+                return false;
+            }
+            // Don't remove circular contigs
+            if r_node_unitig.has_circular_walk(){
+                return false;
+            }
+            if *x as usize == *q_id as usize{
+                return false;
+            }
+            if r_unitig.base_length * 2 >  q_unitig.base_length {
+                return false;
+            }
+            true
+        });
 
-        for contig_id in mini_anchor_sorted_indices.iter() {
+        // r_untig is SMALLER than q_unitig
+        //for contig_id in mini_anchor_sorted_indices.iter() {
+        mini_anchor_sorted_indices.par_iter().for_each(|contig_id| {
+            let r_unitig = &tr_unitigs[&(*contig_id as usize)];
+
+            if contained_contigs.lock().unwrap().contains(&(*contig_id as usize)){
+                return;
+            }
+
             let anchors = mini_anchors.get(contig_id).unwrap();
-            if *contig_id as usize == *q_id as usize{
-                continue;
+            if anchors.anchors.len() < 10{
+                return;
             }
 
-            let contig_ref = &tr_unitigs[&(*contig_id as usize)];
-            if contig_ref.base_length < q_unitig.base_length * 3 / 2{
-                continue;
-            }
             for uni_ol in compare_twin_reads(
                 q_unitig,
-                contig_ref,
+                r_unitig,
                 Some(anchors),
                 None,
                 *q_id,
@@ -1132,9 +1147,10 @@ pub fn map_to_dereplicate(
                 &tr_options,
                 args
             ) {
+
                 //TODO change strictness
-                if (uni_ol.shared_minimizers as f64) < (q_unitig.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
-                    continue;
+                if (uni_ol.shared_minimizers as f64) < (r_unitig.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
+                    return;
                 }
                 let ss_strict = same_strain(
                     uni_ol.shared_minimizers,
@@ -1150,11 +1166,11 @@ pub fn map_to_dereplicate(
                 // OR is snpmer error
                 let ss_strict = ss_strict || (uni_ol.diff_snpmers <= MAX_ALLOWABLE_SNPMER_ERROR_MISC && uni_ol.shared_snpmers > 0);
 
-                if uni_ol.end1 - uni_ol.start1 < q_unitig.base_length / 2 {
-                    continue;
+                if uni_ol.end2 - uni_ol.start2 < r_unitig.base_length / 2 {
+                    return;
                 }
                 
-                let (start1, end1, start2, end2) = alignment::extend_ends_chain(&q_unitig.dna_seq, &contig_ref.dna_seq, &uni_ol, args);
+                let (start1, end1, start2, end2) = alignment::extend_ends_chain(&q_unitig.dna_seq, &r_unitig.dna_seq, &uni_ol, args);
 
                 write!(
                     mapping_file.lock().unwrap(),
@@ -1164,8 +1180,8 @@ pub fn map_to_dereplicate(
                     start1,
                     end1,
                     if uni_ol.chain_reverse { "-" } else { "+" },
-                    contig_ref.id,
-                    contig_ref.base_length,
+                    r_unitig.id,
+                    r_unitig.base_length,
                     start2,
                     end2,
                     end1 - start1,
@@ -1176,22 +1192,22 @@ pub fn map_to_dereplicate(
                     uni_ol.shared_snpmers,
                 ).unwrap();
 
-                let range_query = end1 - start1;
-                let frac = range_query as f64 / q_unitig.base_length as f64;
+                let range_ref = end2 - start2;
+                let frac = range_ref as f64 / r_unitig.base_length as f64;
                 let close_fraction = frac > 0.98;
-                let close_to_both_ends = end1 + 100 >= q_unitig.base_length && start1 <= 100;
+                let close_to_both_ends = end2 + 100 >= r_unitig.base_length && start2 <= 100;
                 //TODO change frac
-                if (close_to_both_ends || close_fraction) && ss_strict && contig_ref.base_length > q_unitig.base_length * 5{
+                if (close_to_both_ends || close_fraction) && ss_strict && r_unitig.base_length * 2 < q_unitig.base_length {
                     let mut contained_contigs = contained_contigs.lock().unwrap();
-                    contained_contigs.insert(*q_id);
+                    contained_contigs.insert(*contig_id as usize);
                     return;
                 }
             }
-        }
+        });
     });
 
     let vec_remove = contained_contigs.into_inner().unwrap().into_iter().map(|x| x as usize).collect::<Vec<_>>();
-    log::debug!("SMALL CONTIG REMOVAL: Removing {} small contigs that are too similer to larger contigs (or singletons that have no coverage)", vec_remove.len());
+    log::debug!("SMALL CONTIG REMOVAL: Removing {} small contigs that are too similar to larger contigs (or singletons that have no coverage)", vec_remove.len());
     unitig_graph.remove_nodes(&vec_remove, false);
 }
 
@@ -1223,6 +1239,8 @@ pub fn map_reads_to_unitigs(
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
+    let counter = Mutex::new(0);
+    let num_reads = twin_reads.len();
 
     log::info!("Index built; starting mapping");
 
@@ -1258,9 +1276,16 @@ pub fn map_reads_to_unitigs(
                 log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}", &read.id, &tr_unitigs[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2);
                 
                 //Disallow large indels because they may cause windowed POA to fail
-                if twinol.end2 - twinol.start2 < MIN_READ_LENGTH || twinol.large_indel{
+                let ol_len = twinol.end2 - twinol.start2;
+
+                if ol_len < MIN_READ_LENGTH || twinol.large_indel{
                     continue;
                 }
+
+                if (twinol.shared_minimizers as f64) < (ol_len as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
+                    continue;
+                }
+
                 unitig_hits.push(twinol);
             }
         }
@@ -1275,14 +1300,59 @@ pub fn map_reads_to_unitigs(
             )).collect::<Vec<_>>();
 
         let mut retained_hits = vec![];
+        //TODO group similar hits together, allow some overlap ...
         ss_hits.sort_by(|a, b| id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel).
         partial_cmp(&id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel)).unwrap());
 
-        let mut already_best_hit = false;
-        for hit in ss_hits{
+        let perfect_hits = ss_hits.iter().filter(|x| same_strain(
+            x.shared_minimizers,
+            x.diff_snpmers,
+            x.shared_snpmers,
+            args.c.try_into().unwrap(),
+            args.snpmer_threshold_strict,
+            args.snpmer_error_rate_strict,
+            x.large_indel,
+        )).collect::<Vec<_>>();
+
+
+        let mut imperfect_hits = ss_hits.iter().filter(|x| !same_strain(
+            x.shared_minimizers,
+            x.diff_snpmers,
+            x.shared_snpmers,
+            args.c.try_into().unwrap(),
+            args.snpmer_threshold_strict,
+            args.snpmer_error_rate_strict,
+            x.large_indel,
+        )).collect::<Vec<_>>();
+
+        // imperfect_hits.sort_by(|a, b| {
+        //     let id_a = id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel);
+        //     let id_b = id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel);
+        //     ((id_b - args.snpmer_threshold_lax/100. - 0.01) * b.shared_minimizers as f64).partial_cmp(&((id_a - &args.snpmer_threshold_lax / 100. - 0.01) * a.shared_minimizers as f64)).unwrap()
+        // });
+
+        imperfect_hits.sort_by(|a, b| {
+            let id_a = id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel) - 0.98;
+            let id_b = id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel) - 0.98;
+            let mini_cumulative_a = (a.shared_minimizers + a.shared_snpmers) as f64 - a.diff_snpmers as f64;
+            let mini_cumulative_b = (b.shared_minimizers + b.shared_snpmers) as f64 - b.diff_snpmers as f64;
+            (mini_cumulative_b * id_b).partial_cmp(&(mini_cumulative_a * id_a)).unwrap()
+        });
+
+        let mut imperfect_ids = imperfect_hits.iter().map(|x| id_est(x.shared_minimizers, x.diff_snpmers, args.c.try_into().unwrap(), x.large_indel)).collect::<Vec<_>>();
+        imperfect_ids.sort_by(|a, b| b.partial_cmp(a).unwrap());
+        let mut max_perfect_mini_opt = None;
+        let mut max_id = None;
+
+        for hit in perfect_hits.iter().chain(imperfect_hits.iter()) {
+
             let read_length = twin_reads[hit.i1].base_length;
             let unitig_length = tr_unitigs[&hit.i2].base_length;
-            let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse, args.maximal_end_fuzz);
+            let end_fuzz_pair = twin_graph::overlap_hang_length(&read, args);
+            let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
+            let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse, end_fuzz);
+
+            log::trace!("MAPPING: {} start {} end {} ref {} snp_shared {} snp_diff {}", read.id, hit.start1, hit.end1, hit.start2, hit.shared_snpmers, hit.diff_snpmers);
 
             if !retained{
                 continue;
@@ -1298,13 +1368,38 @@ pub fn map_reads_to_unitigs(
                 args.snpmer_error_rate_strict,
                 hit.large_indel
             ){
-                if already_best_hit{
-                    break;
+                if let Some(max_perfect_mini) = max_perfect_mini_opt {
+                    let mini_cumulative = (hit.shared_minimizers + hit.shared_snpmers) as i64 - (hit.diff_snpmers as i64);
+                    if mini_cumulative < max_perfect_mini {
+
+                        //Still take the best imperfect hit IF no perfect hits found, otherwise set a threshold at 1/3 
+                        //of the distance to a perfect hit 
+                        let id = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64, hit.large_indel);
+                        let cutoff = imperfect_ids[0] - (1.0 - max_id.unwrap_or(imperfect_ids[0])) * 0.33 + 0.000000000001;
+                        if id < cutoff {
+                            break;
+                        }
+                        if (mini_cumulative as f64) < max_perfect_mini as f64 * 0.9 {
+                            break;
+                        }
+                    }
                 }
                 else{
-                    already_best_hit = true;
+                    max_perfect_mini_opt = Some((hit.shared_minimizers + hit.shared_snpmers) as i64 - (hit.diff_snpmers as i64));
                 }
             }
+            else{
+                max_id = Some(1.0);
+                if let Some(max_perfect_mini) = max_perfect_mini_opt {
+                    if (hit.shared_minimizers + hit.shared_snpmers) as i64 - (hit.diff_snpmers as i64) > max_perfect_mini {
+                        max_perfect_mini_opt = Some((hit.shared_minimizers + hit.shared_snpmers) as i64 - (hit.diff_snpmers as i64));
+                   }
+                }
+                else{
+                    max_perfect_mini_opt = Some((hit.shared_minimizers + hit.shared_snpmers) as i64 - (hit.diff_snpmers as i64));
+                }
+            }
+
 
             retained_hits.push(hit);
         }
@@ -1349,8 +1444,9 @@ pub fn map_reads_to_unitigs(
 
             write!(
                 mapping_file.lock().unwrap(),
-                "r{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\n",
+                "r{}-{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\tshared_mini:{}\tdiff_snp:{}\tshared_snp:{}\n",
                 hit.i1,
+                twin_reads[hit.i1].id.split_ascii_whitespace().next().unwrap_or("").to_string(),
                 twin_reads[hit.i1].base_length,
                 alignment_result.as_ref().unwrap().q_start,
                 alignment_result.as_ref().unwrap().q_end,
@@ -1380,6 +1476,13 @@ pub fn map_reads_to_unitigs(
             };
             vec.push((hit.start2, hit.end2, small_twin_ol));
         }
+
+        *counter.lock().unwrap() += 1;
+        let count = *counter.lock().unwrap();
+        if count % (num_reads / 10) == 0{
+            log::info!("Mapped {:.0}% of reads back to contigs", count as f64 / num_reads as f64 * 100.);
+        }
+        
     });
 
     drop(mini_index);

@@ -1,3 +1,4 @@
+use crate::constants::DEDUP_SNPMERS;
 use crate::constants::MID_BASE_THRESHOLD_READ;
 use crate::constants::MID_BASE_THRESHOLD_INITIAL;
 use crate::constants::QUALITY_SEQ_BIN;
@@ -443,7 +444,9 @@ pub fn get_twin_read_syncmer(
                 snpmer_positions.push((i + 1 - k) as u32);
                 snpmer_kmers.push(canonical_kmer_marker);
             }
-            *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
+            if DEDUP_SNPMERS{
+                *dedup_snpmers.entry(canonical_kmer_marker & split_mask).or_insert(0) += 1;
+            }
         } 
         // Check for minimizer using syncmer method
        if i >= k - 1 && s_mer_hashes.len() == k - s + 1 {
@@ -461,15 +464,23 @@ pub fn get_twin_read_syncmer(
 
     //let mut no_dup_snpmers_kmers = vec![];
     let mut no_dup_snpmers_positions = vec![];
-    for i in 0..snpmer_kmers.len(){
-        if dedup_snpmers[&(snpmer_kmers[i] & split_mask)] == 1 {
-            //no_dup_snpmers_kmers.push(Kmer48::from_u64(snpmer_kmers[i]));
-            no_dup_snpmers_positions.push(snpmer_positions[i]);
+    if DEDUP_SNPMERS{
+        for i in 0..snpmer_kmers.len(){
+            if dedup_snpmers[&(snpmer_kmers[i] & split_mask)] == 1 {
+                //no_dup_snpmers_kmers.push(Kmer48::from_u64(snpmer_kmers[i]));
+                no_dup_snpmers_positions.push(snpmer_positions[i]);
+            }
         }
     }
 
     //let snpmer_kmers = no_dup_snpmers_kmers;
-    let snpmer_positions = no_dup_snpmers_positions;
+    let snpmer_positions_final;
+    if DEDUP_SNPMERS{
+        snpmer_positions_final = no_dup_snpmers_positions;
+    }
+    else{
+        snpmer_positions_final = snpmer_positions;
+    }
 
     let seq_id;
     if read_with_all_equal_qualities{
@@ -509,7 +520,7 @@ pub fn get_twin_read_syncmer(
 
     Some(TwinRead{
         //snpmer_kmers,
-        snpmer_positions,
+        snpmer_positions: snpmer_positions_final,
         //minimizer_kmers,
         minimizer_positions,
         base_id: id.clone(),

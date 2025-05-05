@@ -728,7 +728,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
     return ol;
 }
 
-fn overlap_hang_length(twin_read: &TwinRead, args: &Cli) -> (usize, usize){
+pub fn overlap_hang_length(twin_read: &TwinRead, args: &Cli) -> (usize, usize){
     let kmer_error_est = 1./(twin_read.est_id.unwrap_or(100.0) / 100.).powf(twin_read.k as f64);
     let nth_read = ((MINIMIZER_END_NTH_OVERLAP as f64 * kmer_error_est) as usize).min(100);
     let (start_hang_cutoff, end_hang_cutoff) = map_processing::first_last_mini_in_range(0, twin_read.base_length, twin_read.k  as usize, nth_read,  &twin_read.minimizer_positions);

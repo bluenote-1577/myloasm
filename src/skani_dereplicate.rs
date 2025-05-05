@@ -2,6 +2,7 @@ use std::io::BufWriter;
 use fxhash::FxHashMap;
 use std::path::Path;
 use crate::cli::Cli;
+use crate::constants::CIRC_STRICT_STRING;
 use std::fs::File;
 use std::io::Write;
 
@@ -52,10 +53,10 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
 
                 //If they have similar size, keep the circular one
                 if length_id_query.0 / length_id_ref.0 > 0.66 && length_id_query.0 / length_id_ref.0 < 1./0.66{
-                    if length_id_query.2.contains("circular") && !length_id_ref.2.contains("circular"){
+                    if length_id_query.2.contains(CIRC_STRICT_STRING) && !length_id_ref.2.contains(CIRC_STRICT_STRING){
                         smaller = length_id_ref;
                     }
-                    else if length_id_ref.2.contains("circular") && !length_id_query.2.contains("circular"){
+                    else if length_id_ref.2.contains(CIRC_STRICT_STRING) && !length_id_query.2.contains(CIRC_STRICT_STRING){
                         smaller = length_id_query;
                     }
                 }
@@ -77,7 +78,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
 
                 // Don't allow circular contigs to be considered alternate if they are not duplicates
                 // If smaller is the query, remove the reference
-                if smaller.0 < 500_000. && !smaller.2.contains("circular"){
+                if smaller.0 < 500_000. && !smaller.2.contains(CIRC_STRICT_STRING){
                     alternate_indices.insert(smaller.1, (larger.2, ani_result));
                     contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
                     contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);
@@ -108,7 +109,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
         let header = String::from_utf8(record.id().to_vec()).unwrap();
         let seq = record.seq().iter().map(|x| *x as char).collect::<String>();
         let id_opt = contig_name_to_id_map.get(&header);
-        if header.contains("circular") && seq.len() > 1_000_000{
+        if header.contains(CIRC_STRICT_STRING) && seq.len() > 1_000_000{
             num_circular_1m += 1;
         }
 

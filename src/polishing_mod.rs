@@ -1,13 +1,14 @@
 use crate::cli::*;
+use crate::constants::CIRC_STRICT_STRING;
 use crate::constants::POLISHED_CONTIGS_NAME;
 use crate::graph::GraphNode;
 use crate::polishing::consensus2::join_circular_ends;
 use crate::polishing::consensus2::PoaConsensusBuilder;
-use crate::small_genomes;
+//use crate::small_genomes;
 use crate::types::*;
 use crate::unitig::*;
-use rust_htslib::bam::header::HeaderRecord;
-use rust_htslib::bam::{Header, HeaderView};
+//use rust_htslib::bam::header::HeaderRecord;
+//use rust_htslib::bam::{Header, HeaderView};
 use rust_lapper::Interval;
 use std::fs::File;
 use std::io::BufWriter;
@@ -61,7 +62,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             final_seq.extend(consensus);
         }
 
-        let mut circ_string = String::new();
+        let mut circ_string = "circular_no".to_string();
 
         if let Some(circ_edge_id) = contig.get_circular_edge() {
             let edge = final_graph.edges[circ_edge_id].as_ref().unwrap();
@@ -73,7 +74,11 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
                 &format!("u{}", &contig.node_id),
                 args,
             );
-            circ_string = "circular".to_string();
+            if contig.is_circular_strict() {
+                circ_string = CIRC_STRICT_STRING.to_string();
+            } else if contig.has_circular_walk(){
+                circ_string = "circular_possibly".to_string();
+            }
         }
 
         //small_genomes::fix_multimers(&contig, &twin_reads, &mut final_seq, args);
@@ -96,13 +101,16 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             return;
         }
 
+        let depths = contig.min_read_depth_multi.unwrap_or([0., 0., 0.]);
+        let depth_string = format!("{}-{}-{}", depths[0], depths[1], depths[2]);
+
         write!(
             &mut fasta_writer,
-            ">u{} len:{} depth:{:?} {}\n",
+            ">u{}ctg_len_{}_{}_depth_{}\n",
             contig.node_id,
             final_seq.len(),
-            contig.min_read_depth_multi.unwrap(),
-            circ_string
+            circ_string,
+            depth_string
         )
         .unwrap();
         write!(
@@ -116,22 +124,22 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
     });
 }
 
-fn _create_bam_header(sequences: Vec<(String, u32)>) -> Header {
-    // Create a new header
-    let mut header = Header::new();
+// fn _create_bam_header(sequences: Vec<(String, u32)>) -> Header {
+//     // Create a new header
+//     let mut header = Header::new();
 
-    // Add a HD (header) line indicating this is a BAM/SAM file
-    let mut hd = HeaderRecord::new(b"HD");
-    hd.push_tag(b"VN", &"1.6") // SAM/BAM specification version
-        .push_tag(b"SO", &"unknown"); // Sorting order
-    header.push_record(&hd);
+//     // Add a HD (header) line indicating this is a BAM/SAM file
+//     let mut hd = HeaderRecord::new(b"HD");
+//     hd.push_tag(b"VN", &"1.6") // SAM/BAM specification version
+//         .push_tag(b"SO", &"unknown"); // Sorting order
+//     header.push_record(&hd);
 
-    // Add sequence information (SQ lines)
-    for (seq_name, length) in sequences {
-        let mut sq = HeaderRecord::new(b"SQ");
-        sq.push_tag(b"SN", &seq_name).push_tag(b"LN", &length); // Sequence length
-        header.push_record(&sq);
-    }
+//     // Add sequence information (SQ lines)
+//     for (seq_name, length) in sequences {
+//         let mut sq = HeaderRecord::new(b"SQ");
+//         sq.push_tag(b"SN", &seq_name).push_tag(b"LN", &length); // Sequence length
+//         header.push_record(&sq);
+//     }
 
-    header
-}
+//     header
+// }

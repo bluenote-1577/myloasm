@@ -16,7 +16,7 @@ smallvec = { version = "1", features = ["union","serde","write"] }
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
 clap = { version = "4.4", features = ["derive"] }
-rust-htslib= { version = "0.46", default-features = false }
+#rust-htslib= { version = "0.46", default-features = false }
 statrs = "0.16"
 spmc = "0.3"
 fishers_exact = "1.0"

@@ -83,6 +83,7 @@ impl PoaConsensusBuilder {
                 seqs.truncate(MAX_OL_POLISHING);
                 quals.truncate(MAX_OL_POLISHING);
 
+                //TODO let's break contigs when we get no coverage -- the read itself doesn't even map well. 
                 let cons;
                 if seqs.len() == 0{
                     let start = i * self.bp_len;
@@ -122,11 +123,11 @@ impl PoaConsensusBuilder {
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();
         let consensuses =
-            PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, &self.contig_name);
+            PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, self.bp_len, &self.contig_name);
         return consensuses;
     }
 
-    pub fn modify_join_consensus(mut cons: Vec<Vec<u8>>, window_len: usize, contig_name: &str) -> Vec<Vec<u8>> {
+    pub fn modify_join_consensus(mut cons: Vec<Vec<u8>>, window_len: usize, bp_length: usize, contig_name: &str) -> Vec<Vec<u8>> {
         if cons.len() == 0 {
             return vec![];
         }
@@ -166,15 +167,18 @@ impl PoaConsensusBuilder {
 
         let mut new_consensus = vec![];
         let mut new_cons_i = std::mem::take(&mut cons[0]);
+        let num_bps = breakpoints.len();
         for (i, bp) in breakpoints.into_iter().enumerate() {
 
             let mut new_cons_j = std::mem::take(&mut cons[i + 1]);
             let ol_len = new_cons_i.len().min(new_cons_j.len().min(window_len));
             let hang;
 
-            //I believe this happens when the overlap alignments are discordant...
+            //I believe this happens when the overlap alignments are discordant or near the ends of contigs
             if bp.0 > ol_len{
-                log::debug!("Potential error in consensus joining at block {} for contig {}", i, contig_name);
+                if i != num_bps - 1 {
+                    log::debug!("Potential error in consensus joining at block {} for contig {}", (i+1) * bp_length - window_len, contig_name);
+                }
                 hang = ol_len;
             }
             else{
@@ -954,7 +958,7 @@ mod tests {
             b"ACGTATGTGTGTGT".to_vec() // first T is errors
         ];
 
-        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 8, "test");
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 8, 20, "test");
 
         let mut final_consensus = vec![];
         for cons in new_cons{
@@ -973,7 +977,7 @@ mod tests {
             b"CTTTGGGG".to_vec() // first T is errors
         ];
 
-        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5, "test");
+        let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5, 20, "test");
 
         let mut final_consensus = vec![];
         for cons in new_cons{

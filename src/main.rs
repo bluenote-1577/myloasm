@@ -89,7 +89,7 @@ fn main() {
         args.tip_read_cutoff * 30,
         1_000_000,
         usize::MAX,
-        Some(5),
+        Some(4),
         &heavy_cleaning_temp_dir, 
         true, 
         &args
@@ -129,6 +129,14 @@ fn main() {
         log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
         return;
     }
+
+    contig_graph.to_gfa(
+        output_dir.join("final_contig_graph.gfa"),
+        true,
+        false,
+        &twin_reads,
+        &args,
+    );
     
     // Step 9: Align reads back to graph and take consensuses
     log::info!("Beginning final alignment of reads to graph...");
@@ -141,15 +149,8 @@ fn main() {
         start.elapsed()
     );
 
-    contig_graph.to_gfa(
-        output_dir.join("final_contig_graph.gfa"),
-        true,
-        false,
-        &twin_reads,
-        &args,
-    );
-
-    log::info!("Polishing...");
+    
+    log::info!("Polishing final contigs...");
     polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
     log::info!("Time elapsed for polishing is {:?}", start.elapsed());
 
@@ -352,7 +353,7 @@ fn get_twin_reads_from_kmer_info(
         log_memory_usage(true, "STAGE 2: Finished mapping reads to outer reads");
 
         // (4): split chimeric twin reads based on mappings to outer reads
-        log::info!("Processing mappings...");
+        log::info!("Processing mappings to clean and split chimeric reads...");
         let (split_twin_reads, _split_outer_read_indices) =
             map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, cleaning_temp_dir, &args);
 
@@ -367,7 +368,7 @@ fn get_twin_reads_from_kmer_info(
             perc_chimera
         );
 
-        log::info!(
+        log::debug!(
             "Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
             split_twin_reads.len() as i64 - num_reads as i64,
             start.elapsed()
@@ -451,6 +452,8 @@ fn get_twin_reads_from_kmer_info(
             );
         }
 
+        split_twin_reads_final.sort_by(|a, b| a.id.cmp(&b.id));
+
         split_twin_reads_final.iter_mut().for_each(|x| {
             if x.min_depth_multi.is_some() {
                 x.outer = true;
@@ -490,7 +493,7 @@ fn get_overlaps_from_twin_reads(
     let overlap_bin_path = output_dir.join("binary_temp").join("overlaps.bin");
 
     let overlaps;
-    if args.input_files == ["save"] && overlap_bin_path.exists() {
+    if args.input_files == [MAGIC_EXIST_STRING] && overlap_bin_path.exists() {
         overlaps = bincode::deserialize_from(BufReader::new(
             File::open(overlap_bin_path).unwrap(),
         ))
@@ -694,18 +697,7 @@ fn get_contigs_from_progressive_coverage_circular(
                     }
                 }
 
-                let mut circular = false;
-                for edge_id in contig.both_edges(){
-                    //check if a circular edge exists
-                    if graph_per_coverage[&cov].edges[*edge_id].is_none() {
-                        continue;
-                    }
-                    let edge = graph_per_coverage[&cov].edges[*edge_id].as_ref().unwrap();
-                    if edge.from_unitig == edge.to_unitig {
-                        circular = true;
-                        break;
-                    }
-                }
+                let circular = contig.is_circular_strict();
 
                 if !unused || !circular {
                     continue;
@@ -714,7 +706,7 @@ fn get_contigs_from_progressive_coverage_circular(
                 contigs_to_keep.insert(contig.node_hash_id.clone());
 
                 log::debug!(
-                    "Keeping circular contig u{} with covs {:?} of size {} at threshold {}",
+                    "Keeping possibly circular contig u{} with covs {:?} of size {} at threshold {}",
                     contig.node_id,
                     contig.min_read_depth_multi.unwrap(),
                     contig.cut_length(),
@@ -994,8 +986,8 @@ fn heavy_clean_with_walk(
 ) {
     log::info!("Graph cleaning with walks...");
     let mut save_removed;
-    let temperatures = [2., 1.5, 1.0, 0.5];
-    let ol_thresholds = [0.125, 0.25, 0.5];
+    let temperatures = [2., 1.5, 1.0];
+    let ol_thresholds = [0.125, 0.25, 0.375, 0.5];
     let aggressive_multipliers = [10, 15, 30];
     let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
@@ -1371,7 +1363,7 @@ fn progressive_coverage_contigs_circular(
 
     let tip_length_cutoff_heavy = args.tip_length_cutoff * 30;
     let tip_read_cutoff_heavy = args.tip_read_cutoff * 30;
-    let bubble_threshold_heavy = 6_000_000;
+    let bubble_threshold_heavy = 1_000_000;
 
     let mut cov_to_graph_map = FxHashMap::default();
     let mut unitig_graph_with_threshold = unitig_graph.clone();

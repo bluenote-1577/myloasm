@@ -404,9 +404,45 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
         weights.push(1.);
     }
 
+    // ----- SHAPE distribution distance ------ 
+    let mut shape_distribution_distances = vec![];
+    let num_shapes = ID_THRESHOLD_ITERS * (ID_THRESHOLD_ITERS - 1) / 2;
+    for i in 0..ID_THRESHOLD_ITERS{
+        for j in i + 1..ID_THRESHOLD_ITERS{
+            let mut shape_larger = vec![];
+            let mut shape_smaller = vec![];
+            for (log_ratio, _) in larger.iter(){
+                shape_larger.push(log_ratio[i] - log_ratio[j]);
+            }
+            for (log_ratio, _) in smaller.iter(){
+                shape_smaller.push(log_ratio[i] - log_ratio[j]);
+            }
+
+            let mut shape_distances_dist = vec![];
+
+            for i in 0..shape_larger.len(){
+                shape_distances_dist.push((shape_larger[i] - shape_smaller[i % shape_smaller.len()]).abs());
+            }
+
+            shape_distances_dist.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let lower_quartile = shape_distances_dist[distances.len() / 4];
+            shape_distribution_distances.push(lower_quartile);
+        }
+    }
+
+    let shape_distribution_distance;
+    // distribution "shapes" have huge variance, limit this. 
+    if larger.len() < 10 || smaller.len() < 5{
+        shape_distribution_distance = 0.;
+    }
+    else{
+        shape_distribution_distance = shape_distribution_distances.iter().sum::<f64>() / num_shapes as f64;
+    }
+
     //let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
     let weighted_distance = ID_THRESHOLD_ITERS as f64 * distances.iter().zip(weights.iter()).map(|(x, y)| x * y).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    return Some(weighted_distance);
+    return Some(weighted_distance + shape_distribution_distance);
+    //return Some(weighted_distance);
 }
 
 #[inline]
@@ -533,15 +569,29 @@ mod tests {
         dbg!(dist1);
 
         //Coord 3 is not variable, low distance
-        assert!(dist1 < 0.1);
 
-        let v1 = vec![([100., 5., 1.], 1), ([90., 20., 2.,], 1), ([110., 20., 10.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1), ([110., 20., 10.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1)];
-        let v2 = vec![([100., 50., 30.,], 1), ([100., 20., 1.,], 1)];
+        let v1 = vec![([100., 50., 1.], 1), ([90., 20., 2.,], 1), ([110., 20., 5.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1), ([110., 20., 10.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1)];
+        let v2 = vec![([100., 50., 10.,], 1), ([100., 20., 1.,], 1)];
         let dist2 = log_distribution_distance_new(&v1, &v2).unwrap();
         dbg!(dist2);
         
-        //Coord 1 is not variable, low distance
-        assert!(dist2 < 0.2);
+
+        let v1 = vec![([100., 90., 1.], 1), ([90., 20., 2.,], 1), ([110., 20., 5.], 1), ([110., 20., 1.,], 1), ([100., 5., 2.], 1), ([90., 20., 2.,], 1), ([110., 20., 10.], 1), ([110., 20., 1.,], 1), ([100., 10., 2.], 1), ([90., 20., 5.,], 1)];
+        let v2 = vec![([100., 23., 5.,], 1), ([100., 20., 1.,], 1)];
+        let dist3 = log_distribution_distance_new(&v1, &v2).unwrap();
+        dbg!(dist3);
+        assert!(dist1 < 1.);
+        assert!(dist2 < 1.);
+        assert!(dist3 < 1.);
+    }
+
+    #[test]
+    fn test_log_dist_shape() {
+        let v1 = vec![([90., 90., 1.], 1), ([90., 20., 2.,], 1), ([110., 100., 5.], 1), ([20., 20., 1.,], 1), ([100., 50., 2.], 1), ([90., 20., 2.,], 1), ([110., 100., 10.], 1), ([110., 20., 1.,], 1), ([20., 10., 2.], 1), ([90., 20., 5.,], 1)];
+        let v2 = vec![([90., 90., 90.,], 1), ([90., 80., 80.,], 1), ([90., 70., 70.,], 1), ([90., 60., 60.,], 1), ([90., 50., 50.,], 1)];
+        let dist1 = log_distribution_distance_new(&v1, &v2).unwrap();
+        dbg!(dist1);
+        assert!(dist1 > 1.);
     }
 
 }

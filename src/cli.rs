@@ -49,7 +49,6 @@ pub struct Cli {
     #[arg(long, default_value_t=500, help_heading = "Basic Parameters")]
     pub min_ol: usize,
 
-
     /// HiFi mode (--snpmer-threshold-strict 100 --snpmer-error-rate 0.001)
     #[arg(long, help_heading = "Preset Parameters", hide=true)]
     pub hifi: bool,
@@ -123,7 +122,7 @@ pub struct Cli {
     pub kmer_size: usize,
 
     /// Soft clips with < this # of bases are allowed for alignment
-    #[arg(long, default_value_t=200, help_heading = "Alignment Parameters", hide = true)]
+    #[arg(long, default_value_t=300, help_heading = "Alignment Parameters", hide = true)]
     pub maximal_end_fuzz: usize, 
 
     /// Maximum bubble length to pop; keep alternates

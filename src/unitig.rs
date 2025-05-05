@@ -703,23 +703,13 @@ impl UnitigGraph {
                 base_seq = &empty_seq;
             }
 
-            let min_mapping_depth;
-            let median_map_depth;
-            if unitig.mapping_info.present {
-                median_map_depth = unitig.mapping_info.median_depth;
-                min_mapping_depth = unitig.mapping_info.minimum_depth;
-            } else {
-                median_map_depth = -1.;
-                min_mapping_depth = -1.;
-            };
-
             let median_read_depth = unitig.median_read_depth.unwrap_or(-1.);
             let min_read_depth_multi = unitig
                 .min_read_depth_multi
                 .unwrap_or([-1.; ID_THRESHOLD_ITERS]);
 
             gfa.push_str(&format!(
-                "S\tu{}\t{}\tLN:i:{}\tDP:f:{:.1}\tDP2:f:{:.1}\tDP3:f:{:.1}\tMED_PRIM_DP:f:{:.1}\tMAP_DP:f:{:.1}\tMED_MAP_DP:f:{:.1}\n",
+                "S\tu{}ctg\t{}\tLN:i:{}\tDP:f:{:.1}\tDP2:f:{:.1}\tDP3:f:{:.1}\tMEDIAN_DP1:f:{:.1}\n",
                 unitig.read_indices_ori[0].0,
                 //String::from_utf8(unitig.raw_consensus()).unwrap(),
                 base_seq,
@@ -728,8 +718,6 @@ impl UnitigGraph {
                 min_read_depth_multi[1],
                 min_read_depth_multi[2],
                 median_read_depth,
-                min_mapping_depth,
-                median_map_depth,
             ));
 
             if output_readgroups {
@@ -740,8 +728,19 @@ impl UnitigGraph {
                     let read = &reads[*read_idx];
                     let range = unitig.read_positions_internal()[count];
                     let length = range.1 - range.0;
+                    let read_length = read.base_length;
+                    let mut snp_share = 0;
+                    let mut snp_diff = 0;
+                    let mut ol_len = 0;
+                    if count < unitig.read_indices_ori.len() - 1 {
+                        let overlap = &unitig.internal_overlaps[count];
+                        snp_share = overlap.shared_snpmers;
+                        snp_diff = overlap.diff_snpmers;
+                        ol_len = overlap.overlap_len_bases;
+                    }
+
                     gfa.push_str(&format!(
-                        "a\tu{},{}-{}\t{}\t{}\t{}\t{}\t{}\tDP1:{},DP2:{},DP3:{}\n",
+                        "a\tu{}ctg,{}-{}\t{}\t{}\t{}\t{}\t{}\tDP1:{},DP2:{},DP3:{},READ_LEN:{},OL_LEN_NEXT:{},SNP_SHARE_NEXT:{},SNP_DIFF_NEXT:{}\n",
                         unitig.read_indices_ori[0].0,
                         range.0,
                         range.1,
@@ -753,6 +752,10 @@ impl UnitigGraph {
                         read.min_depth_multi.as_ref().unwrap()[0],
                         read.min_depth_multi.as_ref().unwrap()[1],
                         read.min_depth_multi.as_ref().unwrap()[2],
+                        read_length,
+                        ol_len,
+                        snp_share,
+                        snp_diff
                     ));
                     curr_pos += length;
                     count += 1;
@@ -784,7 +787,7 @@ impl UnitigGraph {
             .unwrap();
 
             gfa.push_str(&format!(
-                "L\tu{}\t{}\tu{}\t{}\t{}M\n",
+                "L\tu{}ctg\t{}\tu{}ctg\t{}\t{}M\n",
                 id1,
                 from_orient,
                 id2,
@@ -2087,13 +2090,13 @@ impl UnitigGraph {
         let num_circ_contigs_geq_1m = self
             .nodes
             .iter()
-            .filter(|(_, node)| node.has_circular_walk() && node.cut_length() >= 1_000_000)
+            .filter(|(_, node)| node.is_circular_strict() && node.cut_length() >= 1_000_000)
             .count();
 
-        let num_circ_contigs_geq_100k = self
+        let num_contigs_geq_100k = self
             .nodes
             .iter()
-            .filter(|(_, node)| node.has_circular_walk() && node.cut_length() >= 100_000)
+            .filter(|(_, node)| node.cut_length() >= 100_000)
             .count();
 
         let num_1m_contigs = self
@@ -2106,23 +2109,23 @@ impl UnitigGraph {
         if let Some(largest_contig) = largest_contig {
             let largest_contig_size = largest_contig.1.cut_length();
             let num_contigs = contig_sizes.len();
-            log::info!("Unpolished Assembly statistics - NOT FINAL");
-            log::info!("N50: {}", n50_size);
-            log::info!("Largest contig has size: {}", largest_contig_size);
-            log::info!("Number of contigs: {}", num_contigs);
+            log::info!("Unpolished assembly statistics - ROUGH ESTIMATE; NOT FINAL");
+            log::info!("(Estimated) N50: {}", n50_size);
+            log::info!("(Estimated) Largest contig has size: {}", largest_contig_size);
+            log::info!("(Estimated) Number of contigs: {}", num_contigs);
             log::info!(
-                "Number of circular contigs >= 1M: {}",
+                "(Estimated) Number of circular contigs >= 1M: {}",
                 num_circ_contigs_geq_1m
             );
             log::info!(
-                "Number of contigs (circular or non-circular)>= 1M: {}",
+                "(Estimated) Number of contigs (circular or non-circular)>= 1M: {}",
                 num_1m_contigs
             );
             log::info!(
-                "Number of circular contigs >= 100k: {}",
-                num_circ_contigs_geq_100k
+                "(Estimated) Number of contigs >= 100k: {}",
+                num_contigs_geq_100k
             );
-            log::info!("Total bases within assembly is {}", n50 * 2);
+            log::info!("(Estimated) Total bases within assembly is {}", n50 * 2);
         } else {
             log::info!("WARNING: No contigs found.");
             return;
@@ -2922,7 +2925,7 @@ impl UnitigGraph {
                         {
                             removed_edges.insert(**edge_id);
                             if options.debug{
-                                log::debug!(
+                                log::trace!(
                                     "u{},u{} is a tip",
                                     self.nodes[&edge.from_unitig].node_id,
                                     self.nodes[&edge.to_unitig].node_id
@@ -3120,13 +3123,9 @@ impl UnitigGraph {
             }
 
             //CHANGE: try normalization. Equivalent to geometric mean of probabilities
+            // let max_soln_path_length = solutions.iter().map(|x| x.path.len()).max().unwrap_or(0);
             // solutions.iter_mut().for_each(|x| {
-            //     let mut unique_nodes = FxHashSet::default();
-            //     x.path_nodes.iter().for_each(|x| {
-            //         unique_nodes.insert(*x);
-            //     });
-            //     let num_unique_nodes = unique_nodes.len();
-            //     x.score = x.score / (num_unique_nodes as f64);
+            //     x.score = x.score * max_soln_path_length as f64 / x.path.len() as f64;
             // });
 
             let max_absolute_score = solutions

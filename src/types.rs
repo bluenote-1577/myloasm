@@ -738,6 +738,7 @@ pub struct Breakpoints {
     pub pos1: usize,
     pub pos2: usize,
     pub cov: usize,
+    pub condition: i64,
 }
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GetSequenceInfoConfig{

@@ -207,7 +207,7 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
 
     assert!(!USE_SOLID_KMERS);
 
-    log::info!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
+    log::debug!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
     let mut kmer_counts = vec![];
     let high_freq_kmers = Arc::new(Mutex::new(HashSet::default()));
     let paths_to_files = args.input_files.iter().map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap()).collect::<Vec<_>>();
@@ -224,7 +224,7 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
     }
 
     let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
-    log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
+    log::debug!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
     log::info!("Finding snpmers...");
@@ -371,7 +371,7 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
 
     let mut snpmers = Arc::try_unwrap(snpmers).unwrap().into_inner().unwrap();
     snpmers.sort();
-    log::info!("Number of snpmers: {}. ", potential_snps.lock().unwrap());
+    log::debug!("Number of snpmers: {}. ", potential_snps.lock().unwrap());
     return KmerGlobalInfo{
         snpmer_info: snpmers,
         solid_kmers: HashSet::default(),
@@ -384,7 +384,7 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
 
 pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -> KmerGlobalInfo{
 
-    log::info!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
+    log::debug!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
     let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
     let mut solid_kmers = HashSet::default();
@@ -402,7 +402,7 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
         std::process::exit(1);
     }
     let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
-    log::info!("High frequency k-mer threshold: {}", high_freq_thresh);
+    log::debug!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
     log::info!("Finding snpmers...");
@@ -513,8 +513,8 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
     let mut snpmers = snpmers.into_inner().unwrap();
     snpmers.sort();
     solid_kmers.shrink_to_fit();
-    log::info!("Number of snpmers: {}. ", potential_snps.into_inner().unwrap());
-    log::info!("Number of solid k-mers: {}.", solid_kmers.len());
+    log::debug!("Number of snpmers: {}. ", potential_snps.into_inner().unwrap());
+    log::debug!("Number of solid k-mers: {}.", solid_kmers.len());
     return KmerGlobalInfo{
         snpmer_info: snpmers,
         solid_kmers: solid_kmers,

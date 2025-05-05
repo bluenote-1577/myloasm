@@ -205,6 +205,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
             pos1: 0,
             pos2 : depths[0].start as usize,
             cov: 0,
+            condition: -1,
         });
     }
     //<xxxxx|--------
@@ -220,6 +221,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
             pos1: depths[0].start as usize,
             pos2: depths[0].stop as usize,
             cov: depths[0].val as usize,
+            condition: -2,
         });
     }
     // -----|xxxx|----
@@ -232,8 +234,8 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         let cov = interval.val as usize;
         let cond1 = last_cov > 3 && next_cov > 3 && cov == 1;
         let cond2;
-        let cond5;
-        let cond6; 
+        let cond3;
+        let cond4; 
         if start > 200 && stop + 200 < reference_length as usize {
             // let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
             // let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
@@ -241,15 +243,18 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
             let left_count = coverages_at_sampling[(start as usize - 200) / sampling as usize].1;
             let right_count = coverages_at_sampling[(start as usize + 200) / sampling as usize].1;
             cond2 = left_count > 3 && right_count > 3 && cov <= 1;
-            cond5 = (left_count > cov * 10 && right_count > cov * 10) && cov <= 2;
-            cond6 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3;
+            cond3 = (left_count > cov * 5 && right_count > cov * 5) && cov <= 2;
+            cond4 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3;
         } else {
             cond2 = false;
-            cond5 = false;
-            cond6 = false;
+            cond3 = false;
+            cond4 = false;
         }
-        let cond3 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 2;
-        let cond4 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 3;
+        let cond5 = 
+        (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) 
+        && cov <= 2;
+
+        let cond6 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 3;
         if start > 200
             && start as usize + 200 < reference_length as usize
             && (cond1 || cond2 || cond3 || cond4 || cond5 || cond6)
@@ -258,6 +263,19 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
                 pos1: start as usize,
                 pos2: stop as usize,
                 cov: cov,
+                condition: if cond1 {
+                    1
+                } else if cond2 {
+                    2
+                } else if cond3 {
+                    3
+                } else if cond4 {
+                    4
+                } else if cond5 {
+                    5
+                } else {
+                    6
+                },
             });
         }
     }
@@ -275,6 +293,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
                 pos1: depths[depths.len() - 1].start as usize,
                 pos2: depths[depths.len() - 1].stop as usize,
                 cov: 0,
+                condition: -3,
             });
         }
     }
@@ -285,6 +304,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
             pos1: depths[depths.len() - 1].stop as usize,
             pos2: reference_length as usize ,
             cov: depths[depths.len() - 1].val as usize,
+            condition: -4,
         });
     }
 
@@ -294,7 +314,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
 fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
 
     let mut new_reads = vec![];
-    break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0});
+    break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0, condition: -5});
 
     let mut last_break = 0;
     let k = twin_read.k as usize;
@@ -461,7 +481,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 for depth in depths.depth(){
                     let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
                     for breakpoint in breakpoints.iter(){
-                        string.push_str(format!("--{} to {}--", breakpoint.pos1, breakpoint.pos2).as_str());
+                        string.push_str(format!("--{} to {} COND:{}--", breakpoint.pos1, breakpoint.pos2, breakpoint.condition).as_str());
                     }
                     writeln!(writer, "{}", &string).unwrap();
                 }
@@ -470,7 +490,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
                 if breakpoints.len() > 0{
                     let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
                     for breakpoint in breakpoints.iter(){
-                        read_id_and_breakpoint_string.push_str(format!("{}-{},", breakpoint.pos1, breakpoint.pos2).as_str());
+                        read_id_and_breakpoint_string.push_str(format!("{}-{}-COND:{},", breakpoint.pos1, breakpoint.pos2, breakpoint.condition).as_str());
                     }
                     let writer = &mut writer.lock().unwrap();
                     writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();

@@ -70,7 +70,13 @@ pub fn extend_ends_chain(
         prev_r_pos - prev_q_pos
     };
 
-    let q_left_slice = &q_seq[0..prev_q_pos as usize];
+    let left_query = if prev_q_pos > prev_r_pos {
+        prev_q_pos - prev_r_pos
+    } else {
+        0
+    };
+
+    let q_left_slice = &q_seq[left_query as usize..prev_q_pos as usize];
     let r_left_slice = &r_seq[left_ref as usize..prev_r_pos as usize];
     let q_left_slice_u8 = dna_slice_to_u8(q_left_slice);
     let r_left_slice_u8 = dna_slice_to_u8(r_left_slice);
