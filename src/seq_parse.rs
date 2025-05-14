@@ -7,7 +7,7 @@ use fxhash::FxHashMap;
 use crate::seeding;
 use crate::utils::*;
 use std::io::BufReader;
-use crossbeam_channel::unbounded;
+use crossbeam_channel::bounded;
 
 pub fn read_to_split_kmers(
     k: usize,
@@ -69,7 +69,8 @@ fn first_iteration(
         let mut rxs = vec![];
         let mut txs_vecs = vec![vec![]; num_b];
         for _ in 0..threads {
-            let (tx, rx) = unbounded();
+            //let (tx, rx) = unbounded();
+            let (tx, rx) = bounded(500);
             for i in 1..num_b{
                 txs_vecs[i].push(tx.clone());
             }
@@ -77,7 +78,8 @@ fn first_iteration(
             rxs.push(rx);
         }
 
-        let (tx_head, rx_head1) = unbounded();
+        //let (tx_head, rx_head1) = unbounded();
+        let (tx_head, rx_head1) = bounded(500);
         let mut rx_heads = vec![];
         for _ in 1..num_b{
             let rx_head2 = rx_head1.clone();
@@ -204,7 +206,8 @@ fn second_iteration(
     let mut rxs = vec![];
     let mut txs_vecs = vec![vec![]; num_b];
     for _ in 0..threads {
-        let (tx, rx) = unbounded();
+        //let (tx, rx) = unbounded();
+        let (tx, rx) = bounded(500);
         for i in 1..num_b{
             txs_vecs[i].push(tx.clone());
         }
@@ -212,7 +215,8 @@ fn second_iteration(
         rxs.push(rx);
     }
 
-    let (tx_head, rx_head1) = unbounded();
+    //let (tx_head, rx_head1) = unbounded();
+    let (tx_head, rx_head1) = bounded(500);
     let mut rx_heads = vec![];
     for _ in 1..num_b{
         let rx_head2 = rx_head1.clone();

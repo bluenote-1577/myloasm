@@ -300,6 +300,8 @@ pub fn dp_anchors(
     gap_cost: i32,
     match_score: i32,
     band: usize,
+    max_gap: usize,
+    double_gap: usize,
 ) -> Vec<(i32, Vec<Anchor>, bool)> {
     if matches.is_empty() {
         return vec![(0, vec![], false)];
@@ -338,8 +340,14 @@ pub fn dp_anchors(
             let kmer_overlap_score = kmer_dist1_score.min(kmer_dist2_score);
 
             let large_indel = false;
-            if gap_penalty > MAX_GAP_CHAINING as i32 {
+            if gap_penalty > max_gap as i32 {
                 //large_indel = true;
+                continue;
+            }
+
+            if (start1 as i32 - end1 as i32).abs() > (double_gap as i32)
+                || (start2 as i32 - end2 as i32).abs() > (double_gap as i32)
+            {
                 continue;
             }
 
@@ -412,6 +420,8 @@ fn find_optimal_chain(
 ) -> Vec<ChainInfo> {
     let band;
     let matches = anchors;
+    let max_gap = tr_options.max_gap;
+    let double_gap = tr_options.double_gap;
     if band_opt.is_none() {
         band = 50;
     } else {
@@ -426,24 +436,24 @@ fn find_optimal_chain(
 
     #[cfg(any(target_arch = "x86_64"))]
     {
-        let vals = dp_anchors(matches, false, gap_cost, match_score, band);
+        let vals = dp_anchors(matches, false, gap_cost, match_score, band, max_gap, double_gap);
         scores_and_chains_f.extend(vals);
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let vals = dp_anchors(matches, false, gap_cost, match_score, band);
+        let vals = dp_anchors(matches, false, gap_cost, match_score, band, max_gap, double_gap);
         scores_and_chains_f.extend(vals);
     }
 
     let mut scores_and_chains_r = vec![];
     #[cfg(any(target_arch = "x86_64"))]
     {
-        let vals = dp_anchors(matches, true, gap_cost, match_score, band);
+        let vals = dp_anchors(matches, true, gap_cost, match_score, band, max_gap, double_gap);
         scores_and_chains_r.extend(vals);
     }
     #[cfg(not(target_arch = "x86_64"))]
     {
-        let vals = dp_anchors(matches, true, gap_cost, match_score, band);
+        let vals = dp_anchors(matches, true, gap_cost, match_score, band, max_gap, double_gap);
         scores_and_chains_r.extend(vals);
     }
 
@@ -757,7 +767,7 @@ pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64, large_indel
     let mut id_est = 1. - theta;
 
     if large_indel {
-        //Right now it's 0.5% penalty for large indels.
+        //Right now it's 0.5% penalty for large indels, but we don't use largeindels. 
         let penalty = IDENTITY_THRESHOLDS.last().unwrap() - IDENTITY_THRESHOLDS.first().unwrap();
         let penalty = penalty / 2.;
         id_est -= penalty;
@@ -896,6 +906,7 @@ pub fn map_reads_to_outer_reads(
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mut tr_options = CompareTwinReadOptions::default();
+        tr_options.double_gap = 750;
         //TODO TRYING OUT
         tr_options.force_one_to_one_alignments = true;
         tr_options.read1_snpmers = Some(read.snpmers_vec());
@@ -906,13 +917,13 @@ pub fn map_reads_to_outer_reads(
         //let anchor_finding_time = start.elapsed().as_micros();
         let mut unitig_hits : Vec<TwinOverlap> = vec![];
         *counter.lock().unwrap() += 1;
-        if *counter.lock().unwrap() % 10000 == 0 {
+        if *counter.lock().unwrap() % 100000 == 0 {
             log::debug!(
                 "Processed {} reads / {} ...",
                 *counter.lock().unwrap(),
                 twin_reads.len()
             );
-            log_memory_usage(false, "10k reads mapped");
+            log_memory_usage(false, "100k reads mapped");
         }
 
         //let start = std::time::Instant::now();
@@ -1209,6 +1220,7 @@ pub fn map_to_dereplicate(
     let vec_remove = contained_contigs.into_inner().unwrap().into_iter().map(|x| x as usize).collect::<Vec<_>>();
     log::debug!("SMALL CONTIG REMOVAL: Removing {} small contigs that are too similar to larger contigs (or singletons that have no coverage)", vec_remove.len());
     unitig_graph.remove_nodes(&vec_remove, false);
+    unitig_graph.re_unitig();
 }
 
 pub fn map_reads_to_unitigs(

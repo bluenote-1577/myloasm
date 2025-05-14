@@ -2,10 +2,12 @@ use bincode;
 use flexi_logger::style;
 use clap::Parser;
 use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
+use built;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
 use myloasm::constants::*;
+use myloasm::built_info;
 use myloasm::graph::GraphNode;
 use myloasm::kmer_comp;
 use myloasm::map_processing;
@@ -115,8 +117,10 @@ fn main() {
     log::info!("Dereplicating spurious contigs...");
     let mapping_dir = Path::new(&args.output_dir).join("3-mapping");
     std::fs::create_dir_all(&mapping_dir).expect("Could not create temp directory for mapping");
+
     mapping::map_to_dereplicate(&mut contig_graph, &kmer_info, &twin_reads, &mapping_dir, &args);
-    
+    contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
     log_memory_usage(true, "STAGE 4: Obtained unpolished contigs");
     contig_graph.print_statistics(&args);
 
@@ -246,15 +250,18 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     log::info!("VERSION: {}", env!("CARGO_PKG_VERSION"));
     log::info!("SYSTEM NAME: {}", System::name().unwrap_or(format!("Unknown")));
     log::info!("SYSTEM HOST NAME: {}", System::host_name().unwrap_or(format!("Unknown")));
+    //log::debug!("BINARY BUILD DATE: {}",  built_info::BUILT_TIME_UTC);
+        // The built info is available in the `built` module
 
     // Validate k-mer size
     if args.kmer_size % 2 == 0 {
         log::error!("K-mer size must be odd");
         std::process::exit(1);
     }
-    // Initialize thread pool
+    // Initialize thread pool, bigger stack size because sorting k-mers fails otherwise...
     rayon::ThreadPoolBuilder::new()
         .num_threads(args.threads)
+        .stack_size(16 * 1024 * 1024)
         .build_global()
         .unwrap();
 
@@ -530,7 +537,7 @@ fn light_progressive_cleaning(
     graph_dir: &PathBuf,
     output_temp: bool,
 ) {
-    log::info!("Initial light progressive cleaning...");
+    log::info!("Initial light cleaning...");
     let get_seq_config = types::GetSequenceInfoConfig::default();
 
     let mut iteration = 1;
@@ -738,6 +745,7 @@ fn get_contigs_from_progressive_coverage_circular(
             })
             .map(|x| x.0)
             .collect::<FxHashSet<_>>();
+
         graph_per_coverage.get_mut(&cov).unwrap().remove_edges(edges_to_remove);
 
         let contigs_to_remove: Vec<_> = graph_per_coverage[&cov]
@@ -822,7 +830,7 @@ fn get_contigs_from_progressive_coverage_circular(
 
     for contig in newly_added_contigs.iter() {
         let node = base_graph.nodes.get(contig).unwrap();
-        log::debug!(
+        log::trace!(
             "Should keep contig u{} with covs {:?} of size {}: hash id {}",
             node.node_id,
             node.min_read_depth_multi.unwrap(),
@@ -834,7 +842,7 @@ fn get_contigs_from_progressive_coverage_circular(
     //debug removed nodes
     for contig in contigs_to_remove_base.iter() {
         let node = base_graph.nodes.get(contig).unwrap();
-        log::debug!(
+        log::trace!(
             "Removing contig u{} with covs {:?} of size {}: hash id {}",
             node.node_id,
             node.min_read_depth_multi.unwrap(),
@@ -984,10 +992,10 @@ fn heavy_clean_with_walk(
     temp_dir: &PathBuf,
     graph_dir: &PathBuf,
 ) {
-    log::info!("Graph cleaning with walks...");
+    log::info!("Heavy graph cleaning...");
     let mut save_removed;
     let temperatures = [2., 1.5, 1.0];
-    let ol_thresholds = [0.125, 0.25, 0.375, 0.5];
+    let ol_thresholds = [0.125, 0.25, 0.5];
     let aggressive_multipliers = [10, 15, 30];
     let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
@@ -1096,64 +1104,6 @@ fn heavy_clean_with_walk(
                 }
                 size_graph = unitig_graph.nodes.len();
             }
-        }
-    }
-
-    // Final heavy walk clean -- no safety but require stringent conditions. TODO testing. 
-    let ol_thresholds_unsafe = [0.001, 0.01, 0.05];
-    let last_temp = temperatures[temperatures.len() - 1];
-    let last_multiplier = aggressive_multipliers[aggressive_multipliers.len() - 1];
-    let cut_unsafe = false;
-
-    if cut_unsafe{
-        for ol_thresh in ol_thresholds_unsafe{
-            unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
-
-            unitig_graph.to_gfa(
-                temp_dir.join(format!(
-                    "unsafe-heavy-t{}-o{}.gfa",
-                    last_temp, ol_thresh
-                )),
-                true,
-                false,
-                &twin_reads,
-                &args,
-            );
-
-            let strain_repeats = unitig_graph.get_strain_repeats(&overlap_adj_map, &args);
-            let cut_options_unsafe = HeavyCutOptions{
-                samples: samples,
-                temperature: last_temp,
-                steps: steps,
-                max_forward: args.tip_length_cutoff * last_multiplier,
-                max_reads_forward: args.tip_read_cutoff * last_multiplier,
-                safe_length_back: safe_length_back,
-                ol_thresh: ol_thresh,
-                tip_threshold: args.tip_length_cutoff * last_multiplier,
-                strain_repeat_map: Some(&strain_repeats),
-                special_small: false,
-                max_length_search: max_length_search,
-                require_safety: false,
-                only_tips: false,
-                cut_tips: true,
-                debug: true,
-            };
-
-            let length_before_cut = unitig_graph.nodes.len();
-            unitig_graph.random_walk_over_graph_and_cut(
-                args, 
-                temp_dir.join(format!("unsafe-walk-edge-{}.txt", global_counter)), 
-                cut_options_unsafe);
-            let length_after_cut = unitig_graph.nodes.len();
-            
-            log::debug!(
-                "WALK-CLEAN UNSAFE: Cut {} nodes at temperature {}, and threshold {}",
-                length_before_cut - length_after_cut,
-                last_temp,
-                ol_thresh
-            );
-
-            unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         }
     }
 
@@ -1360,10 +1310,11 @@ fn progressive_coverage_contigs_circular(
         .map(|x| x.min_read_depth_multi.unwrap().iter().sum::<f64>() / ID_THRESHOLD_ITERS as f64)
         .max_by(|x, y| x.partial_cmp(y).unwrap())
         .unwrap_or(1.);
+    let max_cov = max_cov.min(500.);
 
     let tip_length_cutoff_heavy = args.tip_length_cutoff * 30;
     let tip_read_cutoff_heavy = args.tip_read_cutoff * 30;
-    let bubble_threshold_heavy = 1_000_000;
+    let bubble_threshold_heavy = 2_500_000;
 
     let mut cov_to_graph_map = FxHashMap::default();
     let mut unitig_graph_with_threshold = unitig_graph.clone();
@@ -1399,7 +1350,7 @@ fn progressive_coverage_contigs_circular(
         unitig_graph_with_threshold
             .get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
 
-        if cov_thresh < 20. {
+        if cov_thresh < 10. {
             let prog_dir_cov = prog_dir.join(format!("cov_{}", cov_thresh));
             std::fs::create_dir_all(&prog_dir_cov).unwrap();
             unitig_graph_with_threshold.to_gfa(

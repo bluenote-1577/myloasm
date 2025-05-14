@@ -2305,64 +2305,77 @@ impl UnitigGraph {
 
         let mut removed_edges = FxHashSet::default();
         let mut edges_to_remove = FxHashMap::default();
-        for node in self.nodes.values() {
-            let edges_dir = [node.in_edges(), node.out_edges()];
-            for edges in edges_dir {
-                let mut edge_ordering_list = vec![];
-                let mut all_edges = vec![];
-                for edge_id in edges {
-                    if let Some(edge) = self.edges[*edge_id].as_ref() {
-                        //Only take perfect edges
-                        let edge_vals = (
-                            edge.overlap.overlap_len_bases,
-                            edge.edge_id_est(args.c),
-                            edge.overlap.shared_snpmers,
-                            edge.overlap.shared_minimizers,
-                            -(edge.overlap.diff_snpmers as i32),
-                        );
 
-                        if edge.edge_id_est(args.c) == 1.0{
-                            edge_ordering_list.push((edge_id, edge_vals));
-                        }
-                        else{
-                            all_edges.push((*edge_id, edge_vals));
-                        }
-                    }
-                }
+        for (edge_id, edge) in self.edges.iter().enumerate(){
+            if let Some(edge) = edge{
+                let edge_vals = (
+                    edge.overlap.overlap_len_bases,
+                    edge.edge_id_est(args.c),
+                    edge.overlap.shared_snpmers,
+                    edge.overlap.shared_minimizers,
+                    -(edge.overlap.diff_snpmers as i32),
+                );
 
-                if edge_ordering_list.is_empty(){
+                if edge_vals.1 >= 1.0{
+                    // Skip edges with no SNPmers
                     continue;
                 }
 
-                edge_ordering_list.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+                let dir_from = edge.node_edge_direction(&edge.from_unitig);
+                let dir_to = edge.node_edge_direction(&edge.to_unitig);
 
-                for (edge_id, edge_val) in all_edges {
-                    let mut remove_edge = false;
-                    let mut ratio = 0;
+                let node_from = &self.nodes[&edge.from_unitig];
+                let node_to = &self.nodes[&edge.to_unitig];
 
-                    for j in (0..edge_ordering_list.len()).rev(){
-                        let edge_val2 = edge_ordering_list[j].1;
-                        if tuple6_strict_greater_than(edge_val2, edge_val){
-                            remove_edge = true;
-                            let f_ratio = (edge_val.0  as f64 / edge_val2.0 as f64) * 10000.;
-                            let f_ratio = f_ratio.round();
-                            ratio = f_ratio as i64;
-                            break;
-                        }
+                let edges_from = node_from.edges_direction(&dir_from);
+                let edges_to = node_to.edges_direction(&dir_to);
+
+                let mut dominated_from = false;
+                let mut dominated_to = false;
+
+                let mut ratio : f64 = 0.0;
+
+                for edge_id in edges_from.iter(){
+                    let edge2 = self.edges[*edge_id].as_ref().unwrap();
+                    let edge_vals2 = (
+                        edge2.overlap.overlap_len_bases,
+                        edge2.edge_id_est(args.c),
+                        edge2.overlap.shared_snpmers,
+                        edge2.overlap.shared_minimizers,
+                        -(edge2.overlap.diff_snpmers as i32),
+                    );
+
+                    if tuple6_strict_greater_than(edge_vals2, edge_vals) && edge_vals2.1 >= 1.0{
+                        dominated_from = true;
+                        ratio = ratio.max(edge_vals.0 as f64 / edge_vals2.0 as f64);
                     }
+                }
 
-                    if remove_edge{
-                        let val = edges_to_remove.entry(edge_id).or_insert(i64::MAX);
-                        if *val > ratio{
-                            *val = ratio;
-                        }
+                for edge_id in edges_to.iter(){
+                    let edge2 = self.edges[*edge_id].as_ref().unwrap();
+                    let edge_vals2 = (
+                        edge2.overlap.overlap_len_bases,
+                        edge2.edge_id_est(args.c),
+                        edge2.overlap.shared_snpmers,
+                        edge2.overlap.shared_minimizers,
+                        -(edge2.overlap.diff_snpmers as i32),
+                    );
+
+                    if tuple6_strict_greater_than(edge_vals2, edge_vals) && edge_vals2.1 >= 1.0{
+                        dominated_to = true;
+                        ratio = ratio.max(edge_vals.0 as f64 / edge_vals2.0 as f64);
                     }
+                }
+
+                if dominated_from || dominated_to{
+                    let val = edges_to_remove.entry(edge_id).or_insert(f64::MAX);
+                    *val = ratio;
                 }
             }
         }
 
         let mut sorted_list_of_edges = edges_to_remove.iter().collect::<Vec<_>>();
-        sorted_list_of_edges.sort_by(|a, b| a.1.cmp(&b.1));
+        sorted_list_of_edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
         for (edge_id, _) in sorted_list_of_edges{
             self.safely_cut_edge(
@@ -2375,7 +2388,7 @@ impl UnitigGraph {
                 false,
                 FORWARD_READ_SAFE_SEARCH_CUTOFF,
                 args.tip_length_cutoff,
-                50000,
+                50_000,
                 &mut std::io::sink(),
                 //&mut std::io::stdout(),
                 args.c,
@@ -2776,7 +2789,7 @@ impl UnitigGraph {
                     options.max_length_search,
                     options.temperature,
                     15, // unused
-                    7,
+                    10,
                     0.000000001, //unused
                     args.c,
                     options.steps,
@@ -2808,7 +2821,13 @@ impl UnitigGraph {
         }
 
         let mut sorted_edges = min_by_nodeid_edgemap.iter().collect::<Vec<_>>();
-        sorted_edges.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        // Breaks ties when count is = 0 to cut smallest ol first. 
+        sorted_edges.sort_by(|a, b| { 
+            let ol_lena = self.edges[*a.0].as_ref().unwrap().overlap.overlap_len_bases;
+            let ol_lenb = self.edges[*b.0].as_ref().unwrap().overlap.overlap_len_bases;
+            (a.1, ol_lena).partial_cmp(&(b.1, ol_lenb)).unwrap()
+        });
 
         if options.only_tips{
             //    edge    -> opp edge
@@ -3010,7 +3029,10 @@ impl UnitigGraph {
         let _cov_ratio_weight =
             1.0 - PSEUDOCOUNT / ((cov1.0[0].min(cov2.0[0])).max(1.0) + PSEUDOCOUNT);
 
-        let ol_term = ol_ratio - 1.0;
+        //let ol_term = ol_ratio - 1.0;
+        //TODO BIG CHANGE; I think this works better since it doesn't cap out at 1.0, but 1/2 ratio -> -0.5 still. 
+
+        let ol_term = 0.5 * ol_ratio.log2();
         let fsv_term = fsv_diff;
         if let Some(cov_term) = cov_different {
             let edge_prob = (-cov_term + fsv_term + ol_term) / temperature;
@@ -4929,7 +4951,7 @@ mod tests {
         // o --> o
         let e1 = builder.add_edge(n1, n2, 5000, true, true); // Edge with medium overlap
         let e2 = builder.add_edge(n1, n3, 3500, true, true); // Edge with smaller overlap
-        let _e3 = builder.add_edge(n4, n3, 4000, true, true); // Edge with smaller overlap
+        let e3 = builder.add_edge(n4, n3, 4000, true, true); // Edge with smaller overlap
 
         // Modify edge properties
         builder.edges[e1].as_mut().unwrap().overlap.shared_snpmers = 30;
@@ -4939,6 +4961,10 @@ mod tests {
         builder.edges[e2].as_mut().unwrap().overlap.shared_snpmers = 10;
         builder.edges[e2].as_mut().unwrap().overlap.shared_minimizers = 100;
         builder.edges[e2].as_mut().unwrap().overlap.diff_snpmers = 10;
+
+        builder.edges[e3].as_mut().unwrap().overlap.shared_snpmers = 30;
+        builder.edges[e3].as_mut().unwrap().overlap.shared_minimizers = 150;
+        builder.edges[e3].as_mut().unwrap().overlap.diff_snpmers = 0;
 
         let (mut graph, _reads) = builder.build();
         
@@ -4986,10 +5012,51 @@ mod tests {
         builder.edges[e2].as_mut().unwrap().overlap.diff_snpmers = 10;
 
         let (mut graph, _reads) = builder.build();
-        
+
         // Create mock CLI args
         let args = get_reasonable_args();
         
+        // Run the function
+        graph.remove_low_id_haplotype_edges(&args);
+        graph.re_unitig();
+        
+        // Neither edge should be removed because the overlap_len_bases is equal
+        // The tuple6_strict_greater_than requires ALL properties to be strictly greater
+        let remaining_edges = graph.edges.iter().filter(|e| e.is_some()).count();
+        assert_eq!(remaining_edges, 3);
+    }
+
+    #[test]
+    fn test_remove_low_id_both_bad(){
+
+        // Test with edges that have some equal properties
+        let mut builder = MockUnitigBuilder::new();
+
+        let n1 = builder.add_node(100, 10.0);
+        let n2 = builder.add_node(100, 10.0);
+        let n3 = builder.add_node(100, 10.0);
+        let n4 = builder.add_node(100, 10.0);
+
+        // Add edges with some equal properties
+        let e1 = builder.add_edge(n1, n2, 5000, true, true);
+        let e2 = builder.add_edge(n1, n3, 3000, true, true); // Same overlap length
+        let e3 = builder.add_edge(n4, n3, 5000, true, true); // Same overlap length
+
+        builder.edges[e1].as_mut().unwrap().overlap.shared_snpmers = 20;
+        builder.edges[e1].as_mut().unwrap().overlap.shared_minimizers = 150;
+        builder.edges[e1].as_mut().unwrap().overlap.diff_snpmers = 5; //SAME
+
+        builder.edges[e2].as_mut().unwrap().overlap.shared_snpmers = 5;
+        builder.edges[e2].as_mut().unwrap().overlap.shared_minimizers = 20;
+        builder.edges[e2].as_mut().unwrap().overlap.diff_snpmers = 10;
+
+        builder.edges[e3].as_mut().unwrap().overlap.shared_snpmers = 25;
+        builder.edges[e3].as_mut().unwrap().overlap.shared_minimizers = 120;
+        builder.edges[e3].as_mut().unwrap().overlap.diff_snpmers = 5;
+
+        let (mut graph, _reads) = builder.build();
+
+        let args = get_reasonable_args();
         // Run the function
         graph.remove_low_id_haplotype_edges(&args);
         graph.re_unitig();

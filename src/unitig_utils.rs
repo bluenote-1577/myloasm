@@ -368,6 +368,8 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
     let mut weights = vec![];
 
     let min_cov_threshold = (MIN_COV_READ as f64 + PSEUDOCOUNT).ln();
+    let specificity_threshold = (SPECIFICITY_THRESHOLD as f64 + PSEUDOCOUNT).ln();
+    assert!(specificity_threshold > min_cov_threshold);
 
     for i in 0..ID_THRESHOLD_ITERS{
 
@@ -375,6 +377,13 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
         if median_larger_3.unwrap()[i] < min_cov_threshold && median_smaller_3.unwrap()[i] < min_cov_threshold && i != 0{
             continue;
         }
+
+        // Only use the highest  resolution if both are > 30 ; unlikely to be noisy.
+        // if median_larger_3.unwrap()[ID_THRESHOLD_ITERS - 1] > specificity_threshold || median_smaller_3.unwrap()[ID_THRESHOLD_ITERS - 1] > specificity_threshold{
+        //     if i != ID_THRESHOLD_ITERS - 1 {
+        //         continue;
+        //     }
+        // }
 
         let d = (median_larger_3.unwrap()[i] - median_smaller_3.unwrap()[i]).abs();
 
@@ -387,16 +396,16 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
         let upper_lower_interval = (upper_dist - lower_dist).abs();
         distances.push(d + upper_lower_interval);
 
-        let mut ratio_distribution = vec![];
-        let mut count = 0;
-        for (log_ratio, length) in larger.iter(){
-            let index = count % smaller.len();
-            let w = log_ratio[i] - smaller[index].0[i];
-            ratio_distribution.push((w, *length));
-            count += 1;
-        }
+        // let mut ratio_distribution = vec![];
+        // let mut count = 0;
+        // for (log_ratio, length) in larger.iter(){
+        //     let index = count % smaller.len();
+        //     let w = log_ratio[i] - smaller[index].0[i];
+        //     ratio_distribution.push((w, *length));
+        //     count += 1;
+        // }
 
-        let _iqr = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
+        //let _iqr = median_weight(&ratio_distribution, 0.75).unwrap() - median_weight(&ratio_distribution, 0.25).unwrap();
         //let harmonic_mean_sample_size = 2. / (1. / larger.len() as f64 + 1. / smaller.len() as f64);
         //let weight1 = 1. + iqr / harmonic_mean_sample_size.sqrt() / 4.;
         //let max_sample_size = larger.len().max(smaller.len());
@@ -404,45 +413,45 @@ pub fn log_distribution_distance_new(v1: &[([f64;ID_THRESHOLD_ITERS], usize)], v
         weights.push(1.);
     }
 
-    // ----- SHAPE distribution distance ------ 
-    let mut shape_distribution_distances = vec![];
-    let num_shapes = ID_THRESHOLD_ITERS * (ID_THRESHOLD_ITERS - 1) / 2;
-    for i in 0..ID_THRESHOLD_ITERS{
-        for j in i + 1..ID_THRESHOLD_ITERS{
-            let mut shape_larger = vec![];
-            let mut shape_smaller = vec![];
-            for (log_ratio, _) in larger.iter(){
-                shape_larger.push(log_ratio[i] - log_ratio[j]);
-            }
-            for (log_ratio, _) in smaller.iter(){
-                shape_smaller.push(log_ratio[i] - log_ratio[j]);
-            }
+    // // ----- SHAPE distribution distance ------  Not working so well; editing out. 
+    // let mut shape_distribution_distances = vec![];
+    // let num_shapes = ID_THRESHOLD_ITERS * (ID_THRESHOLD_ITERS - 1) / 2;
+    // for i in 0..ID_THRESHOLD_ITERS{
+    //     for j in i + 1..ID_THRESHOLD_ITERS{
+    //         let mut shape_larger = vec![];
+    //         let mut shape_smaller = vec![];
+    //         for (log_ratio, _) in larger.iter(){
+    //             shape_larger.push(log_ratio[i] - log_ratio[j]);
+    //         }
+    //         for (log_ratio, _) in smaller.iter(){
+    //             shape_smaller.push(log_ratio[i] - log_ratio[j]);
+    //         }
 
-            let mut shape_distances_dist = vec![];
+    //         let mut shape_distances_dist = vec![];
 
-            for i in 0..shape_larger.len(){
-                shape_distances_dist.push((shape_larger[i] - shape_smaller[i % shape_smaller.len()]).abs());
-            }
+    //         for i in 0..shape_larger.len(){
+    //             shape_distances_dist.push((shape_larger[i] - shape_smaller[i % shape_smaller.len()]).abs());
+    //         }
 
-            shape_distances_dist.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            let lower_quartile = shape_distances_dist[distances.len() / 4];
-            shape_distribution_distances.push(lower_quartile);
-        }
-    }
+    //         shape_distances_dist.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    //         let lower_quartile = shape_distances_dist[distances.len() / 4];
+    //         shape_distribution_distances.push(lower_quartile);
+    //     }
+    // }
 
-    let shape_distribution_distance;
-    // distribution "shapes" have huge variance, limit this. 
-    if larger.len() < 10 || smaller.len() < 5{
-        shape_distribution_distance = 0.;
-    }
-    else{
-        shape_distribution_distance = shape_distribution_distances.iter().sum::<f64>() / num_shapes as f64;
-    }
+    // let shape_distribution_distance;
+    // // distribution "shapes" have huge variance, limit this. 
+    // if larger.len() < 2 {
+    //     shape_distribution_distance = 0.;
+    // }
+    // else{
+    //     shape_distribution_distance = shape_distribution_distances.iter().sum::<f64>() / num_shapes as f64;
+    // }
 
     //let weighted_distance = distances.iter().zip(weights.iter()).map(|(x, y)| x * y).sum::<f64>();
     let weighted_distance = ID_THRESHOLD_ITERS as f64 * distances.iter().zip(weights.iter()).map(|(x, y)| x * y).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
-    return Some(weighted_distance + shape_distribution_distance);
-    //return Some(weighted_distance);
+    //return Some(weighted_distance + shape_distribution_distance);
+    return Some(weighted_distance);
 }
 
 #[inline]
@@ -588,10 +597,15 @@ mod tests {
     #[test]
     fn test_log_dist_shape() {
         let v1 = vec![([90., 90., 1.], 1), ([90., 20., 2.,], 1), ([110., 100., 5.], 1), ([20., 20., 1.,], 1), ([100., 50., 2.], 1), ([90., 20., 2.,], 1), ([110., 100., 10.], 1), ([110., 20., 1.,], 1), ([20., 10., 2.], 1), ([90., 20., 5.,], 1)];
+        let mut v1_double = v1.clone();
+        v1_double.extend(v1.clone());
         let v2 = vec![([90., 90., 90.,], 1), ([90., 80., 80.,], 1), ([90., 70., 70.,], 1), ([90., 60., 60.,], 1), ([90., 50., 50.,], 1)];
-        let dist1 = log_distribution_distance_new(&v1, &v2).unwrap();
+        let dist1 = log_distribution_distance_new(&v1_double, &v2).unwrap();
         dbg!(dist1);
-        assert!(dist1 > 1.);
+        assert!(dist1 > 0.5);
+
+        let dist1 = log_distribution_distance_new(&v1, &v2).unwrap();
+        assert!(dist1 < 0.1);
     }
 
 }

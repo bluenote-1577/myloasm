@@ -2,3 +2,4 @@
 gfa_to_fa.py
 combine_and_map.sh
 /.vscode
+old_build.rs

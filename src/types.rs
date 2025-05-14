@@ -40,6 +40,7 @@ use block_aligner::cigar::OpLen;
 use std::cmp::Ordering;
 
 use crate::constants::ID_THRESHOLD_ITERS;
+use crate::constants::MAX_GAP_CHAINING;
 
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
@@ -880,6 +881,8 @@ pub struct CompareTwinReadOptions{
     //Preload
     pub read1_mininimizers: Option<Vec<(u32,Kmer48)>>,
     pub read1_snpmers: Option<Vec<(u32,Kmer48)>>,
+    pub max_gap: usize,
+    pub double_gap: usize,
 }
 
 impl Default for CompareTwinReadOptions{
@@ -893,7 +896,8 @@ impl Default for CompareTwinReadOptions{
             secondary_threshold: Some(0.50),
             read1_mininimizers: None,
             read1_snpmers: None,
-
+            max_gap: MAX_GAP_CHAINING,
+            double_gap: 10_000,
         }
     }
 }

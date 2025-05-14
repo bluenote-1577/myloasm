@@ -1,6 +1,6 @@
 use fxhash::hash64;
 use crate::cli::Cli;
-use crate::constants::{MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
+use crate::constants::{MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MAX_GAP_CHAINING, MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
 use fxhash::FxHashMap;
 use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
@@ -639,6 +639,8 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
             secondary_threshold: None,
             read1_mininimizers: None, // indexed anchors
             read1_snpmers: Some(read.snpmers_vec()),
+            max_gap: MAX_GAP_CHAINING * 3/2,
+            double_gap: 2500,
         };
 
         for (outer_ref_id, anchors) in mini_anchors.into_iter(){
