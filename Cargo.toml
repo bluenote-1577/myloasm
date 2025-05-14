@@ -3,6 +3,7 @@ name = "myloasm"
 version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+#build = "build.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -34,6 +35,11 @@ rust-spoa = { path = "src/rust-spoa" }
 tikv-jemallocator = "0.4.0"
 skani = { path = "src/skani" }
 sysinfo = "0.34.2"
+built = "0.7"
+
+
+[build-dependencies]
+built = { version = "0.7", features = ["chrono"] }
 
 #crossbeam-utils = "*"
 

@@ -26,3 +26,4 @@ pub fn log_memory_usage(info: bool, message: &str) {
 pub fn div_rounded(a: usize, b: usize) -> usize {
     (a + b / 2) / b
 }
+

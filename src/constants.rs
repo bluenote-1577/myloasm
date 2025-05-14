@@ -25,6 +25,7 @@ pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.99, 0.9975, 1.0];
 pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.333, 0.333, 0.333];
 pub const MIN_COV_READ: usize = 5;
 pub const MIN_COV_READ_SMALL: usize = 3;
+pub const SPECIFICITY_THRESHOLD: usize = 20;
 pub const SUB_MATRIX: block_aligner::scores::NucMatrix = block_aligner::scores::NucMatrix::new_simple(1, -2);
 pub const GAPS: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -2 };
 pub const MIN_BLOCK_SIZE: usize = 32;

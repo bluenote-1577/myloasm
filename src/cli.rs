@@ -49,10 +49,9 @@ pub struct Cli {
     #[arg(long, default_value_t=500, help_heading = "Basic Parameters")]
     pub min_ol: usize,
 
-    /// HiFi mode (--snpmer-threshold-strict 100 --snpmer-error-rate 0.001)
-    #[arg(long, help_heading = "Preset Parameters", hide=true)]
+    /// HiFi mode -- less aggressive chimeric read removal
+    #[arg(long, help_heading = "Preset Parameters")]
     pub hifi: bool,
-
     
     /// Bloom filter size in GB
     #[arg(short, long, default_value_t=10., help_heading = "Misc")]
