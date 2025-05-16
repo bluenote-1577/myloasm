@@ -2,7 +2,6 @@ use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MAX_ALLOWABLE_SNPMER_ERROR_MISC;
-use crate::constants::MAX_GAP_CHAINING;
 use crate::constants::MAX_MULTIPLICITY_KMER;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
 use crate::constants::MIN_READ_LENGTH;
@@ -375,7 +374,7 @@ pub fn dp_anchors(
     let mut chains = Vec::new();
     let mut used_anchors = FxHashSet::default();
     let mut best_indices_ordered = (0..matches.len()).map(|i| (dp[i], i)).collect::<Vec<_>>();
-    best_indices_ordered.sort_unstable_by_key(|&(score, _)| -score);
+    best_indices_ordered.sort_by_key(|&(score, _)| -score);
     assert!(dp[max_index] == best_indices_ordered[0].0);
 
     for (score, best_index) in best_indices_ordered {
@@ -1113,7 +1112,7 @@ pub fn map_to_dereplicate(
         let mini = q_unitig.minimizers_vec();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
         let mut mini_anchor_sorted_indices = mini_anchors.keys().cloned().collect::<Vec<_>>();
-        mini_anchor_sorted_indices.sort_unstable_by_key(|x| mini_anchors[x].anchors.len());
+        mini_anchor_sorted_indices.sort_by_key(|x| mini_anchors[x].anchors.len());
         mini_anchor_sorted_indices.reverse();
         mini_anchor_sorted_indices.retain(|x| {
             let r_unitig = &tr_unitigs[&(*x as usize)];

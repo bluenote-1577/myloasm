@@ -40,7 +40,7 @@ pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./20.;
 pub const SUPP_ALIGNMENT_SCORE_THRESHOLD: i32 = 2000;
 
 pub const POLISHED_CONTIGS_NAME: &str = "initial_polished.fa";
-pub const CIRC_STRICT_STRING: &str = "circular_yes";
+pub const CIRC_STRICT_STRING: &str = "circular-yes";
 pub const USE_SOLID_KMERS: bool = false;
 
 pub const MAX_KMER_COUNT_IN_READ: usize = 500;
@@ -52,7 +52,8 @@ pub const MINIMUM_MINIMIZER_FRACTION: f64 = 0.10;
 pub const MAGIC_EXIST_STRING: &str = "exist";
 
 pub const SAMPLES: usize = 20;
-pub const BEAM_STEPS: usize = 10;
+//pub const BEAM_STEPS: usize = 10;
+pub const BEAM_STEPS: usize = 5;
 pub const SAFE_LENGTH_BACK : usize = 300_000;
 pub const MAX_LENGTH_SEARCH: usize = 1_000_000;
 
@@ -60,3 +61,12 @@ pub const MAX_ALLOWABLE_SNPMER_ERROR_MISC: usize = 2;
 pub const MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER: usize = 200;
 
 pub const DEDUP_SNPMERS: bool = false;
+
+
+pub const CLI_HEADINGS: [&str; 5] = [
+    "Technology Presets",
+    "Basic Algorithmic Parameters",
+    "Misc",
+    "Overlap Parameters (advanced)",
+    "Graph Parameters (advanced)",
+];

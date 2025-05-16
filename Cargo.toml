@@ -36,6 +36,7 @@ tikv-jemallocator = "0.4.0"
 skani = { path = "src/skani" }
 sysinfo = "0.34.2"
 built = "0.7"
+clap-num = "1.2.0"
 
 
 [build-dependencies]

@@ -142,20 +142,14 @@ pub fn get_full_alignment(
     let chain = overlap.minimizer_chain.as_ref().unwrap();
     let q_seq;
     let _q_seq_rev;
-    let q_start;
-    let r_start;
     let qlen = q_seq_redir.len() as u32;
     let end_ind = chain.len() - 1;
     if overlap.chain_reverse {
         _q_seq_rev = Some(q_seq_redir.to_revcomp());
         q_seq = _q_seq_rev.as_ref().unwrap();
-        q_start = (qlen - chain[end_ind].pos1 - k) as usize;
-        r_start = chain[end_ind].pos2 as usize;
     } else {
         q_seq = q_seq_redir;
         _q_seq_rev = None;
-        q_start = chain[0].pos1 as usize;
-        r_start = chain[0].pos2 as usize;
     }
 
     //Main chain-extend between ends

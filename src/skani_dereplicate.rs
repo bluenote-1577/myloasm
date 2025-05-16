@@ -187,3 +187,4 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
     let _ = std::fs::remove_file(initial_fasta_path);
 
 }
+

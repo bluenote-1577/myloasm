@@ -745,7 +745,6 @@ pub struct Breakpoints {
 pub struct GetSequenceInfoConfig{
     pub blunted: bool,
     pub dna_seq_info: bool,
-    pub best_overlap_chunk: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -780,6 +779,11 @@ pub struct BeamSearchSoln{
     pub path_nodes: Vec<NodeIndex>,
     pub depth: usize,
     pub current_length: usize
+}
+
+pub struct BeamStartState{
+    pub initial_unitig_length: usize,
+    pub initial_unitig_size: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

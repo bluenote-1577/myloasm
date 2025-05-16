@@ -1,14 +1,9 @@
-use crate::graph::GraphNode;
 use crate::unitig;
 use crate::types::*;
 use crate::cli;
 use crate::twin_graph;
 use crate::types;
-use bio_seq::seq::SeqSlice;
-use bio_seq::codec::dna::Dna;
-use block_aligner::{scan_block::*, scores::*};
 use std::path::PathBuf;
-use std::time::Instant;
 use fxhash::FxHashMap;
 use crate::twin_graph::OverlapConfig;
 
@@ -17,7 +12,7 @@ pub fn two_cycle_retrieval(
     unitig_graph: &mut unitig::UnitigGraph,
     twin_reads: &Vec<types::TwinRead>,
     args: &cli::Cli,
-    temp_dir: &PathBuf,
+    _temp_dir: &PathBuf,
 ) {
     log::info!("Small circular contig extraction...");
     let node_to_component_char = unitig_graph.get_all_connected_components(true);
@@ -200,11 +195,4 @@ pub fn two_cycle_retrieval(
     }
 
     unitig_graph.get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
-    unitig_graph.to_gfa(
-        temp_dir.join("after_small_circular.gfa"),
-        true,
-        false,
-        &twin_reads,
-        &args,
-    );
 }

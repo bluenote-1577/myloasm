@@ -633,7 +633,6 @@ impl UnitigGraph {
         let unitig_conf = GetSequenceInfoConfig {
             blunted: false,
             dna_seq_info: false,
-            best_overlap_chunk: false,
         };
         unitig_graph.get_sequence_info(&reads, &unitig_conf);
 
@@ -1459,7 +1458,6 @@ impl UnitigGraph {
     pub fn get_sequence_info(&mut self, reads: &[TwinRead], config: &GetSequenceInfoConfig) {
         let blunted = config.blunted;
         let dna_seq_info = config.dna_seq_info;
-        let best_overlap_chunk = config.best_overlap_chunk;
         let cut_map;
 
         if blunted {
@@ -1477,11 +1475,7 @@ impl UnitigGraph {
             let left_cut = cut_map[key].0;
             let right_cut = cut_map[key].1;
             let base_info;
-            if best_overlap_chunk {
-                base_info = get_base_info_mapchunks(left_cut, right_cut, node, reads, dna_seq_info);
-            } else {
-                base_info = get_base_info_overlaps(left_cut, right_cut, node, reads, dna_seq_info)
-            }
+            base_info = get_base_info_overlaps(left_cut, right_cut, node, reads, dna_seq_info);
             baseinfos.push((*key, base_info));
         }
 
@@ -2593,7 +2587,7 @@ impl UnitigGraph {
         }
     }
 
-    fn traverse_walk_probabilistic(
+    fn _traverse_walk_probabilistic(
         &self,
         direction: Direction,
         unitig_id: Option<NodeIndex>,
@@ -2968,6 +2962,7 @@ impl UnitigGraph {
         temperature: f64,
         c: usize,
         coverages: &[(MultiCov, usize)],
+        _beam_start_state : &BeamStartState, 
     ) -> f64 {
         let edge = self.edges[edge_id].as_ref().unwrap();
         let other_node = edge.other_node(start_unitig_id);
@@ -2999,43 +2994,18 @@ impl UnitigGraph {
         // 99.5 - 100 -> e^(-1)
         let fsv_diff = 200.0 * (edge.edge_id_est(c) - max_fsv);
 
-        let cov1;
-        let cov2;
-
-        if edge.f1 {
-            cov1 = self.nodes[&edge.from_unitig]
-                .read_min_depths_multi
-                .last()
-                .unwrap();
-        } else {
-            cov1 = self.nodes[&edge.from_unitig]
-                .read_min_depths_multi
-                .first()
-                .unwrap();
-        }
-
-        if edge.f2 {
-            cov2 = self.nodes[&edge.to_unitig]
-                .read_min_depths_multi
-                .first()
-                .unwrap();
-        } else {
-            cov2 = self.nodes[&edge.to_unitig]
-                .read_min_depths_multi
-                .last()
-                .unwrap();
-        }
-
-        let _cov_ratio_weight =
-            1.0 - PSEUDOCOUNT / ((cov1.0[0].min(cov2.0[0])).max(1.0) + PSEUDOCOUNT);
-
         //let ol_term = ol_ratio - 1.0;
         //TODO BIG CHANGE; I think this works better since it doesn't cap out at 1.0, but 1/2 ratio -> -0.5 still. 
 
         let ol_term = 0.5 * ol_ratio.log2();
         let fsv_term = fsv_diff;
-        if let Some(cov_term) = cov_different {
+        if let Some(cov_term) = cov_different{
+        //if let Some(mut cov_term) = cov_different {
+            // if beam_start_state.initial_unitig_size > 30 {
+            //     cov_term += log_shape_distance(coverages, other_covs);
+            // }
             let edge_prob = (-cov_term + fsv_term + ol_term) / temperature;
+            // let edge_prob = -cov_term / temperature + fsv_term + ol_term;
             let edge_prob = edge_prob.max(-100.0);
             return edge_prob;
         } else {
@@ -3066,6 +3036,12 @@ impl UnitigGraph {
             }
 
             let mut starting_soln = BeamSearchSoln::default();
+
+            let starting_state = BeamStartState{
+                initial_unitig_length: self.nodes[&starting_node_id].unique_length.unwrap(),
+                initial_unitig_size: self.nodes[&starting_node_id].read_indices_ori.len(),
+            };
+
             starting_soln.coverages = self.nodes[&starting_node_id].read_min_depths_multi.clone();
             starting_soln.path_nodes = vec![starting_node_id];
             seen_nodes.insert(starting_node_id);
@@ -3093,6 +3069,7 @@ impl UnitigGraph {
                             temperature,
                             c,
                             &soln.coverages,
+                            &starting_state,
                         );
                         let new_score = prob + soln.score;
                         candidate_soln.push((edge_id, new_score, soln));
@@ -3196,91 +3173,6 @@ impl UnitigGraph {
         return edge_count;
     }
 
-    fn random_walk_sample(
-        &self,
-        starting_node_id: NodeIndex,
-        samples: usize,
-        temperature: f64,
-        steps: usize,
-    ) -> FxHashMap<(EdgeIndex, NodeIndex), f64> {
-        let max_steps = 20;
-        let mut edge_count = FxHashMap::default();
-        let mut rng_seed = [0; 32];
-        rng_seed[0] = (starting_node_id % 256) as u8;
-        let mut rng = rand::rngs::StdRng::from_seed(rng_seed);
-        let starting_weight = (self.nodes[&starting_node_id].read_indices_ori.len() as f64).sqrt();
-        for _ in 0..samples {
-            let mut used_edges = vec![];
-            let mut coverages = self.nodes[&starting_node_id].read_min_depths_multi.clone();
-            let mut left_unitig = Some(starting_node_id);
-            let mut right_unitig = Some(starting_node_id);
-            let mut left_direction = Direction::Incoming;
-            let mut right_direction = Direction::Outgoing;
-            let mut seen_edges = FxHashSet::default();
-            for _ in 0..steps {
-                // Get edge based on random traversal criteria if it exists
-                let left_traverse = self.traverse_walk_probabilistic(
-                    left_direction,
-                    left_unitig,
-                    temperature,
-                    max_steps,
-                    &mut coverages,
-                    &mut rng,
-                );
-                let right_traverse = self.traverse_walk_probabilistic(
-                    right_direction,
-                    right_unitig,
-                    temperature,
-                    max_steps,
-                    &mut coverages,
-                    &mut rng,
-                );
-
-                if left_traverse.is_none() && right_traverse.is_none() {
-                    break;
-                }
-
-                if let Some(left_edge_id) = left_traverse {
-                    if seen_edges.contains(&left_edge_id) {
-                        break;
-                    } else {
-                        seen_edges.insert(left_edge_id);
-                    }
-                    used_edges.push((left_edge_id, left_unitig.unwrap()));
-                    let left_edge = self.edges[left_edge_id].as_ref().unwrap();
-                    left_unitig = Some(left_edge.other_node(left_unitig.unwrap()));
-                    left_direction = left_edge
-                        .node_edge_direction(&left_unitig.unwrap())
-                        .reverse();
-                } else {
-                    left_unitig = None;
-                }
-                if let Some(right_edge_id) = right_traverse {
-                    if seen_edges.contains(&right_edge_id) {
-                        break;
-                    } else {
-                        seen_edges.insert(right_edge_id);
-                    }
-                    used_edges.push((right_edge_id, right_unitig.unwrap()));
-                    let right_edge = self.edges[right_edge_id].as_ref().unwrap();
-                    right_unitig = Some(right_edge.other_node(right_unitig.unwrap()));
-                    right_direction = right_edge
-                        .node_edge_direction(&right_unitig.unwrap())
-                        .reverse();
-                } else {
-                    right_unitig = None;
-                }
-            }
-
-            for edge_and_node in used_edges {
-                let count = edge_count.entry(edge_and_node).or_insert(0.);
-                //*count += median_weight as f64 * starting_weight;
-                *count += starting_weight;
-            }
-        }
-
-        return edge_count;
-    }
 
     pub fn unitig_pass_filter(unitig: &UnitigNode, args: &Cli) -> bool {
         if unitig.read_indices_ori.len() < args.min_reads_contig
@@ -4490,33 +4382,6 @@ mod tests {
         assert!(removed_edges.len() == 3);
     }
 
-    #[test]
-    fn random_walk_test_simple() {
-        let mut builder = MockUnitigBuilder::new();
-
-        // 1 ---> 2
-        //  (1->4)
-        // 3 ---> 4 (tip)
-
-        let n1 = builder.add_node(10, 10.0);
-        let n2 = builder.add_node(10, 10.0);
-        let n3 = builder.add_node(10, 50.0);
-        let n4 = builder.add_node(10, 50.0);
-
-        builder.add_edge(n1, n2, 10000, true, true);
-        builder.add_edge(n3, n4, 10000, true, true);
-        builder.add_edge(n1, n4, 10000, true, true);
-
-        let (graph, _reads) = builder.build();
-
-        let temp = 1.;
-        let samples = 100;
-        let steps = 100;
-
-        //This is fickle-- if RNG changes then we'll have to change this...
-        let edge_counts = graph.random_walk_sample(n1, samples, temp, steps);
-        assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
-    }
 
     #[test]
     fn beam_test_simple() {
@@ -4565,12 +4430,6 @@ mod tests {
         let (graph, _reads) = builder.build();
 
         let temp = 1.;
-        let samples = 100;
-        let steps = 100;
-
-        let edge_counts = graph.random_walk_sample(n1, samples, temp, steps);
-        dbg!(&edge_counts);
-        assert!(edge_counts[&(0, n1)] > edge_counts[&(2, n1)]);
 
         let edge_counts = graph.beam_search_path_prob(n1, 1_000_000, temp, 5, 10, 0.00001, 9, 50);
         dbg!(&edge_counts);
@@ -4615,23 +4474,16 @@ mod tests {
         let (graph, _reads) = builder.build();
 
         let temp = 0.2;
-        let samples = 100;
-        let steps = 5;
 
-        for j in 0..2 {
-            let mut total_edgecounts = FxHashMap::default();
-            for nodeid in 0..10 {
-                let edge_counts;
-                if j == 0 {
-                    edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
-                } else {
-                    edge_counts =
-                        graph.beam_search_path_prob(nodeid, 1_000_000, temp, 5, 10, 0.00001, 9, 50);
-                }
-                for (edge_id, count) in edge_counts {
-                    let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
-                    *total_count += count;
-                }
+        let mut total_edgecounts = FxHashMap::default();
+        for nodeid in 0..10 {
+            let edge_counts;
+            edge_counts =
+                graph.beam_search_path_prob(nodeid, 1_000_000, temp, 5, 10, 0.00001, 9, 50);
+            
+            for (edge_id, count) in edge_counts {
+                let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
+                *total_count += count;
             }
             //print by sorted key
             let mut keys: Vec<_> = total_edgecounts.keys().collect();
@@ -4639,24 +4491,24 @@ mod tests {
             for key in keys {
                 println!("Edge {:?} : {}", key, total_edgecounts[key]);
             }
+        }
 
-            let bad_edge1 = (e11, n6);
-            let bad_edge2 = (e9, n1);
-            let bad_edge3 = (e10, n4);
-            let bad_edge4 = (e8, n10);
-            let good_edge = (e3, n3);
+        let bad_edge1 = (e11, n6);
+        let bad_edge2 = (e9, n1);
+        let bad_edge3 = (e10, n4);
+        let bad_edge4 = (e8, n10);
+        let good_edge = (e3, n3);
 
-            for bad_edge in [bad_edge1, bad_edge2, bad_edge3, bad_edge4].iter() {
-                assert!(
-                    *total_edgecounts.get(bad_edge).unwrap_or(&0.)
-                        < *total_edgecounts.get(&good_edge).unwrap_or(&0.) * 0.1
-                );
-            }
+        for bad_edge in [bad_edge1, bad_edge2, bad_edge3, bad_edge4].iter() {
+            assert!(
+                *total_edgecounts.get(bad_edge).unwrap_or(&0.)
+                    < *total_edgecounts.get(&good_edge).unwrap_or(&0.) * 0.1
+            );
+        }
 
-            let good_edges = vec![(e1, n1), (e2, n2), (e4, n5), (e5, n6), (e6, n7)];
-            for good_edge in good_edges {
-                assert!(*total_edgecounts.get(&good_edge).unwrap_or(&0.) > 0.01);
-            }
+        let good_edges = vec![(e1, n1), (e2, n2), (e4, n5), (e5, n6), (e6, n7)];
+        for good_edge in good_edges {
+            assert!(*total_edgecounts.get(&good_edge).unwrap_or(&0.) > 0.01);
         }
     }
 
@@ -4682,25 +4534,18 @@ mod tests {
 
         let (graph, _reads) = builder.build();
 
-        let temp = 0.30;
-        let samples = 10;
-        let steps = 20;
+        let temp = 0.60;
+        let steps = 21;
 
-        for j in 1..2 {
-            let mut total_edgecounts = FxHashMap::default();
-            for nodeid in 0..3 {
-                let edge_counts;
-                if j == 0 {
-                    edge_counts = graph.random_walk_sample(nodeid, samples, temp, steps);
-                } else {
-                    edge_counts = graph
-                        .beam_search_path_prob(nodeid, 1_000_000, temp, 5, 10, 0.00001, 9, steps);
-                }
+        let mut total_edgecounts = FxHashMap::default();
+        for nodeid in 0..3 {
+            let edge_counts;
+            edge_counts = graph
+                .beam_search_path_prob(nodeid, 1_000_000, temp, 5, 10, 0.00001, 9, steps);
 
-                for (edge_id, count) in edge_counts {
-                    let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
-                    *total_count += count;
-                }
+            for (edge_id, count) in edge_counts {
+                let total_count = total_edgecounts.entry(edge_id).or_insert(0.);
+                *total_count += count;
             }
             //print by sorted key
             let mut keys: Vec<_> = total_edgecounts.keys().collect();
@@ -4709,16 +4554,17 @@ mod tests {
                 println!("Edge {:?} : {}", key, total_edgecounts[key]);
             }
 
-            let good_edge = (e2, n1);
-            let opt1 = (e1, n0);
-            let opt2 = (e3, n0);
+        }
+        let good_edge = (e2, n1);
+        let opt1 = (e1, n0);
+        let opt2 = (e3, n0);
 
-            assert!(total_edgecounts[&good_edge] > total_edgecounts[&opt1]);
-            assert!(total_edgecounts[&good_edge] > total_edgecounts[&opt2]);
+        dbg!(&total_edgecounts[&good_edge]);
+        assert!(total_edgecounts[&good_edge] > total_edgecounts[&opt1]);
+        assert!(total_edgecounts[&good_edge] > total_edgecounts[&opt2]);
             //TODO do we want this? Current model biases towards circularization from the topological defintion
             // of k-length paths. This isn't necessarily a _bad_ thing for metagenomics...
             //assert!((total_edgecounts[&opt1] - total_edgecounts[&opt2]).abs() < 1.);
-        }
     }
 
     #[test]

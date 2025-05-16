@@ -2,12 +2,10 @@ use bincode;
 use flexi_logger::style;
 use clap::Parser;
 use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
-use built;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use myloasm::cli;
 use myloasm::constants::*;
-use myloasm::built_info;
 use myloasm::graph::GraphNode;
 use myloasm::kmer_comp;
 use myloasm::map_processing;
@@ -265,7 +263,7 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
         .build_global()
         .unwrap();
 
-    if args.r941 {
+    if args.nano_r9 {
         args.snpmer_error_rate_lax = 0.05;
         args.contain_subsample_rate = 21;
         args.kmer_size = 17;
@@ -280,8 +278,6 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
 
 fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGlobalInfo {
     let saved_input = args.input_files == [MAGIC_EXIST_STRING];
-
-    
 
     let binary_temp_dir = output_dir.join("binary_temp");
     let snpmer_info_path = binary_temp_dir.join("snpmer_info.bin");
@@ -315,11 +311,14 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
             "Time elapsed in for parsing snpmers is: {:?}",
             start.elapsed()
         );
-        bincode::serialize_into(
-            BufWriter::new(File::create(snpmer_info_path).unwrap()),
-            &kmer_info,
-        )
-        .unwrap();
+
+        if !args.clean_dir{
+            bincode::serialize_into(
+                BufWriter::new(File::create(snpmer_info_path).unwrap()),
+                &kmer_info,
+            )
+            .unwrap();
+        }
     }
     return kmer_info;
 }
@@ -480,11 +479,13 @@ fn get_twin_reads_from_kmer_info(
             tig_reads: vec![],
         };
 
-        bincode::serialize_into(
-            BufWriter::new(File::create(twin_read_bin_path).unwrap()),
-            &twin_read_container,
-        )
-        .unwrap();
+        if !args.clean_dir{
+            bincode::serialize_into(
+                BufWriter::new(File::create(twin_read_bin_path).unwrap()),
+                &twin_read_container,
+            )
+            .unwrap();
+        }
     }
     return twin_read_container;
 }
@@ -520,11 +521,13 @@ fn get_overlaps_from_twin_reads(
             "Time elapsed for getting overlaps is: {:?}",
             start.elapsed()
         );
-        bincode::serialize_into(
-            BufWriter::new(File::create(overlap_bin_path).unwrap()),
-            &overlaps,
-        )
-        .unwrap();
+        if !args.clean_dir{
+            bincode::serialize_into(
+                BufWriter::new(File::create(overlap_bin_path).unwrap()),
+                &overlaps,
+            )
+            .unwrap();
+        }
     }
     return overlaps;
 }
@@ -993,15 +996,17 @@ fn heavy_clean_with_walk(
     graph_dir: &PathBuf,
 ) {
     log::info!("Heavy graph cleaning...");
+    let walk_edge_dir = temp_dir.join("walk_edges");
+    std::fs::create_dir_all(&walk_edge_dir).expect("Could not create temp directory for heavy cleaning");
     let mut save_removed;
     let temperatures = [2., 1.5, 1.0];
     let ol_thresholds = [0.125, 0.25, 0.5];
     let aggressive_multipliers = [10, 15, 30];
-    let mut global_counter = 0;
     let mut size_graph = unitig_graph.nodes.len();
     let mut special_small;
     let samples = SAMPLES;
-    let steps = BEAM_STEPS;
+    //let steps_sizes = [5, 6, 7];
+    let steps_sizes = [10, 10, 10];
     let safe_length_back = SAFE_LENGTH_BACK;
     let max_length_search = MAX_LENGTH_SEARCH;
 
@@ -1009,7 +1014,8 @@ fn heavy_clean_with_walk(
 
     //Try switching temp/multiplier
     for temperature in temperatures {
-        for multiplier in aggressive_multipliers {
+        for (aggressive_i, &multiplier) in aggressive_multipliers.iter().enumerate() {
+            let steps = steps_sizes[aggressive_i];
             //TODO 
             if multiplier > 0 {
                 save_removed = true;
@@ -1050,7 +1056,7 @@ fn heavy_clean_with_walk(
                 if counter <= (ol_thresholds.len() - 1) && counter != 0 {
                     unitig_graph.to_gfa(
                         temp_dir.join(format!(
-                            "heavy-{}-{}-{}.gfa",
+                            "heavy-m{}-t{}-r{}.gfa",
                             multiplier, temperature, ol_threshold
                         )),
                         true,
@@ -1083,7 +1089,7 @@ fn heavy_clean_with_walk(
                 let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
                     args, 
-                    temp_dir.join(format!("walk-edge-{}.txt", global_counter)), 
+                    walk_edge_dir.join(format!("walk-edge-m{}-t{}-r{}.txt", multiplier, temperature, ol_threshold)), 
                     heavy_cut_options);
                 
                 let length_after_cut = unitig_graph.nodes.len();
@@ -1097,7 +1103,6 @@ fn heavy_clean_with_walk(
                 unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
                 counter += 1;
-                global_counter += 1;
 
                 if unitig_graph.nodes.len() == size_graph && counter >= ol_thresholds.len() {
                     break;

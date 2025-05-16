@@ -212,6 +212,7 @@ impl PoaConsensusBuilder {
         }
     }
 
+    #[cfg(test)]
     fn new_test(genome_length: usize) -> Self{
         PoaConsensusBuilder {
             seq: Vec::new(),
@@ -388,7 +389,7 @@ impl PoaConsensusBuilder {
             let query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
 
             let query_seq_u8: Vec<u8>;
-            let mut query_quals_u8_binned: Vec<u8>;
+            let query_quals_u8_binned: Vec<u8>;
             if ol.reverse {
                 query_seq_u8 = query_seq
                     .to_revcomp()

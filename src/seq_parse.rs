@@ -147,8 +147,8 @@ fn first_iteration(
         let mut handles = Vec::new();
         for rx in rxs.into_iter(){
             handles.push(thread::spawn(move || {
-                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).expected_items(5_000_000_000);
-                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).expected_items(5_000_000_000);
+                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items(25_000_000_000 / threads);
+                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items(25_000_000_000 / threads);
                 let mut map: FxHashMap<u64,[u32;2]> = FxHashMap::default();
                 loop{
                     match rx.recv() {
@@ -159,12 +159,16 @@ fn first_iteration(
                                 let kmer = kmer_i_canon & mask;
                                 let kmer_canon = kmer | (1 << 63);
                                 if canonical == 1{
-                                    if filter_canonical.insert(&kmer_canon) && filter_noncanonical.contains(&kmer){
+                                    filter_canonical.insert(&kmer_canon);
+                                    let already_present_noncanon = filter_noncanonical.contains(&kmer);
+                                    if already_present_noncanon{
                                         map.insert(kmer, [0,0]);
                                     }
                                 }
                                 else{
-                                    if filter_noncanonical.insert(&kmer) && filter_canonical.contains(&kmer_canon){
+                                    filter_noncanonical.insert(&kmer);
+                                    let already_present_canon = filter_canonical.contains(&kmer_canon);
+                                    if already_present_canon{
                                         map.insert(kmer, [0,0]);
                                     }
                                 }

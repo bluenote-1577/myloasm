@@ -1,5 +1,6 @@
 use crate::cli::*;
 use crate::constants::CIRC_STRICT_STRING;
+use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::POLISHED_CONTIGS_NAME;
 use crate::graph::GraphNode;
 use crate::polishing::consensus2::join_circular_ends;
@@ -7,6 +8,8 @@ use crate::polishing::consensus2::PoaConsensusBuilder;
 //use crate::small_genomes;
 use crate::types::*;
 use crate::unitig::*;
+use crate::seeding::*;
+use fxhash::FxHashMap;
 //use rust_htslib::bam::header::HeaderRecord;
 //use rust_htslib::bam::{Header, HeaderView};
 use rust_lapper::Interval;
@@ -62,7 +65,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             final_seq.extend(consensus);
         }
 
-        let mut circ_string = "circular_no".to_string();
+        let mut circ_string = "circular-no".to_string();
 
         if let Some(circ_edge_id) = contig.get_circular_edge() {
             let edge = final_graph.edges[circ_edge_id].as_ref().unwrap();
@@ -74,10 +77,14 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
                 &format!("u{}", &contig.node_id),
                 args,
             );
+            let avg_cov = contig.min_read_depth_multi
+                .unwrap_or([0.; ID_THRESHOLD_ITERS]).iter()
+                .map(|x| *x).sum::<f64>() / ID_THRESHOLD_ITERS as f64;
+
             if contig.is_circular_strict() {
                 circ_string = CIRC_STRICT_STRING.to_string();
-            } else if contig.has_circular_walk(){
-                circ_string = "circular_possibly".to_string();
+            } else if contig.has_circular_walk() || (avg_cov < 5.5 && final_seq.len() < 500_000) {
+                circ_string = "circular-possibly".to_string();
             }
         }
 
@@ -103,14 +110,16 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
 
         let depths = contig.min_read_depth_multi.unwrap_or([0., 0., 0.]);
         let depth_string = format!("{}-{}-{}", depths[0], depths[1], depths[2]);
+        let kmer_mult = kmer_multiplicity(&final_seq);
 
         write!(
             &mut fasta_writer,
-            ">u{}ctg_len_{}_{}_depth_{}\n",
+            ">u{}ctg_len-{}_{}_depth-{}_mult-{:.2}\n",
             contig.node_id,
             final_seq.len(),
             circ_string,
-            depth_string
+            depth_string,
+            kmer_mult
         )
         .unwrap();
         write!(
@@ -122,6 +131,25 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
         total_count += 1;
         reset_count += 1;
     });
+}
+
+pub fn kmer_multiplicity(seq: &[u8]) -> f64 {
+
+    if seq.len() < 1000 {
+        return 0.;
+    }
+    
+    let mut kmer_vec = vec![];
+    fmh_seeds(seq, &mut kmer_vec, 15, 21);
+    let mut kmer_multiplicity_map = FxHashMap::default();
+    for kmer in kmer_vec.iter(){
+        *kmer_multiplicity_map.entry(kmer).or_insert(0) += 1;
+    }
+    let mut sorted_multiplicities = kmer_multiplicity_map.values().collect::<Vec<_>>();
+    sorted_multiplicities.sort();
+    let robust_mean = sorted_multiplicities[sorted_multiplicities.len()/10..sorted_multiplicities.len()*9/10].
+    iter().map(|x| *x).sum::<usize>() as f64 / (sorted_multiplicities.len() * 8 / 10) as f64;
+    return robust_mean;
 }
 
 // fn _create_bam_header(sequences: Vec<(String, u32)>) -> Header {

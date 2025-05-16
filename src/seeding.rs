@@ -452,11 +452,16 @@ pub fn get_twin_read_syncmer(
        if i >= k - 1 && s_mer_hashes.len() == k - s + 1 {
             let middle_idx = (k - s) / 2;
             let middle_hash = s_mer_hashes[middle_idx];
-            
-            // Check if middle s-mer has minimum hash
-            if s_mer_hashes.iter().all(|h| *h >= middle_hash) {
-                //minimizers_in_read.push((i + 1 - k, canonical_kmer_marker));
-                //minimizer_kmers.push(Kmer48::from_u64(canonical_kmer_marker));
+
+            let mut syncmer = true;
+            for j in 0..s_mer_hashes.len() {
+                if j != middle_idx && s_mer_hashes[j] <= middle_hash {
+                    syncmer = false;
+                    break;
+                }
+            }
+
+            if syncmer{
                 minimizer_positions.push((i + 1 - k) as u32);
             }
         }

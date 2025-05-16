@@ -198,9 +198,6 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         return vec![];
     }
 
-    let mut all_coverages = coverages_at_sampling.iter().map(|x| x.1).collect::<Vec<_>>();
-    all_coverages.sort();
-
     let intervals = intervals.iter().map(|x| Interval{start: x.start, stop: x.stop, val: false}).collect::<Vec<Interval<u32,bool>>>();
     let lapper = Lapper::new(intervals);
     let depths = lapper.depth().collect::<Vec<_>>();
@@ -240,7 +237,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         let start = interval.start;
         let stop = interval.stop as usize;
         let cov = interval.val as usize;
-        let cond1 = last_cov > 3 && next_cov > 3 && cov == 1;
+        let cond1 = last_cov > 3 && next_cov > 3 && cov <= 1;
         let cond2;
         let cond3;
         let cond4; 
@@ -249,12 +246,17 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         if start > 200 && stop + 200 < reference_length as usize {
             // let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
             // let right_count = mapped.mapping_boundaries().count(start as u32 + 198, start as u32 + 200);
+
+            //Note: we use the base point at "start". Intentional.
             let left_count = coverages_at_sampling[(start as usize - 200) / sampling as usize].1;
-            let right_count = coverages_at_sampling[(stop as usize + 200) / sampling as usize].1;
+            let right_count = coverages_at_sampling[(start as usize + 200) / sampling as usize].1;
+
             cond2 = left_count > 3 && right_count > 3 && cov <= 1;
-            cond3 = (left_count > cov * 5 && right_count > cov * 5) && cov <= 2 && !args.hifi;
-            cond4 = (left_count > cov * 15 && right_count > cov * 15) && cov <= 3 && !args.hifi;
-            cond5 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 4 && !args.hifi; 
+            cond3 = (left_count > cov * 6 && right_count > cov * 6) && cov <= 2 && !args.hifi;
+            //cond4 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3 && !args.hifi;
+            //cond5 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 4 && !args.hifi; 
+            cond4 = false;
+            cond5 = false;
         } else {
             cond2 = false;
             cond3 = false;
@@ -265,20 +267,24 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         // 6-7 are for chimeras that skip from high to low coverage. can also cut repeats for low coverage genomes, which is probably okay
         // it's really hard to assemble repetitive short coverage genomes 
         let cond6 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 1;
-        let cond7 = (last_cov > (cov as u32 * 10) || next_cov > (cov as u32 * 10)) && cov <= 2 && !args.hifi;
-        let cond10 = (last_cov > (cov as u32 * 15) || next_cov > (cov as u32 * 15)) && cov <= 3 && !args.hifi;
+        let cond7 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 2;
+        //let cond7 = (last_cov > (cov as u32 * 10) || next_cov > (cov as u32 * 10)) && cov <= 2 && !args.hifi;
+        let cond8 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 3 && !args.hifi;
+        //let cond10 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 4 && !args.hifi;
 
         // Junk insertions/deletions <-- suspect we need higher ratios, like 40-50?
         //let cond8 = (last_cov > (cov as u32 * 15) && next_cov > (cov as u32 * 15)) && cov <= 5;
-        let cond8 = (last_cov > (cov as u32 * 25) && next_cov > (cov as u32 * 25)) && cov <= 5 && !args.hifi;
+        //let cond8 = (last_cov > (cov as u32 * 25) && next_cov > (cov as u32 * 25)) && cov <= 5 && !args.hifi;
 
         // Large regions with low cov <-- suspect this is wrong
         //let cond9 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 5 && (stop as i32 - start as i32 > 200) && !args.hifi;
         let cond9 = false;
+        let cond10 = false;
 
         if start > 200
             && start as usize + 200 < reference_length as usize
             && (cond1 || cond2 || cond3 || cond4 || cond5 || cond6 || cond7 || cond8 || cond9 || cond10)
+            //&& (cond1 || cond2 || cond3 || cond4 || cond5 || cond6 || cond9 || cond10)
         {
             breakpoints.push(Breakpoints {
                 pos1: start as usize,
@@ -1289,7 +1295,7 @@ mod tests {
         let lapper_intervals_map = intervals.clone()
             .into_iter()
             .enumerate()
-            .map(|(i, (start, stop, identity, _))| ( BareInterval {
+            .map(|(_, (start, stop, identity, _))| ( BareInterval {
                 start,
                 stop,
             }, BareMappingOverlap{snpmer_identity: identity, ..Default::default() }))
