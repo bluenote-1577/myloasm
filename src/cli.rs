@@ -4,10 +4,6 @@ use crate::constants::CLI_HEADINGS;
 
 use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
 
-fn leq_15(s: &str) -> Result<u8, String> {
-    number_range(s, 0, 15)
-}
-
 #[derive(Parser, Debug)]
 #[command(
     name = "myloasm",
@@ -43,12 +39,12 @@ pub struct Cli {
     #[arg(short, long, default_value = "20")]
     pub threads: usize,
 
-    /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
+     /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
     #[arg(long)]
     pub clean_dir: bool,
-    
+   
     /// Compression ratio (1/c k-mers selected). Must be <= 15  
-    #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1], value_parser=leq_15)]
+    #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
 
     /// Output contigs with >= this number of reads
@@ -67,6 +63,11 @@ pub struct Cli {
     #[arg(short, long, default_value_t=10., help_heading = CLI_HEADINGS[1])]
     pub bloom_filter_size: f64,
 
+    /// More aggressive filtering of low-abundance k-mers. May be non-deterministic
+    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    pub aggressive_bloom: bool,
+
+    
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]
     pub log_level: LogLevel,

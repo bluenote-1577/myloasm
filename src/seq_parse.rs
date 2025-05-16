@@ -62,6 +62,7 @@ fn first_iteration(
     let hm_size = threads;
     let mask = !(1 << 63);
     let bf_size = args.bloom_filter_size;
+    let aggressive_bloom = args.aggressive_bloom;
     let mut bf_vec_maps : Vec<FxHashMap<u64, [u32;2]>> = vec![FxHashMap::default(); hm_size];
     if bf_size > 0.{
         let num_b = threads/10 + 1;
@@ -147,8 +148,8 @@ fn first_iteration(
         let mut handles = Vec::new();
         for rx in rxs.into_iter(){
             handles.push(thread::spawn(move || {
-                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items(25_000_000_000 / threads);
-                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items(25_000_000_000 / threads);
+                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
+                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
                 let mut map: FxHashMap<u64,[u32;2]> = FxHashMap::default();
                 loop{
                     match rx.recv() {
@@ -159,17 +160,31 @@ fn first_iteration(
                                 let kmer = kmer_i_canon & mask;
                                 let kmer_canon = kmer | (1 << 63);
                                 if canonical == 1{
-                                    filter_canonical.insert(&kmer_canon);
+                                    let already_present_canon = filter_canonical.insert(&kmer_canon);
                                     let already_present_noncanon = filter_noncanonical.contains(&kmer);
-                                    if already_present_noncanon{
-                                        map.insert(kmer, [0,0]);
+                                    if aggressive_bloom{
+                                        if already_present_noncanon && already_present_canon{
+                                            map.insert(kmer, [0,0]);
+                                        }
+                                    }
+                                    else{
+                                        if already_present_noncanon{
+                                            map.insert(kmer, [0,0]);
+                                        }
                                     }
                                 }
                                 else{
-                                    filter_noncanonical.insert(&kmer);
+                                    let already_present_noncanon = filter_noncanonical.insert(&kmer);
                                     let already_present_canon = filter_canonical.contains(&kmer_canon);
-                                    if already_present_canon{
-                                        map.insert(kmer, [0,0]);
+                                    if aggressive_bloom{
+                                        if already_present_noncanon && already_present_canon{
+                                            map.insert(kmer, [0,0]);
+                                        }
+                                    }
+                                    else{
+                                        if already_present_canon{
+                                            map.insert(kmer, [0,0]);
+                                        }
                                     }
                                 }
                             }

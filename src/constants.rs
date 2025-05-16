@@ -66,7 +66,7 @@ pub const DEDUP_SNPMERS: bool = false;
 pub const CLI_HEADINGS: [&str; 5] = [
     "Technology Presets",
     "Basic Algorithmic Parameters",
-    "Misc",
+    "Miscellaneous Options",
     "Overlap Parameters (advanced)",
     "Graph Parameters (advanced)",
 ];
