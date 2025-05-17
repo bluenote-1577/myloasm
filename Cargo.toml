@@ -51,7 +51,8 @@ block-aligner = { version = "0.5", features = ["simd_avx2"] }
 block-aligner = { version = "0.5", features = ["simd_neon"] }
 
 [dev-dependencies]
-#assert_cmd = "1.0.1"
+assert_cmd = "1.0.1"
+tempfile = "3.8"
 #predicates = "1"
 #serial_test = "*"
 #rand = "0.8"

@@ -1,5 +1,4 @@
 use clap::{Parser, ValueEnum};
-use clap_num::number_range;
 use crate::constants::CLI_HEADINGS;
 
 use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
