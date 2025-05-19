@@ -228,7 +228,8 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
     drop(kmer_counts);
 
     log::info!("Finding snpmers...");
-    big_kmer_map.par_sort_unstable_by_key(|x| retrieve_masked_kmer(x.0, k));
+    //big_kmer_map.par_sort_unstable_by_key(|x| retrieve_masked_kmer(x.0, k));
+    big_kmer_map.par_sort_unstable_by_key(|x| split_kmer(x.0, k));
 
     log::trace!("Finished parallel sort");
 

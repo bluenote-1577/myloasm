@@ -38,10 +38,12 @@ use bio_seq::prelude::*;
 use rust_lapper::Lapper;
 use block_aligner::cigar::OpLen;
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MAX_GAP_CHAINING;
 
+pub type NodeMap<K,V> = BTreeMap<K,V>;
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
 pub type KmerHash64 = u64;

@@ -190,7 +190,7 @@ pub fn find_exact_matches_with_full_index(
             } else {
                 panic!("No reference sequences provided");
             }
-            let anchors = v
+            let mut anchors = v
                 .into_iter()
                 .map(|anchor| {
                     let pos2 = reference_kmer_positions[anchor.j as usize];
@@ -201,7 +201,8 @@ pub fn find_exact_matches_with_full_index(
                         pos2: pos2 as u32,
                     }
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            anchors.sort_by(|a, b| (a.pos1, a.pos2).cmp(&(b.pos1, b.pos2)));
             return (k,
             Anchors {
                 anchors,
@@ -832,7 +833,9 @@ pub fn get_minimizer_index(
     tr_ref: Option<&FxHashMap<usize, &TwinRead>>) -> FxHashMap<Kmer48, Vec<HitInfo>> {
     let mut mini_index = FxHashMap::default();
     if let Some(twinreads) = tr_owned {
-        for (&id, tr) in twinreads.iter() {
+        let mut sorted_keys = twinreads.keys().collect::<Vec<_>>();
+        sorted_keys.sort();
+        for (&id, tr) in sorted_keys.iter().map(|&x| (x, &twinreads[x])) {
             for (i, (_, mini)) in tr.minimizers_vec().into_iter().enumerate() {
                 let hit = HitInfo {
                     index: i as u32,
@@ -843,7 +846,9 @@ pub fn get_minimizer_index(
         }
     }
     else if let Some(twinreads) = tr_ref {
-        for (&id, tr) in twinreads.iter() {
+        let mut sorted_keys = twinreads.keys().collect::<Vec<_>>();
+        sorted_keys.sort();
+        for (&id, tr) in sorted_keys.iter().map(|&x| (x, &twinreads[x])) {
             for (i, (_, mini)) in tr.minimizers_vec().into_iter().enumerate() {
                 let hit = HitInfo {
                     index: i as u32,
@@ -887,168 +892,181 @@ pub fn map_reads_to_outer_reads(
     twin_reads: &[TwinRead],
     args: &Cli,
 ) -> Vec<TwinReadMapping> {
+
     let mut ret = vec![];
-    // 0..outer_read_indices -- confusingly, I chose to renumber the indices in this step. Then
-    // it's fixed in the index_of_outer_in_all.
-    let tr_outer = outer_read_indices
-        .iter()
-        .enumerate()
-        .map(|(e, &i)| (e, &twin_reads[i]))
-        .collect::<FxHashMap<usize, &TwinRead>>();
-
-    let mini_index = get_minimizer_index(None, Some(&tr_outer));
-    let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
-    let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
-    //let kmer_count_map = Mutex::new(FxHashMap::default());
-
-    let counter = Mutex::new(0);
-
-    twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
-        let mut tr_options = CompareTwinReadOptions::default();
-        tr_options.double_gap = 750;
-        //TODO TRYING OUT
-        tr_options.force_one_to_one_alignments = true;
-        tr_options.read1_snpmers = Some(read.snpmers_vec());
-        let mini = read.minimizers_vec();
-        //let start = std::time::Instant::now();
-        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, Some(&tr_outer));
-        drop(mini);
-        //let anchor_finding_time = start.elapsed().as_micros();
-        let mut unitig_hits : Vec<TwinOverlap> = vec![];
-        *counter.lock().unwrap() += 1;
-        if *counter.lock().unwrap() % 100000 == 0 {
-            log::debug!(
-                "Processed {} reads / {} ...",
-                *counter.lock().unwrap(),
-                twin_reads.len()
-            );
-            log_memory_usage(false, "100k reads mapped");
-        }
-
-        //let start = std::time::Instant::now();
-        for (contig_id, anchors) in mini_anchors.into_iter() {
-            if anchors.anchors.len() < 15 {
-                continue;
-            }
-            for twin_ol in compare_twin_reads(
-                read,
-                &tr_outer[&(contig_id as usize)],
-                Some(&anchors),
-                None,
-                rid,
-                contig_id as usize,
-                &tr_options,
-                args,
-            ) {
-                if twin_ol.end2 - twin_ol.start2 < 500 {
-                    continue;
-                }
-                unitig_hits.push(twin_ol);
-            }
-
-            drop(anchors);
-        }
-
-        //let overlap_time = start.elapsed().as_micros();
-        for hit in unitig_hits.into_iter() {
-            {
-                //log::trace!("{} {} {} {} {} {}", hit.i1, hit.i2, hit.start1, hit.end1, hit.start2, hit.end2);
-                let max_overlap = check_maximal_overlap(
-                    hit.start1 as usize,
-                    hit.end1 as usize,
-                    hit.start2 as usize,
-                    hit.end2 as usize,
-                    read.base_length,
-                    tr_outer[&hit.i2].base_length,
-                    hit.chain_reverse,
-                    args.maximal_end_fuzz,
-                );
-
-                let identity = id_est(
-                    hit.shared_minimizers,
-                    hit.diff_snpmers,
-                    args.c as u64,
-                    hit.large_indel,
-                );
-
-                //Populate mapping boundaries map
-                if max_overlap {
-                    if identity > IDENTITY_THRESHOLDS[0] - 0.05 / 100. {
-                        let small_twin_ol = BareMappingOverlap {
-                            snpmer_identity: identity as Fraction,
-                        };
-                        let mut map = mapping_maximal_boundaries_map.lock().unwrap();
-                        let vec = map.entry(hit.i2).or_insert(vec![]);
-                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
-                    }
-                }
-
-                // TODO Require length conditio that scales with hit.i2 (the target read)
-                let mut map = mapping_local_boundaries_map.lock().unwrap();
-                let vec = map.entry(hit.i2).or_insert(vec![]);
-                vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50));
-            }
-        }
-    });
-
-    drop(mini_index);
-
-    //let kmer_count_map = kmer_count_map.into_inner().unwrap();
     let mut num_alignments = 0;
     let mut num_maximal = 0;
 
-    let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
-    let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
+    let chunk_size = args.read_map_batch_size;
+   //let chunk_size = 10_000;
 
-    for (outer_id, boundaries) in mapping_local_boundaries_map.into_iter() {
-        let index_of_outer_in_all = outer_read_indices[outer_id];
-        let outer_read_length = twin_reads[index_of_outer_in_all].base_length;
-        num_alignments += boundaries.len();
+    let outer_read_chunks = outer_read_indices
+        .chunks(chunk_size)
+        .collect::<Vec<_>>();
 
-        let mut all_local_intervals = boundaries
+    log::info!("Mapping {} reads to {} outer reads", twin_reads.len(), outer_read_indices.len());
+    log::debug!("ITERATIONS: Breaking {} reads into {} chunks of <= 1 million", outer_read_indices.len(), outer_read_chunks.len());
+
+    for mapping_chunk_indices in outer_read_chunks
+    {
+        let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
+        let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
+        // 0..outer_read_indices -- confusingly, I chose to renumber the indices in this step. Then
+        // it's fixed in the index_of_outer_in_all.
+        let tr_outer = mapping_chunk_indices
             .into_iter()
-            .map(|x : (u32,u32)| BareInterval {
-                start: x.0,
-                stop: x.1,
-            })
-            .collect::<Vec<_>>();
-        all_local_intervals.sort_unstable();
-        all_local_intervals.shrink_to_fit();
+            .map(|&i| (i, &twin_reads[i]))
+            .collect::<FxHashMap<usize, &TwinRead>>();
 
-        let maximal_boundaries = std::mem::take(
-            mapping_maximal_boundaries_map
-                .get_mut(&outer_id)
-                .unwrap_or(&mut vec![]),
-        );
+        let mini_index = get_minimizer_index(None, Some(&tr_outer));
 
-        let max_intervals = maximal_boundaries
-            .into_iter()
-            .map(|x : (u32, u32, BareMappingOverlap)| (BareInterval{
-                start: x.0,
-                stop: x.1,
-            }, x.2))
-            .collect::<Vec<_>>();
+        let counter = Mutex::new(0);
 
-        num_maximal += max_intervals.len();
-        //let lapper = Lapper::new(max_intervals);
+        twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
+            let mut tr_options = CompareTwinReadOptions::default();
+            tr_options.double_gap = 750;
+            tr_options.force_one_to_one_alignments = true;
+            tr_options.read1_snpmers = Some(read.snpmers_vec());
+            let mini = read.minimizers_vec();
+            //let start = std::time::Instant::now();
+            let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, Some(&tr_outer));
+            drop(mini);
+            //let anchor_finding_time = start.elapsed().as_micros();
+            let mut unitig_hits : Vec<TwinOverlap> = vec![];
+            *counter.lock().unwrap() += 1;
+            if *counter.lock().unwrap() % 100000 == 0 {
+                log::debug!(
+                    "Processed {} reads / {} ...",
+                    *counter.lock().unwrap(),
+                    twin_reads.len()
+                );
+                log_memory_usage(false, "100k reads mapped");
+            }
 
-        let map_info = MappingInfo {
-            minimum_depth: -1.,
-            median_depth: -1.,
-            max_alignment_boundaries: None,
-            max_mapping_boundaries: Some(max_intervals),
-            present: true,
-            length: outer_read_length,
-        };
+            //let start = std::time::Instant::now();
+            for (contig_id, anchors) in mini_anchors.into_iter() {
+                if anchors.anchors.len() < 15 {
+                    continue;
+                }
+                for twin_ol in compare_twin_reads(
+                    read,
+                    &tr_outer[&(contig_id as usize)],
+                    Some(&anchors),
+                    None,
+                    rid,
+                    contig_id as usize,
+                    &tr_options,
+                    args,
+                ) {
+                    if twin_ol.end2 - twin_ol.start2 < 500 {
+                        continue;
+                    }
+                    unitig_hits.push(twin_ol);
+                }
 
-        let twinread_mapping = TwinReadMapping {
-            tr_index: outer_read_indices[outer_id],
-            mapping_info: map_info,
-            all_intervals: all_local_intervals,
-        };
+                drop(anchors);
+            }
 
-        ret.push(twinread_mapping);
+            //let overlap_time = start.elapsed().as_micros();
+            for hit in unitig_hits.into_iter() {
+                {
+                    //log::trace!("{} {} {} {} {} {}", hit.i1, hit.i2, hit.start1, hit.end1, hit.start2, hit.end2);
+                    let max_overlap = check_maximal_overlap(
+                        hit.start1 as usize,
+                        hit.end1 as usize,
+                        hit.start2 as usize,
+                        hit.end2 as usize,
+                        read.base_length,
+                        tr_outer[&hit.i2].base_length,
+                        hit.chain_reverse,
+                        args.maximal_end_fuzz,
+                    );
+
+                    let identity = id_est(
+                        hit.shared_minimizers,
+                        hit.diff_snpmers,
+                        args.c as u64,
+                        hit.large_indel,
+                    );
+
+                    //Populate mapping boundaries map
+                    if max_overlap {
+                        if identity > IDENTITY_THRESHOLDS[0] - 0.05 / 100. {
+                            let small_twin_ol = BareMappingOverlap {
+                                snpmer_identity: identity as Fraction,
+                            };
+                            let mut map = mapping_maximal_boundaries_map.lock().unwrap();
+                            let vec = map.entry(hit.i2).or_insert(vec![]);
+                            vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
+                        }
+                    }
+
+                    // TODO Require length conditio that scales with hit.i2 (the target read)
+                    let mut map = mapping_local_boundaries_map.lock().unwrap();
+                    let vec = map.entry(hit.i2).or_insert(vec![]);
+                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50));
+                }
+            }
+        });
+
+        drop(mini_index);
+        
+        let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
+        let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
+
+        for (outer_id, boundaries) in mapping_local_boundaries_map.into_iter() {
+            //let index_of_outer_in_all = outer_read_indices[outer_id];
+            let outer_read_length = twin_reads[outer_id].base_length;
+            num_alignments += boundaries.len();
+
+            let mut all_local_intervals = boundaries
+                .into_iter()
+                .map(|x : (u32,u32)| BareInterval {
+                    start: x.0,
+                    stop: x.1,
+                })
+                .collect::<Vec<_>>();
+
+            all_local_intervals.sort_unstable();
+            all_local_intervals.shrink_to_fit();
+
+            let maximal_boundaries = std::mem::take(
+                mapping_maximal_boundaries_map
+                    .get_mut(&outer_id)
+                    .unwrap_or(&mut vec![]),
+            );
+
+            let mut max_intervals = maximal_boundaries
+                .into_iter()
+                .map(|x : (u32, u32, BareMappingOverlap)| (BareInterval{
+                    start: x.0,
+                    stop: x.1,
+                }, x.2))
+                .collect::<Vec<_>>();
+
+            num_maximal += max_intervals.len();
+            max_intervals.shrink_to_fit();
+            //let lapper = Lapper::new(max_intervals);
+
+            let map_info = MappingInfo {
+                minimum_depth: -1.,
+                median_depth: -1.,
+                max_alignment_boundaries: None,
+                max_mapping_boundaries: Some(max_intervals),
+                present: true,
+                length: outer_read_length,
+            };
+
+            let twinread_mapping = TwinReadMapping {
+                tr_index: outer_id,
+                mapping_info: map_info,
+                all_intervals: all_local_intervals,
+            };
+
+            ret.push(twinread_mapping);
+        }
     }
+
     log::info!(
         "Number of local alignments to outer reads: {}",
         num_alignments
@@ -1057,6 +1075,11 @@ pub fn map_reads_to_outer_reads(
         "Number of maximal alignments to outer reads: {}",
         num_maximal
     );
+    log::debug!(
+        "Number reads mapped to: {}",
+        ret.len()
+    );
+
 
     ret
 }

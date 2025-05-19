@@ -89,7 +89,7 @@ fn main() {
         args.tip_read_cutoff * 30,
         1_000_000,
         usize::MAX,
-        Some(4),
+        Some(5),
         &heavy_cleaning_temp_dir, 
         true, 
         &args
@@ -529,6 +529,7 @@ fn get_overlaps_from_twin_reads(
             .unwrap();
         }
     }
+
     return overlaps;
 }
 
@@ -999,14 +1000,14 @@ fn heavy_clean_with_walk(
     let walk_edge_dir = temp_dir.join("walk_edges");
     std::fs::create_dir_all(&walk_edge_dir).expect("Could not create temp directory for heavy cleaning");
     let mut save_removed;
-    let temperatures = [2., 1.5, 1.0];
+    let temperatures = [2., 1.5, 1.0, 0.5];
     let ol_thresholds = [0.125, 0.25, 0.5];
     let aggressive_multipliers = [10, 15, 30];
     let mut size_graph = unitig_graph.nodes.len();
     let mut special_small;
     let samples = SAMPLES;
     //let steps_sizes = [5, 6, 7];
-    let steps_sizes = [10, 10, 10];
+    let steps_sizes = [BEAM_STEPS, BEAM_STEPS, BEAM_STEPS];
     let safe_length_back = SAFE_LENGTH_BACK;
     let max_length_search = MAX_LENGTH_SEARCH;
 
@@ -1315,7 +1316,7 @@ fn progressive_coverage_contigs_circular(
         .map(|x| x.min_read_depth_multi.unwrap().iter().sum::<f64>() / ID_THRESHOLD_ITERS as f64)
         .max_by(|x, y| x.partial_cmp(y).unwrap())
         .unwrap_or(1.);
-    let max_cov = max_cov.min(500.);
+    let max_cov = max_cov.min(1000.);
 
     let tip_length_cutoff_heavy = args.tip_length_cutoff * 30;
     let tip_read_cutoff_heavy = args.tip_read_cutoff * 30;

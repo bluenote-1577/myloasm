@@ -18,19 +18,19 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 
 
-#[derive(Debug, Clone, PartialEq, Default, Hash, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Hash, Eq, Serialize, Deserialize, PartialOrd, Ord)]
 pub struct OverlapConfig{
+    pub read_i: usize,
+    pub read_j: usize,
+    pub diff_snpmer: usize,
     pub hang1 : usize,
     pub hang2 : usize,
     pub forward1 : bool,
     pub forward2 : bool,
     pub overlap1_len : usize,
     pub overlap2_len : usize,
-    pub read_i: usize,
-    pub read_j: usize,
     pub shared_mini: usize,
     pub shared_snpmer: usize,
-    pub diff_snpmer: usize,
     pub contained: bool,
     pub large_indel: bool
 }
@@ -615,116 +615,118 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
         Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>)
     };
 
-    let outer_twin_reads = outer_read_indices.iter().map(|x| (*x, &twin_reads[*x])).collect::<FxHashMap<_,_>>();
 
     // Contained reads may still lurk in the outer reads, remove again for sure.
     let contained_reads_again = Mutex::new(FxHashSet::default());
-
-    let inverted_index = get_minimizer_index(None, Some(&outer_twin_reads));
-    
     let overlaps = Mutex::new(vec![]);
 
+    let outer_index_batches = outer_read_indices.chunks(args.read_map_batch_size);
 
-    outer_read_indices.into_par_iter().for_each(|&i| { 
-        let read = &twin_reads[i];
-        let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec(), &inverted_index, None, Some(&outer_twin_reads));
+    for outer_index_batch in outer_index_batches{
+        let outer_twin_reads_batch = outer_index_batch.iter().map(|x| (*x, &twin_reads[*x])).collect::<FxHashMap<_,_>>();
+        let inverted_index = get_minimizer_index(None, Some(&outer_twin_reads_batch));
+        outer_read_indices.into_par_iter().for_each(|&i| { 
+            let read = &twin_reads[i];
+            let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec(), &inverted_index, None, Some(&outer_twin_reads_batch));
 
-        let comparison_options = CompareTwinReadOptions{
-            compare_snpmers: true,
-            retain_chain: false,
-            force_one_to_one_alignments: true,
-            supplementary_threshold_score: Some(500.),
-            supplementary_threshold_ratio: Some(0.25),
-            secondary_threshold: None,
-            read1_mininimizers: None, // indexed anchors
-            read1_snpmers: Some(read.snpmers_vec()),
-            max_gap: MAX_GAP_CHAINING * 3/2,
-            double_gap: 2500,
-        };
+            let comparison_options = CompareTwinReadOptions{
+                compare_snpmers: true,
+                retain_chain: false,
+                force_one_to_one_alignments: true,
+                supplementary_threshold_score: Some(500.),
+                supplementary_threshold_ratio: Some(0.25),
+                secondary_threshold: None,
+                read1_mininimizers: None, // indexed anchors
+                read1_snpmers: Some(read.snpmers_vec()),
+                max_gap: MAX_GAP_CHAINING * 3/2,
+                double_gap: 25_00,
+            };
 
-        for (outer_ref_id, anchors) in mini_anchors.into_iter(){
+            for (outer_ref_id, anchors) in mini_anchors.into_iter(){
 
-            //Only compare once. I think we get slightly different results if we
-            //compare in both directinos, but this forces consistency. 
-            if i <= outer_ref_id as usize {
-                continue;
-            }
-
-            let read2 = &twin_reads[outer_ref_id as usize];
-
-            if !dovetail_possibility(&anchors, &read, &read2){
-                continue;
-            }
-
-            let twlaps = compare_twin_reads(&read, &read2, Some(&anchors), None, i, outer_ref_id as usize, &comparison_options, args);
-
-            if twlaps.len() > 1{
-                log::trace!("Multiple overlaps for {}:{} and {}:{}", &read.id, i,  &read2.id, outer_ref_id);
-                for twlap in twlaps.iter(){
-                    log::trace!("{}-{} Overlap: {}-{} {}-{}, reverse {}", i, outer_ref_id, twlap.start1, twlap.end1, twlap.start2, twlap.end2, twlap.chain_reverse);
+                //Only compare once. I think we get slightly different results if we
+                //compare in both directinos, but this forces consistency. 
+                if i <= outer_ref_id as usize {
+                    continue;
                 }
-            }
 
-            let mut possible_containment = false;
-            //Check for contained read
-            for twlap in twlaps.iter(){
-                let mut twlap_contain = false;
-                let mut smaller_read_index = i;
-                let mut snpmer_threshold = args.snpmer_threshold_strict;
-                if r1_contained_r2(&twlap, &read, &read2, true, args.c){
-                    twlap_contain = true;
-                    possible_containment = true;
-                    snpmer_threshold = read.snpmer_id_threshold.unwrap_or(100.);
+                let read2 = &twin_reads[outer_ref_id as usize];
+
+                if !dovetail_possibility(&anchors, &read, &read2){
+                    continue;
                 }
-                else if r1_contained_r2(&twlap, &read2, &read, true, args.c){
-                    twlap_contain = true;
-                    possible_containment = true;
-                    smaller_read_index = outer_ref_id as usize;
-                    snpmer_threshold = read2.snpmer_id_threshold.unwrap_or(100.);
-                }
-                if twlap_contain {
-                    if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict, twlap.large_indel){
-                        contained_reads_again.lock().unwrap().insert(smaller_read_index);
-                        log::trace!("Contained read {} in read {} STRICT", i, outer_ref_id);
+
+                let twlaps = compare_twin_reads(&read, &read2, Some(&anchors), None, i, outer_ref_id as usize, &comparison_options, args);
+
+                if twlaps.len() > 1{
+                    log::trace!("Multiple overlaps for {}:{} and {}:{}", &read.id, i,  &read2.id, outer_ref_id);
+                    for twlap in twlaps.iter(){
+                        log::trace!("{}-{} Overlap: {}-{} {}-{}, reverse {}", i, outer_ref_id, twlap.start1, twlap.end1, twlap.start2, twlap.end2, twlap.chain_reverse);
                     }
                 }
-            }
 
-            if possible_containment {
-                if twlaps.len() == 1 {
-                    let twlap = &twlaps[0];
-                    let contained_overlap_config = OverlapConfig{
-                        hang1: 0,
-                        hang2: 0,
-                        //Forward doesn't make sense for contained reads
-                        forward1: true,
-                        forward2: true,
-                        overlap1_len: twlap.end1 - twlap.start1,
-                        overlap2_len: twlap.end2 - twlap.start2,
-                        read_i: twlap.i1,
-                        read_j: twlap.i2,
-                        shared_mini: twlap.shared_minimizers,
-                        shared_snpmer: twlap.shared_snpmers,
-                        diff_snpmer: twlap.diff_snpmers,
-                        contained: true,
-                        large_indel: twlap.large_indel
-                    };
-                    log::trace!("Contained read {} in read {}", twlap.i2, twlap.i1);
-                    overlaps.lock().unwrap().push(contained_overlap_config);
+                let mut possible_containment = false;
+                //Check for contained read
+                for twlap in twlaps.iter(){
+                    let mut twlap_contain = false;
+                    let mut smaller_read_index = i;
+                    let mut snpmer_threshold = args.snpmer_threshold_strict;
+                    if r1_contained_r2(&twlap, &read, &read2, true, args.c){
+                        twlap_contain = true;
+                        possible_containment = true;
+                        snpmer_threshold = read.snpmer_id_threshold.unwrap_or(100.);
+                    }
+                    else if r1_contained_r2(&twlap, &read2, &read, true, args.c){
+                        twlap_contain = true;
+                        possible_containment = true;
+                        smaller_read_index = outer_ref_id as usize;
+                        snpmer_threshold = read2.snpmer_id_threshold.unwrap_or(100.);
+                    }
+                    if twlap_contain {
+                        if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict, twlap.large_indel){
+                            contained_reads_again.lock().unwrap().insert(smaller_read_index);
+                            log::trace!("Contained read {} in read {} STRICT", i, outer_ref_id);
+                        }
+                    }
                 }
-                continue
-            }
 
-            let best_overlaps = comparison_to_overlap(twlaps, &twin_reads, args, &bufwriter);
-            for best_ol in best_overlaps{
-                overlaps.lock().unwrap().push(best_ol);
+                if possible_containment {
+                    if twlaps.len() == 1 {
+                        let twlap = &twlaps[0];
+                        let contained_overlap_config = OverlapConfig{
+                            hang1: 0,
+                            hang2: 0,
+                            //Forward doesn't make sense for contained reads
+                            forward1: true,
+                            forward2: true,
+                            overlap1_len: twlap.end1 - twlap.start1,
+                            overlap2_len: twlap.end2 - twlap.start2,
+                            read_i: twlap.i1,
+                            read_j: twlap.i2,
+                            shared_mini: twlap.shared_minimizers,
+                            shared_snpmer: twlap.shared_snpmers,
+                            diff_snpmer: twlap.diff_snpmers,
+                            contained: true,
+                            large_indel: twlap.large_indel
+                        };
+                        log::trace!("Contained read {} in read {}", twlap.i2, twlap.i1);
+                        overlaps.lock().unwrap().push(contained_overlap_config);
+                    }
+                    continue
+                }
+
+                let best_overlaps = comparison_to_overlap(twlaps, &twin_reads, args, &bufwriter);
+                for best_ol in best_overlaps{
+                    overlaps.lock().unwrap().push(best_ol);
+                }
             }
-        }
-    });
+        });
+    }
 
     let contained_reads = contained_reads_again.into_inner().unwrap();
     let mut ol = overlaps.into_inner().unwrap();
     ol.retain(|x| !contained_reads.contains(&x.read_i) && !contained_reads.contains(&x.read_j));
+    ol.sort_by_key(|x| ( -((x.overlap1_len + x.overlap2_len) as i32) + (x.hang1 + x.hang2) as i32, x.read_i, x.read_j));
 
     return ol;
 }
@@ -970,7 +972,7 @@ where T: Write + Send
 
 pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &[TwinRead], outer_reads: Option<&Vec<usize>>, args: &Cli) -> OverlapTwinGraph
 {
-    let mut nodes = FxHashMap::default();
+    let mut nodes = NodeMap::default();
     let mut edges = vec![];
 
     for overlap in overlaps{
@@ -1054,7 +1056,7 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
     graph.prune_lax_overlaps(args.c, Some(twin_reads), args.snpmer_threshold_strict, args.snpmer_error_rate_strict, args.disable_error_overlap_rescue);
     graph.transitive_reduction();
 
-    log::trace!("Number of nodes in initial read overlap graph: {}", graph.nodes.len());
+    log::debug!("Number of nodes in initial read overlap graph: {}", graph.nodes.len());
 
     return graph;
 }
@@ -1407,7 +1409,7 @@ mod tests {
     }
 
     fn mock_graph_from_edges(edge_list: Vec<MockEdge>) -> OverlapTwinGraph {
-        let mut nodes = FxHashMap::default();
+        let mut nodes = NodeMap::default();
         let mut edges = vec![];
 
         for edge in edge_list {

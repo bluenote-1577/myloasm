@@ -221,7 +221,7 @@ pub type UnitigGraph = BidirectedGraph<UnitigNode, UnitigEdge>;
 impl UnitigGraph {
     pub fn new() -> Self {
         UnitigGraph {
-            nodes: FxHashMap::default(),
+            nodes: NodeMap::default(),
             edges: Vec::new(),
         }
     }
@@ -236,7 +236,7 @@ impl UnitigGraph {
 
     pub fn re_unitig(&mut self) {
         let mut new_unitig_graph = UnitigGraph {
-            nodes: FxHashMap::default(),
+            nodes: NodeMap::default(),
             edges: Vec::new(),
         };
 
@@ -443,7 +443,7 @@ impl UnitigGraph {
         let overlap_graph = read_graph_from_overlaps_twin(overlaps, reads, outer_reads, args);
         // Start with empty graph
         let mut unitig_graph = UnitigGraph {
-            nodes: FxHashMap::default(),
+            nodes: NodeMap::default(),
             edges: Vec::new(),
         };
 
@@ -1053,7 +1053,11 @@ impl UnitigGraph {
 
     pub fn pop_bubbles(&mut self, max_length: usize, max_number_nodes: Option<usize>, keep: bool) {
         let max_number_nodes = max_number_nodes.unwrap_or(usize::MAX);
-        let node_ids = self.nodes.keys().copied().collect::<Vec<_>>();
+        let mut node_ids = self.nodes.keys().copied().collect::<Vec<_>>();
+
+        // Start with the nodes with the most reads
+        node_ids.sort_by_key(|&x| -1 * (self.nodes[&x].read_indices_ori.len() as i64));
+
         let mut visited: FxHashSet<NodeIndex> = FxHashSet::default();
         let mut num_bubbles = 0;
         for n_id in node_ids {
@@ -2329,8 +2333,8 @@ impl UnitigGraph {
 
                 let mut ratio : f64 = 0.0;
 
-                for edge_id in edges_from.iter(){
-                    let edge2 = self.edges[*edge_id].as_ref().unwrap();
+                for edge_id_2 in edges_from.iter(){
+                    let edge2 = self.edges[*edge_id_2].as_ref().unwrap();
                     let edge_vals2 = (
                         edge2.overlap.overlap_len_bases,
                         edge2.edge_id_est(args.c),
@@ -2345,8 +2349,8 @@ impl UnitigGraph {
                     }
                 }
 
-                for edge_id in edges_to.iter(){
-                    let edge2 = self.edges[*edge_id].as_ref().unwrap();
+                for edge_id_2 in edges_to.iter(){
+                    let edge2 = self.edges[*edge_id_2].as_ref().unwrap();
                     let edge_vals2 = (
                         edge2.overlap.overlap_len_bases,
                         edge2.edge_id_est(args.c),
@@ -3242,7 +3246,7 @@ mod tests {
 
     // Helper struct to make test graph construction easier
     struct MockUnitigBuilder {
-        nodes: FxHashMap<NodeIndex, UnitigNode>,
+        nodes: NodeMap<NodeIndex, UnitigNode>,
         edges: Vec<Option<UnitigEdge>>,
         next_node_id: NodeIndex,
         corresponding_reads: Vec<TwinRead>,
@@ -3261,7 +3265,7 @@ mod tests {
     impl MockUnitigBuilder {
         fn new() -> Self {
             Self {
-                nodes: FxHashMap::default(),
+                nodes: NodeMap::default(),
                 edges: Vec::new(),
                 next_node_id: 0,
                 corresponding_reads: Vec::new(),

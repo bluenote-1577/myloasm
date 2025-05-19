@@ -10,7 +10,7 @@ pub const MINIMIZER_END_NTH_OVERLAP: usize = 30;
 pub const QUANTILE_UNITIG_WEIGHT: f64 = 0.50;
 pub const MID_BASE_THRESHOLD_READ: u8 = 23; // 98%
 pub const MID_BASE_THRESHOLD_INITIAL: u8 = 10; // 90%
-pub const MAX_BUBBLE_UNITIGS_FINAL_STAGE: usize = 8;
+pub const MAX_BUBBLE_UNITIGS_FINAL_STAGE: usize = 5;
 pub const TS_DASHES_BLANK_COLONS_DOT_BLANK: &str = "%Y-%m-%d %H:%M:%S%.3f";
 pub const MIN_CHAIN_SCORE_COMPARE: i32 = 150;
 pub const MIN_READ_LENGTH: usize = 1000;
@@ -33,7 +33,7 @@ pub const MAX_BLOCK_SIZE: usize = 128;
 pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::Gaps { open: -3, extend: -1 };
 pub const MAX_OL_POLISHING: usize = 75;
 pub const READ_BLOCK_SIZE_FOR_COVERAGE: usize = 50_000;
-pub const OVERLAP_HANG_LENGTH: usize = 500;
+pub const OVERLAP_HANG_LENGTH: usize = 750;
 
 //At most 1/20 k-mers are snpmers. 
 pub const MAX_FRACTION_OF_SNPMERS_IN_READ: f64 = 1./20.;
@@ -53,7 +53,7 @@ pub const MAGIC_EXIST_STRING: &str = "exist";
 
 pub const SAMPLES: usize = 20;
 //pub const BEAM_STEPS: usize = 10;
-pub const BEAM_STEPS: usize = 5;
+pub const BEAM_STEPS: usize = 10;
 pub const SAFE_LENGTH_BACK : usize = 300_000;
 pub const MAX_LENGTH_SEARCH: usize = 1_000_000;
 

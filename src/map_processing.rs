@@ -252,11 +252,14 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
             let right_count = coverages_at_sampling[(start as usize + 200) / sampling as usize].1;
 
             cond2 = left_count > 3 && right_count > 3 && cov <= 1;
-            cond3 = (left_count > cov * 6 && right_count > cov * 6) && cov <= 2 && !args.hifi;
+            cond3 = (left_count > cov * 10 && right_count > cov * 10) && cov <= 2 && !args.hifi;
             //cond4 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3 && !args.hifi;
-            //cond5 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 4 && !args.hifi; 
+
+            //Super high coverage stuff...
+            cond5 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3 && !args.hifi; 
+
             cond4 = false;
-            cond5 = false;
+            //cond5 = false;
         } else {
             cond2 = false;
             cond3 = false;
@@ -267,7 +270,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         // 6-7 are for chimeras that skip from high to low coverage. can also cut repeats for low coverage genomes, which is probably okay
         // it's really hard to assemble repetitive short coverage genomes 
         let cond6 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 1;
-        let cond7 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 2;
+        let cond7 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 2;
         //let cond7 = (last_cov > (cov as u32 * 10) || next_cov > (cov as u32 * 10)) && cov <= 2 && !args.hifi;
         let cond8 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 3 && !args.hifi;
         //let cond10 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 4 && !args.hifi;
