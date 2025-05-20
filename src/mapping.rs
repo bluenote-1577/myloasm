@@ -345,8 +345,8 @@ pub fn dp_anchors(
                 continue;
             }
 
-            if (start1 as i32 - end1 as i32).abs() > (double_gap as i32)
-                || (start2 as i32 - end2 as i32).abs() > (double_gap as i32)
+            if (start1 as i32 - end1 as i32).abs() > (double_gap.try_into().unwrap())
+                || (start2 as i32 - end2 as i32).abs() > (double_gap.try_into().unwrap())
             {
                 continue;
             }
@@ -638,13 +638,15 @@ pub fn compare_twin_reads(
             }
 
             let split_chain_opt;
+            let mut split_options = options.clone();
+            split_options.double_gap = 2_000_000;
             if let Some(anchors) = snpmer_anchors {
                 split_chain_opt = find_optimal_chain(
                     &anchors.anchors,
                     50,
                     1,
                     Some((anchors.max_mult * 10).min(50)),
-                    options,
+                    &split_options,
                 )
                 .into_iter()
                 .max_by_key(|x| x.score);
@@ -655,7 +657,7 @@ pub fn compare_twin_reads(
                     50,
                     1,
                     Some((anchors.1 * 10).min(50)),
-                    options,
+                    &split_options,
                 );
                 split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
             }

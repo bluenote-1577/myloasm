@@ -81,9 +81,9 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
                 .unwrap_or([0.; ID_THRESHOLD_ITERS]).iter()
                 .map(|x| *x).sum::<f64>() / ID_THRESHOLD_ITERS as f64;
 
-            if contig.is_circular_strict() {
+            if contig.is_circular_strict() && (avg_cov > 5.5 || final_seq.len() > 1_000_000) {
                 circ_string = CIRC_STRICT_STRING.to_string();
-            } else if contig.has_circular_walk() || (avg_cov < 5.5 && final_seq.len() < 500_000) {
+            } else if contig.has_circular_walk()  {
                 circ_string = "circular-possibly".to_string();
             }
         }
