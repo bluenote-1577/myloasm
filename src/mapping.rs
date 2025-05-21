@@ -761,6 +761,8 @@ pub fn compare_twin_reads(
     return twin_overlaps;
 }
 
+
+
 pub fn id_est(shared_minimizers: usize, diff_snpmers: usize, c: u64, large_indel: bool) -> f64 {
     let diff_snps = diff_snpmers as f64;
     let shared_minis = shared_minimizers as f64;
@@ -926,7 +928,7 @@ pub fn map_reads_to_outer_reads(
 
         twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
             let mut tr_options = CompareTwinReadOptions::default();
-            tr_options.double_gap = 750;
+            tr_options.double_gap = 1500;
             tr_options.force_one_to_one_alignments = true;
             tr_options.read1_snpmers = Some(read.snpmers_vec());
             let mini = read.minimizers_vec();
@@ -1023,9 +1025,18 @@ pub fn map_reads_to_outer_reads(
 
             let mut all_local_intervals = boundaries
                 .into_iter()
-                .map(|x : (u32,u32)| BareInterval {
-                    start: x.0,
-                    stop: x.1,
+                .map(|x : (u32,u32)| {
+                    let start = if x.0 < 200 { x.0 } else { x.0 + 50 };
+                    let stop = if x.1 > outer_read_length as u32 - 200 {
+                        x.1
+                    } else {
+                        x.1 - 50
+                    };
+
+                    BareInterval {
+                        start: start,
+                        stop: stop,
+                    }
                 })
                 .collect::<Vec<_>>();
 

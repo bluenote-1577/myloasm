@@ -1990,7 +1990,7 @@ mod tests {
     }
 
 
-    fn test_prune_lax_overlaps_large_overlap_rescue(){
+    fn _test_prune_lax_overlaps_large_overlap_rescue(){
         // 1 -- > 2
         //   ↘ (x)
         // 3 --> 4

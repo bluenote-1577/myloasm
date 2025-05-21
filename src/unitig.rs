@@ -2052,6 +2052,7 @@ impl UnitigGraph {
                 safe_length_back,
                 &mut unitig_edge_file,
                 args.c,
+                args
             );
         }
         log::trace!(
@@ -2390,6 +2391,7 @@ impl UnitigGraph {
                 &mut std::io::sink(),
                 //&mut std::io::stdout(),
                 args.c,
+                args
             );
         }
 
@@ -2410,6 +2412,7 @@ impl UnitigGraph {
         safe_length_back: usize,
         unitig_edge_file: &mut T,
         c: usize,
+        args: &Cli,
     ) where
         T: Write,
     {
@@ -2449,17 +2452,20 @@ impl UnitigGraph {
                 let edge = &self.edges[edge_id].as_ref().unwrap();
                 let ol = edge.overlap.overlap_len_bases;
                 let fsv = edge.edge_id_est(c);
-                overlaps.push((ol, fsv));
+                overlaps.push((ol, fsv, rescue_id_est_nanopore_strict(edge, c as u64)));
             }
 
-            let (max_ol, max_ols_fsv) = *overlaps.iter().max_by(|a, b| a.0.cmp(&b.0)).unwrap();
+            let (max_ol, max_ols_fsv, rescue_nanopore_max) = *overlaps.iter().max_by(|a, b| a.0.cmp(&b.0)).unwrap();
             let ol_score = edge.overlap.overlap_len_bases as f64 / max_ol as f64; // higher better
 
             // ----- CONDITION 1 ----- (SNPmer identity condition)
             // We don't cut if the fsv of the cut edge is higher than the longest edge
+            // 5-21-2025: UNLESS we have nanopore setting and SNPmer rescuing
             let fsv_edge = edge.edge_id_est(c);
             if fsv_edge > max_ols_fsv && snpmer_id_est_safety {
-                continue;
+                if args.hifi || !rescue_nanopore_max{
+                    continue;
+                }
             }
 
             let uni1 = &self.nodes[&edge.from_unitig];
@@ -2917,6 +2923,7 @@ impl UnitigGraph {
                         safe_length_adjusted,
                         &mut std::io::sink(),
                         args.c,
+                        args
                     );
 
                     //Check tip condition
@@ -3999,6 +4006,8 @@ mod tests {
         //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
         let edge_order = vec![0, 3, 2, 1];
 
+        let args = get_reasonable_args();
+
         for edge_id in edge_order {
             graph.safely_cut_edge(
                 edge_id,
@@ -4013,6 +4022,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4049,6 +4059,7 @@ mod tests {
         let mut unitig_edge_file = BufWriter::new(std::io::sink());
 
         let edge_order = vec![0, 3, 2, 1];
+        let args = get_reasonable_args();
 
         for edge_id in edge_order.iter() {
             graph.safely_cut_edge(
@@ -4064,6 +4075,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4083,10 +4095,62 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
         assert!(removed_edges.len() == 2);
+    }
+
+    #[test]
+    fn nanopore_rescue_cut() {
+        let mut builder = MockUnitigBuilder::new();
+
+        // Make sure not to cut the safe edge after multiple iterations
+        // 1 ---> 2
+        //  (1->4)    
+        // 3 ---> 4
+
+        let n1 = builder.add_node(100, 10.0);
+        let n2 = builder.add_node(100, 10.0);
+        let n3 = builder.add_node(100, 10.0);
+        let n4 = builder.add_node(100, 10.0);
+
+        let e1 = builder.add_edge(n1, n2, 100000, true, true);
+        builder.add_edge(n1, n4, 2000, true, true);
+        builder.add_edge(n3, n2, 55000, true, true);
+        let e4 = builder.add_edge(n3, n4, 50000, true, true);
+        builder.edges[e1].as_mut().unwrap().overlap.diff_snpmers = 1;
+        builder.edges[e4].as_mut().unwrap().overlap.diff_snpmers = 10;
+
+        let (graph, _reads) = builder.build();
+
+        let mut removed_edges = FxHashSet::default();
+        let mut unitig_edge_file = BufWriter::new(std::io::sink());
+
+        let edge_order = vec![0, 3, 2, 1];
+        let args = get_reasonable_args();
+
+        for edge_id in edge_order.iter() {
+            graph.safely_cut_edge(
+                *edge_id,
+                &mut removed_edges,
+                0.5,
+                None,
+                None,
+                None,
+                true,
+                2000,
+                5,
+                1000,
+                &mut unitig_edge_file,
+                9,
+                &args
+            );
+        }
+
+        dbg!(&removed_edges);
+        assert!(removed_edges.len() == 1);
     }
 
     #[test]
@@ -4119,7 +4183,7 @@ mod tests {
 
         //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
         let edge_order = vec![0, 3, 2, 1];
-
+        let args = get_reasonable_args();
         for edge_id in edge_order {
             graph.safely_cut_edge(
                 edge_id,
@@ -4134,6 +4198,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4144,6 +4209,7 @@ mod tests {
 
         // Edge 1 is cut due to cov, edge 0 is cut due to ol ratio and cov and is compatible
         let edge_order = vec![1, 2, 3, 0];
+        let args = get_reasonable_args();
 
         for edge_id in edge_order {
             graph.safely_cut_edge(
@@ -4159,6 +4225,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4200,6 +4267,7 @@ mod tests {
         //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
         let edge_order = vec![2, 0, 1];
 
+        let args = get_reasonable_args();
         for edge_id in edge_order {
             graph.safely_cut_edge(
                 edge_id,
@@ -4214,6 +4282,7 @@ mod tests {
                 2000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4230,6 +4299,7 @@ mod tests {
         // 1 ---> 1 (circular)
         // |  |
         // 2  3 (large)
+        let args = get_reasonable_args();
 
         let n1 = builder.add_node(100, 100.0);
         let n2 = builder.add_node(1, 10.0);
@@ -4261,6 +4331,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4272,6 +4343,7 @@ mod tests {
     #[test]
     fn safely_cut_edge_test_circular_tip() {
         let mut builder = MockUnitigBuilder::new();
+        let args = get_reasonable_args();
 
         // 1 ----> 2
         // |
@@ -4312,6 +4384,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -4360,6 +4433,7 @@ mod tests {
         let mut unitig_edge_file = BufWriter::new(std::io::stdout());
 
         let edges = vec![0, 1, 2, 3, 4, 5];
+        let args = get_reasonable_args();
         // Test safely_cut_edge with strain_repeat_safety
         for edge in edges {
             graph.safely_cut_edge(
@@ -4375,6 +4449,7 @@ mod tests {
                 1000000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 
@@ -5043,6 +5118,7 @@ mod tests {
 
         let mut unitig_edge_file = BufWriter::new(std::io::stdout());
         let mut removed_edges = FxHashSet::default();
+        let args = get_reasonable_args();
 
         //Realistic cut parameters for genome assembly
         for edge_id in [cut1, cut2, cut3]{
@@ -5059,6 +5135,7 @@ mod tests {
                 1000,
                 &mut unitig_edge_file,
                 9,
+                &args
             );
         }
 

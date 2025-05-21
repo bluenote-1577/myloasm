@@ -1,4 +1,4 @@
-use crate::{constants::*, types::*};
+use crate::{constants::*, graph::GraphEdge, types::*};
 use bio_seq::prelude::*;
 use std::panic;
 use crate::unitig::*;
@@ -535,6 +535,22 @@ pub fn pseudocount_cov_multi(cov1: [f64;ID_THRESHOLD_ITERS], cov2: [f64;ID_THRES
         cumulative_pcov += pseudocount_cov(cov1[i], cov2[i]) * weight;
     }
     return cumulative_pcov;
+}
+
+pub fn rescue_id_est_nanopore_strict(edge: &UnitigEdge, c: u64) -> bool {
+    let id_est = edge.edge_id_est(c as usize);
+
+    let max_allowable_diff_snpmers = (edge.overlap.shared_snpmers / MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER).max(MAX_ALLOWABLE_SNPMER_ERROR_MISC);
+    // 0.05, but increased by 0.01 for each 200 SNPmers.
+    let additional_fsv_hetero = (edge.overlap.shared_snpmers as f64 / MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER as f64) / 100. / 4.0;
+    let additional_fsv_hetero = additional_fsv_hetero.min(0.005);
+
+    if id_est > (1.0 - 0.0050 / 100. - additional_fsv_hetero) && edge.overlap.diff_snpmers < max_allowable_diff_snpmers {
+        return true;
+    }
+    else{
+        return false;
+    }
 }
 
 
