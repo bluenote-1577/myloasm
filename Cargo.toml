@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-needletail = "0.5.0"
+needletail = {version = "0.5.0", features = ["bzip2", "flate2"]}
 #simple_logger=  { version = "3", features = ["stderr"] }
 flexi_logger = {version = "0.29", features = ["colors"] }
 log = "0"
@@ -43,7 +43,7 @@ block-aligner = { version = "0.5" }
 default = ["avx2"]
 avx2 = ["block-aligner/simd_avx2"]
 neon = ["block-aligner/simd_neon"]
-sse = ["block-aligner/simd_sse"]
+sse = ["block-aligner/simd_sse2"]
 
 [target.'cfg(target_arch = "aarch64")'.features]
 default = ["neon"]
