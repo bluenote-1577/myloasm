@@ -2,7 +2,7 @@ use std::io::BufWriter;
 use fxhash::FxHashMap;
 use std::path::Path;
 use crate::cli::Cli;
-use crate::constants::CIRC_STRICT_STRING;
+use crate::constants::{CIRC_LAX_STRING, CIRC_STRICT_STRING};
 use std::fs::File;
 use std::io::Write;
 
@@ -109,7 +109,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
         let header = String::from_utf8(record.id().to_vec()).unwrap();
         let seq = record.seq().iter().map(|x| *x as char).collect::<String>();
         let id_opt = contig_name_to_id_map.get(&header);
-        if header.contains(CIRC_STRICT_STRING) && seq.len() > 1_000_000{
+        if (header.contains(CIRC_STRICT_STRING) || header.contains(CIRC_LAX_STRING)) && seq.len() > 1_000_000{
             num_circular_1m += 1;
         }
 
@@ -169,7 +169,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
     log::info!("Number of primary contigs: {}", number_primary);
     log::info!("Number of alt/dup contigs: {} and {}", number_alternate, number_duplicated);
     log::info!(
-        "Number of circular contigs >= 1M: {}",
+        "Number of possibly circular contigs >= 1M: {}",
         num_circular_1m
     );
     log::info!(

@@ -41,6 +41,7 @@ pub const SUPP_ALIGNMENT_SCORE_THRESHOLD: i32 = 2000;
 
 pub const POLISHED_CONTIGS_NAME: &str = "initial_polished.fa";
 pub const CIRC_STRICT_STRING: &str = "circular-yes";
+pub const CIRC_LAX_STRING: &str = "circular-possibly";
 pub const USE_SOLID_KMERS: bool = false;
 
 pub const MAX_KMER_COUNT_IN_READ: usize = 500;

@@ -62,7 +62,7 @@ pub fn two_cycle_retrieval(
         let mut relaxed_args = args.clone();
         relaxed_args.min_ol = args.min_ol / 2;
         let component_overlaps =
-            twin_graph::get_overlaps_outer_reads_twin(&twin_reads, &read_ids, &relaxed_args, None);
+            twin_graph::get_overlaps_outer_reads_twin(&twin_reads, &read_ids, &relaxed_args, None, None);
 
         // Find 2-cycle overlaps
         let adjacency_map = component_overlaps

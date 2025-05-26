@@ -770,7 +770,7 @@ impl UnitigGraph {
             let id2 = self.nodes[&edge.to_unitig].read_indices_ori[0].0;
             writeln!(
                 edgewriter,
-                "u{} {} u{} {} OL:{} SNP_SHARE:{} SNP_DIFF:{} READ1: {} {} READ2:{} {}",
+                "u{}ctg {} u{}ctg {} OL:{} SNP_SHARE:{} SNP_DIFF:{} READ1: {} {} READ2:{} {}",
                 id1,
                 from_orient,
                 id2,
@@ -2089,7 +2089,7 @@ impl UnitigGraph {
         let num_circ_contigs_geq_1m = self
             .nodes
             .iter()
-            .filter(|(_, node)| node.is_circular_strict() && node.cut_length() >= 1_000_000)
+            .filter(|(_, node)| node.has_circular_walk() && node.cut_length() >= 1_000_000)
             .count();
 
         let num_contigs_geq_100k = self
@@ -2113,7 +2113,7 @@ impl UnitigGraph {
             log::info!("(Estimated) Largest contig has size: {}", largest_contig_size);
             log::info!("(Estimated) Number of contigs: {}", num_contigs);
             log::info!(
-                "(Estimated) Number of circular contigs >= 1M: {}",
+                "(Estimated) Number of possibly circular contigs >= 1M: {}",
                 num_circ_contigs_geq_1m
             );
             log::info!(
@@ -2789,7 +2789,6 @@ impl UnitigGraph {
             let edge_count;
                 edge_count = self.beam_search_path_prob(
                     *node_id,
-           //         1_000_000,
                     options.max_length_search,
                     options.temperature,
                     15, // unused
@@ -2850,7 +2849,7 @@ impl UnitigGraph {
             let edge = self.edges[**edge_id].as_ref().unwrap();
             writeln!(
                 walk_file,
-                "u{},u{} has count: {}",
+                "u{}ctg,u{}ctg has count: {}",
                 self.nodes[&edge.from_unitig].node_id, self.nodes[&edge.to_unitig].node_id, count
             )
             .unwrap();
@@ -3033,13 +3032,14 @@ impl UnitigGraph {
         max_num_soln: usize,
         _min_prob_soln: f64,
         c: usize,
-        depth: usize,
+        depth_opt: usize,
     ) -> FxHashMap<(EdgeIndex, NodeIndex), f64> {
         let mut edge_count = FxHashMap::default();
         let starting_weight = (self.nodes[&starting_node_id].read_indices_ori.len() as f64).sqrt();
         let mut seen_nodes = FxHashSet::default();
 
         for direction in [Direction::Incoming, Direction::Outgoing] {
+            let depth = self.bfs_until_length_limit(starting_node_id, direction, max_length_search, depth_opt).unwrap_or(depth_opt);
             let mut edges_to_search = vec![];
             let starting_edges = self.nodes[&starting_node_id].edges_direction(&direction);
             if starting_edges.len() == 0 {
@@ -3242,6 +3242,51 @@ impl UnitigGraph {
             new_node.in_edges = prev_edges[0].iter().map(|x| edge_map[x]).collect();
             new_node.out_edges = prev_edges[1].iter().map(|x| edge_map[x]).collect();
         }
+    }
+
+    // Perform a bfs for X iterations until a path of max_length is found. Return X.
+    fn bfs_until_length_limit(
+        &self,
+        start_node: NodeIndex,
+        direction: Direction,
+        max_length: usize,
+        max_steps: usize,
+    ) -> Option<usize>
+    {
+        let mut queue = VecDeque::new();
+        queue.push_back((start_node, 0, direction.clone(), 0));
+
+        while let Some((node, length, outgoing_direction, steps)) = queue.pop_front() {
+            if length >= max_length || steps >= max_steps {
+                return Some(steps);
+            }
+
+            // Heuristic to ensure exploration process doesn't get too large. Messes up order
+            // so becomes heursitic, but is probably okay. 
+            if queue.len() > 300{
+                queue.make_contiguous().sort_by(|a, b| {
+                    let a_length = a.1;
+                    let b_length = b.1;
+                    b_length.partial_cmp(&a_length).unwrap()
+                });
+
+                queue.truncate(50);
+            }
+
+            let unitig = &self.nodes[&node];
+            let edges = unitig.edges_direction(&outgoing_direction);
+
+            for edge_id in edges {
+                let edge = self.edges[*edge_id].as_ref().unwrap();
+                let other_node = edge.other_node(node);
+                let other_node_unitig = &self.nodes[&other_node];
+                let new_outgoing_direction = edge.node_edge_direction(&other_node).reverse();
+                let new_length = length + other_node_unitig.unique_length.unwrap();
+                let new_steps = steps + 1;
+                queue.push_back((other_node, new_length, new_outgoing_direction, new_steps));
+            }
+        }
+        return None;
     }
 }
 
@@ -5146,5 +5191,44 @@ mod tests {
         assert!(removed_edges.contains(&cut1));
         assert!(removed_edges.contains(&cut2));
         assert!(removed_edges.contains(&cut3));
+    }
+
+    #[test]
+    fn test_bfs() {
+        let mut builder = MockUnitigBuilder::new();
+
+        // Convoluted small graph inspired by real plasmid graph
+        //
+        //        n1
+        //      v    v
+        //      |    |
+        //      ^   v  (triangle)
+        //     n2 <-> n3  (triangle)
+        //
+
+
+        let n1 = builder.add_node(10, 10.0);
+        let n2 = builder.add_node(10, 10.0);
+        let n3 = builder.add_node(10, 10.0);
+
+        //First triangle
+        builder.add_edge(n1, n2, 1000, true, false);
+        builder.add_edge(n2, n3, 1000, false, true);
+        builder.add_edge(n1, n3, 1000, true, true);
+
+        let (graph, _reads) = builder.build();
+
+        let num_steps1 = graph.bfs_until_length_limit(n1, Direction::Outgoing, 5000, 10);
+        let num_steps2 = graph.bfs_until_length_limit(n1, Direction::Outgoing, 15000, 10);
+        let num_steps3 = graph.bfs_until_length_limit(n2, Direction::Outgoing, 15000, 10);
+
+        dbg!(num_steps1);
+        dbg!(num_steps2);
+        dbg!(num_steps3);
+
+        assert!(num_steps1.unwrap() == 1);
+        assert!(num_steps2.unwrap() == 2);
+        assert!(num_steps3 == None);
+
     }
 }

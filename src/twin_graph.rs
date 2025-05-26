@@ -613,7 +613,7 @@ enum Mark {
     Eliminated,
 }
 
-pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices: &[usize], args: &Cli, overlap_file_path: Option<&PathBuf>) -> Vec<OverlapConfig>{
+pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices: &[usize], args: &Cli, overlap_file_path: Option<&PathBuf>, contained_file_path: Option<&PathBuf>) -> Vec<OverlapConfig>{
 
     let bufwriter = if let Some(overlap_file_path) = overlap_file_path{
         let file = File::create(overlap_file_path).unwrap();
@@ -624,6 +624,14 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
         Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>)
     };
 
+    let bufwriter_contained = if let Some(contained_file_path) = contained_file_path{
+        let file = File::create(contained_file_path).unwrap();
+        Mutex::new(Box::new(GzEncoder::new(BufWriter::new(file), Compression::default())) as Box<dyn Write + Send>)
+        //Mutex::new(BufWriter::new(std::fs::File::create(overlaps_file).unwrap()))
+    }
+    else{
+        Mutex::new(Box::new(std::io::sink()) as Box<dyn Write + Send>)
+    };
 
     // Contained reads may still lurk in the outer reads, remove again for sure.
     let contained_reads_again = Mutex::new(FxHashSet::default());
@@ -694,10 +702,12 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
                     if twlap_contain {
                         if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict, twlap.large_indel){
                             contained_reads_again.lock().unwrap().insert(smaller_read_index);
-                            log::trace!("Contained read {} in reads {},{} STRICT", smaller_read_index,i, outer_ref_id);
-                            log::trace!("Len1: {} {} - {} Len2: {} {} -{} ol_len: {} snp_diff:{} snp_share:{}",
-                                read.base_length, twlap.start1, twlap.end1, read2.base_length, twlap.start2, twlap.end2,
-                                twlap.end2 - twlap.start2, twlap.diff_snpmers, twlap.shared_snpmers);
+
+                            writeln!(bufwriter_contained.lock().unwrap(), "{} ({}) {} ({}), SMALLER: {}, LEN1: {} RANGE1: {}-{}, LEN2:{} RANGE2: {}-{}, SNP_DIFF: {}, SNP_SHARE: {}, MINI: {}",
+                                read.id, i, read2.id, outer_ref_id, smaller_read_index,
+                                twin_reads[i].base_length, twlap.start1, twlap.end1,
+                                twin_reads[outer_ref_id as usize].base_length, twlap.start2, twlap.end2,
+                                twlap.diff_snpmers, twlap.shared_snpmers, twlap.shared_minimizers).unwrap();
                         }
                     }
                 }

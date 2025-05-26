@@ -510,12 +510,14 @@ fn get_overlaps_from_twin_reads(
     } else {
         log::info!("Getting overlaps between outer reads...");
         let overlaps_file_path = temp_dir.join("overlaps.txt.gz");
+        let contained_file_path = temp_dir.join("contained_r2.txt.gz");
         let start = Instant::now();
         overlaps = twin_graph::get_overlaps_outer_reads_twin(
             &twin_reads,
             &outer_read_indices,
             &args,
             Some(&overlaps_file_path),
+            Some(&contained_file_path),
         );
         log::info!(
             "Time elapsed for getting overlaps is: {:?}",
@@ -1012,6 +1014,7 @@ fn heavy_clean_with_walk(
     let max_length_search = MAX_LENGTH_SEARCH;
 
     let get_seq_config = types::GetSequenceInfoConfig::default();
+    let mut global_counter = 0;
 
     //Try switching temp/multiplier
     for temperature in temperatures {
@@ -1090,7 +1093,7 @@ fn heavy_clean_with_walk(
                 let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
                     args, 
-                    walk_edge_dir.join(format!("walk-edge-m{}-t{}-r{}.txt", multiplier, temperature, ol_threshold)), 
+                    walk_edge_dir.join(format!("walk-edge-G{}-m{}-t{}-r{}.txt", global_counter, multiplier, temperature, ol_threshold)), 
                     heavy_cut_options);
                 
                 let length_after_cut = unitig_graph.nodes.len();
@@ -1109,6 +1112,7 @@ fn heavy_clean_with_walk(
                     break;
                 }
                 size_graph = unitig_graph.nodes.len();
+                global_counter += 1;
             }
         }
     }
