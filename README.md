@@ -5,7 +5,7 @@
 >
 >[Installation](https://myloasm-docs.github.io/install/), [usage](http://127.0.0.1:8000/usage/), and more info are in the documentation. 
 
-<img src='https://raw.githubusercontent.com/myloasm-docs/myloasm-docs.github.io/refs/heads/main/docs/assets/logo-pink.svg' width='80%' />
+<img src='https://raw.githubusercontent.com/myloasm-docs/myloasm-docs.github.io/refs/heads/main/docs/assets/logo-pink.svg' width='60%' />
 
 Myloasm is a *de novo* metagenome assembler for long-read sequencing data. It takes sequencing reads and outputs polished contigs in a single command. 
 
