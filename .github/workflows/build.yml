@@ -92,7 +92,7 @@ jobs:
 
   build-arm-neon:
     name: Build ARM with NEON
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     
     steps:
     - name: Checkout repository
