@@ -102,9 +102,12 @@ jobs:
     
     - name: Install system dependencies
       run: |
-        # Install Homebrew dependencies if needed
-        brew install cmake
-        # macOS already has native ARM64 toolchain, no cross-compilation needed
+        # Install C++ compiler and development tools
+        xcode-select --install || true
+        brew install cmake gcc
+        # Ensure C++ standard library is available
+        export CXX=g++
+        export CC=gcc
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -125,8 +128,18 @@ jobs:
     
     - name: Build myloasm (ARM NEON)
       run: |
+        # Set C++ compiler environment variables
+        export CXX=g++
+        export CC=gcc
         # Native ARM64 build on Apple Silicon
         cargo install --path . --features=neon --no-default-features
+    
+    - name: Run tests (if available)
+      run: |
+        export CXX=g++
+        export CC=gcc
+        cargo test --release --features=neon --no-default-features
+      continue-on-error: true
     
     - name: Run tests (if available)
       run: cargo test --release --features=neon --no-default-features
