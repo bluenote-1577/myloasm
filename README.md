@@ -28,8 +28,8 @@ Myloasm was designed to take advantage of modern long reads. The main idea is th
 **Limitations:** myloasm may
 
 - occasionally produce chimeric misassembled contigs due to its aggressiveness.
-    - we provide extra debugging information for manual curation; see [the quality control guide](qc.md).
-- use more memory than other assemblers. Currently,  a ~200 gigabase long-read human gut sample takes ~450 GB of RAM.
+    - we provide extra debugging information for manual curation; see [the quality control guide](https://myloasm-docs.github.io/qc/).
+- use more memory than other assemblers. Currently, a ~200 gigabase long-read human gut sample takes ~450 GB of RAM.
 
 ## Algorithm outline
 
