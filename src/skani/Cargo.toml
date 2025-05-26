@@ -22,7 +22,7 @@ fxhash = "0"
 partitions = { git = "https://github.com/bluenote-1577/partitions.git" }
 #partitions = "0.2"
 num-traits = "0"
-needletail = "0.5"
+needletail = {version = "0.6.3", features = ["bzip2", "flate2"], default-features = false}
 simple-logging= "2"
 log = "0.4"
 rayon = "1.5"
