@@ -1,0 +1,133 @@
+name: Build myloasm
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-x86-64-avx2:
+    name: Build x86-64 with AVX2
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc cmake
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.81.0
+    
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    
+    - name: Build myloasm (default - AVX2)
+      run: cargo install --path .
+    
+    - name: Test myloasm installation
+      run: myloasm -h
+    
+    - name: Run tests (if available)
+      run: cargo test --release
+      continue-on-error: true
+
+  build-x86-64-sse2:
+    name: Build x86-64 with SSE2 (no AVX2)
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc cmake
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.81.0
+    
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-cargo-sse2-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-sse2-
+    
+    - name: Build myloasm (SSE2 only)
+      run: cargo install --path . --features=sse2 --no-default-features
+    
+    - name: Test myloasm installation
+      run: myloasm -h
+    
+    - name: Run tests (if available)
+      run: cargo test --release --features=sse2 --no-default-features
+      continue-on-error: true
+
+  build-arm-neon:
+    name: Build ARM with NEON
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu cmake
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: 1.81.0
+        targets: aarch64-unknown-linux-gnu
+    
+    - name: Cache Rust dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target/
+        key: ${{ runner.os }}-cargo-arm-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-arm-
+    
+    - name: Build myloasm (ARM NEON)
+      run: |
+        export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
+        export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
+        cargo install --path . --target aarch64-unknown-linux-gnu --features=neon --no-default-features
+    
+    - name: Run tests (if available)
+      run: cargo test --release --target aarch64-unknown-linux-gnu --features=neon --no-default-features
+      continue-on-error: true
