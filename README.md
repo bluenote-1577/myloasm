@@ -3,7 +3,7 @@
 >[!IMPORTANT]
 > Documentation is hosted at https://myloasm-docs.github.io/
 
-<img src='https://raw.githubusercontent.com/myloasm-docs/myloasm-docs.github.io/refs/heads/main/docs/assets/logo.svg' width='80%' />
+<img src='https://raw.githubusercontent.com/myloasm-docs/myloasm-docs.github.io/refs/heads/main/docs/assets/logo-pink.svg' width='80%' />
 
 Myloasm is a *de novo* metagenome assembler for long-read sequencing data. It takes sequencing reads and outputs polished contigs in a single command. 
 
