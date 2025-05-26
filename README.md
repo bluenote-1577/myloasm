@@ -1,7 +1,9 @@
 # myloasm - a new metagenome assembler for (noisy) long reads
 
 >[!IMPORTANT]
-> Documentation is hosted at https://myloasm-docs.github.io/. [Installation](https://myloasm-docs.github.io/install/), [usage](http://127.0.0.1:8000/usage/), and more info are in the documentation. 
+> Documentation is hosted at https://myloasm-docs.github.io/.
+>
+>[Installation](https://myloasm-docs.github.io/install/), [usage](http://127.0.0.1:8000/usage/), and more info are in the documentation. 
 
 <img src='https://raw.githubusercontent.com/myloasm-docs/myloasm-docs.github.io/refs/heads/main/docs/assets/logo-pink.svg' width='80%' />
 
