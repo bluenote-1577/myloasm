@@ -102,14 +102,15 @@ jobs:
     
     - name: Install system dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu cmake
+        # Install Homebrew dependencies if needed
+        brew install cmake
+        # macOS already has native ARM64 toolchain, no cross-compilation needed
     
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: 1.81.0
-        targets: aarch64-unknown-linux-gnu
+        # No need for cross-compilation target since we're building natively
     
     - name: Cache Rust dependencies
       uses: actions/cache@v4
@@ -124,10 +125,9 @@ jobs:
     
     - name: Build myloasm (ARM NEON)
       run: |
-        export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-        export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
-        cargo install --path . --target aarch64-unknown-linux-gnu --features=neon --no-default-features
+        # Native ARM64 build on Apple Silicon
+        cargo install --path . --features=neon --no-default-features
     
     - name: Run tests (if available)
-      run: cargo test --release --target aarch64-unknown-linux-gnu --features=neon --no-default-features
+      run: cargo test --release --features=neon --no-default-features
       continue-on-error: true
