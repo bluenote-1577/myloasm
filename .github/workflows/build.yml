@@ -81,13 +81,13 @@ jobs:
           ${{ runner.os }}-cargo-sse2-
     
     - name: Build myloasm (SSE2 only)
-      run: cargo install --path . --features=sse2 --no-default-features
+      run: cargo install --path . --features=sse --no-default-features
     
     - name: Test myloasm installation
       run: myloasm -h
     
     - name: Run tests (if available)
-      run: cargo test --release --features=sse2 --no-default-features
+      run: cargo test --release --features=sse --no-default-features
       continue-on-error: true
 
   build-arm-neon:
