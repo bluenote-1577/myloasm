@@ -9,4 +9,4 @@
 
 Myloasm is a *de novo* metagenome assembler for long-read sequencing data. It takes sequencing reads and outputs polished contigs in a single command. 
 
-See the [documentation](https://myloasm-docs.github.io/install/) for more information. 
+See the [documentation](https://myloasm-docs.github.io/) for more information. 
