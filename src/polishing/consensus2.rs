@@ -384,43 +384,56 @@ impl PoaConsensusBuilder {
         mapping_boundaries.par_iter().for_each(|interval| {
             let ol = &interval.val;
             let ar = &ol.alignment_result.as_ref().unwrap();
-            //TODO assume qualities exist
-            let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
-            let query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
 
+            let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
             let query_seq_u8: Vec<u8>;
-            let query_quals_u8_binned: Vec<u8>;
+
             if ol.reverse {
                 query_seq_u8 = query_seq
                     .to_revcomp()
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
                     .collect();
-                query_quals_u8_binned = query_quals
-                    .to_revcomp()
-                    .iter()
-                    .map(|x| (x as u8) * 3 + 33)
-                    .collect();
-            } else {
+                } 
+            else {
                 query_seq_u8 = query_seq
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
                     .collect();
-                query_quals_u8_binned = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
             }
 
-            let bin_size = QUALITY_SEQ_BIN;
-            let mut query_quals_u8 = query_quals_u8_binned
-                .iter()
-                .flat_map(|x| vec![*x; bin_size])
-                .collect::<Vec<u8>>();
+            let query_quals_opt = &twin_reads[ol.query_id as usize].qual_seq;
+            //query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
+            let mut query_quals_u8: Vec<u8>;
+            if let Some(query_quals) = query_quals_opt{
+                let query_quals_u8_binned: Vec<u8>;
+                if ol.reverse{
+                    query_quals_u8_binned = query_quals
+                    .to_revcomp()
+                    .iter()
+                    .map(|x| (x as u8) * 3 + 33)
+                    .collect();
+                }
+                else{
+                    query_quals_u8_binned = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
+                }
 
-            if query_quals_u8.len() > query_seq.len() {
-                query_quals_u8.truncate(query_seq.len());
+                let bin_size = QUALITY_SEQ_BIN;
+                query_quals_u8 = query_quals_u8_binned
+                    .iter()
+                    .flat_map(|x| vec![*x; bin_size])
+                    .collect::<Vec<u8>>();
+
+                if query_quals_u8.len() > query_seq.len() {
+                    query_quals_u8.truncate(query_seq.len());
+                }
+                else if query_quals_u8.len() < query_seq.len() {
+                    let last_qual = query_quals_u8[query_quals_u8.len() - 1];
+                    query_quals_u8.extend(vec![last_qual; query_seq.len() - query_quals_u8.len()]);
+                }
             }
-            else if query_quals_u8.len() < query_seq.len() {
-                let last_qual = query_quals_u8[query_quals_u8.len() - 1];
-                query_quals_u8.extend(vec![last_qual; query_seq.len() - query_quals_u8.len()]);
+            else{
+                query_quals_u8 = vec![70; query_seq_u8.len()];
             }
 
             self.add_seq(
