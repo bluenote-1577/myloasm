@@ -4,3 +4,6 @@ combine_and_map.sh
 /.vscode
 old_build.rs
 /algorithm-docs
+/temp
+/myloasm-out
+*.py

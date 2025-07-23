@@ -1034,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "myloasm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "approx",
  "assert_cmd",
