@@ -406,7 +406,7 @@ dependencies = [
 [[package]]
 name = "clap-markdown"
 version = "0.1.5"
-source = "git+https://github.com/bluenote-1577/clap-markdown.git#755ec4aca4889d40302b5c662815babce5e857f5"
+source = "git+https://github.com/bluenote-1577/clap-markdown.git#5da70fb0631db284a9b68eb6490911ffa5366b85"
 dependencies = [
  "clap",
 ]
@@ -1085,6 +1085,7 @@ dependencies = [
  "sysinfo",
  "tempfile",
  "tikv-jemallocator",
+ "wide",
 ]
 
 [[package]]
@@ -1644,7 +1645,7 @@ checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
 name = "safe_arch"
 version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3fb5032219cc30e5bb98749b19a18ceb2cf15e24ba8d517a7e64dff4f1f1eca5"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
 dependencies = [
  "bytemuck",
 ]
@@ -2087,7 +2088,7 @@ dependencies = [
 name = "wide"
 version = "0.7.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a0ab08c041f0cbb00a12fd091b2877dcec2311f90f87a88391d4b0961ffb4fe"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
 dependencies = [
  "bytemuck",
  "safe_arch",

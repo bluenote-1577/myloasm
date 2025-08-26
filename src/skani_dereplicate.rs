@@ -54,7 +54,6 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
                 let smaller = if length_id_query < length_id_ref {length_id_query} else {length_id_ref};
                 let larger = if smaller == length_id_query {length_id_ref} else {length_id_query};
                 let kmer_mult_larger_str = larger.2.split("mult=").nth(1).unwrap();
-                dbg!(&kmer_mult_larger_str);
                 let kmer_mult_larger = kmer_mult_larger_str.parse::<f64>().unwrap_or(1.00);
 
                 if kmer_mult_larger > 1.25 && larger.0 < 1_000_000. {
