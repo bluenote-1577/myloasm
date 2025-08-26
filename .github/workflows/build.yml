@@ -26,7 +26,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.81.0
+        toolchain: 1.85.0
     
     - name: Cache Rust dependencies
       uses: actions/cache@v4
@@ -67,7 +67,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.81.0
+        toolchain: 1.85.0
     
     - name: Cache Rust dependencies
       uses: actions/cache@v4
@@ -112,7 +112,7 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: 1.81.0
+        toolchain: 1.85.0
         # No need for cross-compilation target since we're building natively
     
     - name: Cache Rust dependencies
