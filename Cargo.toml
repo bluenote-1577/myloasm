@@ -1,6 +1,6 @@
 [package]
 name = "myloasm"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 #build = "build.rs"
@@ -25,7 +25,7 @@ fxhash = "0"
 bio-seq = { version = "0.14", features = ["serde"]}
 rust-lapper = "1.1"
 memory-stats = "1.2.0"
-fastbloom = "0.8.0"
+fastbloom = "0.11.0"
 crossbeam-channel = "0.5.13"
 flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false }
 gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"] }
@@ -37,7 +37,9 @@ skani = { path = "src/skani" }
 sysinfo = "0.34.2"
 built = "0.7"
 clap-num = "1.2.0"
+wide = "=0.7.33"
 block-aligner = { version = "0.5" }
+clap-markdown = { git = "https://github.com/bluenote-1577/clap-markdown.git" }
 
 [features]
 default = ["avx2"]
@@ -59,7 +61,7 @@ tempfile = "3.8"
 #predicates = "1"
 #serial_test = "*"
 #rand = "0.8"
-approx = "*"
+approx = "0.4"
 
 
 [profile.release]

@@ -37,6 +37,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 fn main() {
     let total_start_time = Instant::now();
     let mut args = cli::Cli::parse();
+
     let output_dir = initialize_setup(&mut args);
 
     log::info!("Starting assembly...");
@@ -197,6 +198,15 @@ fn my_own_format(
 }
 
 fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
+
+    if args.markdown_help {
+        let markdown_options = clap_markdown::MarkdownOptions::default();
+        markdown_options.show_table_of_contents(true);
+        clap_markdown::print_help_markdown::<cli::Cli>();
+        std::process::exit(0);
+    }
+
+
     for file in &args.input_files {
         if !Path::new(file).exists() && file != MAGIC_EXIST_STRING{
             eprintln!(

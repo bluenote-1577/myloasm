@@ -27,3 +27,8 @@ pub fn div_rounded(a: usize, b: usize) -> usize {
     (a + b / 2) / b
 }
 
+
+
+pub fn first_word(s: &str) -> String{
+    s.split_whitespace().next().unwrap_or(s).to_string()
+}

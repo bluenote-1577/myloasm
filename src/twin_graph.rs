@@ -649,7 +649,9 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
             let comparison_options = CompareTwinReadOptions{
                 compare_snpmers: true,
                 retain_chain: false,
-                force_one_to_one_alignments: true,
+                //force_one_to_one_alignments: true,
+                force_query_nonoverlap: true,
+                force_ref_nonoverlap: true,
                 supplementary_threshold_score: Some(500.),
                 supplementary_threshold_ratio: Some(0.25),
                 secondary_threshold: None,

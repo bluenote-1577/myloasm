@@ -8,6 +8,7 @@ use fxhash::FxHashSet;
 use std::collections::VecDeque;
 use bio_seq::seq::Seq;
 use bio_seq::prelude::*;
+use crate::utils::*;
 
 //create new alias kmer = u64
 pub type Kmer64 = u64;
@@ -492,7 +493,7 @@ pub fn get_twin_read_syncmer(
         seq_id = None;
     }
     else{
-        seq_id = estimate_sequence_identity(qualities.as_ref());
+        seq_id = estimate_sequence_identity_vec(qualities.as_ref());
     }
 
     let mut qual_seq : Option<Seq<QualCompact3>> = None;
@@ -521,15 +522,32 @@ pub fn get_twin_read_syncmer(
         qual_seq = Some(binned_qualities.try_into().unwrap());
     }
 
-    let dna_seq: Seq<Dna> = string.try_into().unwrap();
+    let dna_seq: Seq<Dna>;
+    let dna_seq_opt : Result<Seq<Dna>, _> = string.clone().try_into();
+    if dna_seq_opt.is_err(){
+        let fixed_string = string.iter().map(|b| {
+            let upper = b.to_ascii_uppercase();
+            if upper == b'N' || upper == b'n' {
+                b'A' // Replace 'N' with 'A'
+            }
+            else {
+                upper
+            }
+        }).collect::<Vec<u8>>();
+        dna_seq = fixed_string.try_into().expect("Failed to convert a read to ACGT sequence. Exiting.");
+    }
+    else{
+        dna_seq = dna_seq_opt.unwrap();
+    }
 
     Some(TwinRead{
         //snpmer_kmers,
         snpmer_positions: snpmer_positions_final,
         //minimizer_kmers,
         minimizer_positions,
-        base_id: id.clone(),
-        id,
+        //base_id: id.clone().split_ascii_whitespace().next().unwrap().to_string(),
+        base_id: first_word(&id),
+        id: first_word(&id),
         k: k as u8,
         base_length: len,
         dna_seq,
@@ -686,13 +704,34 @@ pub fn get_twin_read_syncmer(
 
 // }
 
-fn estimate_sequence_identity(qualities: Option<&Vec<u8>>) -> Option<f64> {
+pub fn estimate_sequence_identity_vec(qualities: Option<&Vec<u8>>) -> Option<f64> {
     if qualities.is_none() {
         return None;
     }
     let mut sum = 0.0;
     let mut count = 0;
     for q in qualities.unwrap() {
+        if *q < 33 {
+            panic!("quality value {} < 33", q);
+        }
+        let q = (*q - 33) as f64;
+        let p = 10.0f64.powf(-q / 10.0);
+        sum += p;
+        count += 1;
+    }
+    Some(100. - (sum / count as f64 * 100.))
+}
+
+pub fn estimate_sequence_identity(qualities: Option<&[u8]>) -> Option<f64> {
+    if qualities.is_none() {
+        return None;
+    }
+    let mut sum = 0.0;
+    let mut count = 0;
+    for q in qualities.unwrap() {
+        if *q < 33 {
+            panic!("quality value {} < 33", q);
+        }
         let q = (*q - 33) as f64;
         let p = 10.0f64.powf(-q / 10.0);
         sum += p;

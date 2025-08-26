@@ -14,7 +14,7 @@ use crate::seeding;
 use crate::twin_graph::same_strain;
 use crate::types::*;
 use crate::unitig;
-use crate::utils::log_memory_usage;
+use crate::utils::*;
 use crate::unitig::NodeSequence;
 use bio_seq::codec::Codec;
 use flate2::write::GzEncoder;
@@ -318,6 +318,7 @@ pub fn dp_anchors(
         let start2 = matches[i].pos2;
         dp[i] = match_score;
         let mut unimproved = 0;
+        let mut unimproved_pos1 = 0;
         let back = if i > band { i - band } else { 0 };
         for j in (back..i).rev() {
             let end1 = matches[j].pos1;
@@ -358,12 +359,16 @@ pub fn dp_anchors(
                 if score > max_score {
                     max_score = score;
                     max_index = i;
+                    unimproved = 0;
                 }
                 if large_indel {
                     large_indel_tracker[i] = true;
                 }
             } else {
-                unimproved += 1;
+                if unimproved_pos1 != end1 {
+                    unimproved += 1;
+                    unimproved_pos1 = end1;
+                }
             }
             if unimproved > max_skip {
                 break;
@@ -494,7 +499,9 @@ fn find_optimal_chain(
                     intersect as f64 / (interval.stop - interval.start) as f64 > 0.25
                 })
             {
-                continue;
+                if tr_options.force_ref_nonoverlap{
+                    continue;
+                }
             }
 
             reference_intervals.push(interval);
@@ -507,21 +514,21 @@ fn find_optimal_chain(
                 val: true,
             };
 
-                if query_intervals.iter().any(|x| {
-                    let intersect = x.intersect(&interval_q);
-                    intersect as f64 / (interval_q.stop - interval_q.start) as f64 > 0.25
-                })
-                {
-                    if tr_options.force_one_to_one_alignments{
+            if query_intervals.iter().any(|x| {
+                let intersect = x.intersect(&interval_q);
+                intersect as f64 / (interval_q.stop - interval_q.start) as f64 > 0.25
+            })
+            {
+                if tr_options.force_query_nonoverlap{
+                    continue;
+                }
+                else{
+                    let secondary_ratio = tr_options.secondary_threshold.unwrap_or(0.50);
+                    if (score as f64) < secondary_ratio * (max_score as f64) {
                         continue;
                     }
-                    else{
-                        let secondary_ratio = tr_options.secondary_threshold.unwrap_or(0.50);
-                        if (score as f64) < secondary_ratio * (max_score as f64) {
-                            continue;
-                        }
-                    }
                 }
+            }
 
             query_intervals.push(interval_q);
 
@@ -554,7 +561,7 @@ pub fn compare_twin_reads(
             &anchors.anchors,
             args.c as i32,
             1,
-            Some((anchors.max_mult * 10).min(MAX_MULTIPLICITY_KMER)),
+            Some(anchors.max_mult * 20),
             options,
         );
     } else {
@@ -569,7 +576,7 @@ pub fn compare_twin_reads(
             &anchors.0,
             args.c as i32,
             1,
-            Some((anchors.1 * 10).min(MAX_MULTIPLICITY_KMER)),
+            Some((anchors.1 * 20).min(MAX_MULTIPLICITY_KMER)),
             options,
         );
     }
@@ -929,7 +936,8 @@ pub fn map_reads_to_outer_reads(
         twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
             let mut tr_options = CompareTwinReadOptions::default();
             tr_options.double_gap = 1500;
-            tr_options.force_one_to_one_alignments = true;
+            //tr_options.force_one_to_one_alignments = true;
+            tr_options.force_query_nonoverlap = true;
             tr_options.read1_snpmers = Some(read.snpmers_vec());
             let mini = read.minimizers_vec();
             //let start = std::time::Instant::now();
@@ -1135,10 +1143,34 @@ pub fn map_to_dereplicate(
 
         //Remove singletons with 0 coverage; probably errors
         if q_node_unitig.read_indices_ori.len() == 1 && 
-        (q_node_unitig.min_read_depth_multi.unwrap()[0] <= 1 as f64
-        || q_node_unitig.min_read_depth_multi.unwrap()[ID_THRESHOLD_ITERS-1] <= 1 as f64){
+            (q_node_unitig.min_read_depth_multi.unwrap()[0] <= args.singleton_coverage_threshold
+            || q_node_unitig.min_read_depth_multi.unwrap()[ID_THRESHOLD_ITERS-1] <= args.singleton_coverage_threshold)
+        {
             contained_contigs.lock().unwrap().insert(*q_id);
             return;
+        }
+
+        //Remove contigs with <= 2 reads with this threshold
+        else if q_node_unitig.read_indices_ori.len() <= 2 && 
+            (q_node_unitig.min_read_depth_multi.unwrap()[0] <= args.secondary_coverage_threshold)
+        {
+            let circular = q_node_unitig.has_circular_walk();
+            if !circular{
+                contained_contigs.lock().unwrap().insert(*q_id);
+                return;
+            }
+        }
+
+        // Absolute threshold
+        else if let Some(absolute_cov_thresh) = args.absolute_coverage_threshold{
+            if q_node_unitig.min_read_depth_multi.unwrap()[0] <= absolute_cov_thresh
+            {
+                let circular = q_node_unitig.has_circular_walk();
+                if !circular{
+                    contained_contigs.lock().unwrap().insert(*q_id);
+                    return;
+                }
+            }
         }
 
         let mut tr_options = CompareTwinReadOptions::default();
@@ -1284,6 +1316,7 @@ pub fn map_reads_to_unitigs(
 
     //Convert unitigs to twinreads
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
+    let circular_unitigs = unitig_graph.nodes.iter().filter(|(_, u)| u.has_circular_walk()).map(|(id, _)| *id).collect::<FxHashSet<_>>();
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
     let counter = Mutex::new(0);
@@ -1295,6 +1328,7 @@ pub fn map_reads_to_unitigs(
         let mut tr_options = CompareTwinReadOptions::default();
         tr_options.retain_chain = true;
         tr_options.read1_snpmers = Some(read.snpmers_vec());
+        tr_options.secondary_threshold = Some(0.15);
 
         let mini = read.minimizers_vec();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
@@ -1305,7 +1339,16 @@ pub fn map_reads_to_unitigs(
                 continue;
             }
 
-            // if read.id.contains("8a4ba6cd-f730-4f92-af9b-5d59da3f29e7") {
+            // Improved alignment to small circular genomes, that are "repetitive" before end trimming
+            let unitig_length = tr_unitigs[&(*contig_id as usize)].base_length;
+            if unitig_length < read.base_length * 3 {
+                tr_options.force_ref_nonoverlap = false;
+            }
+            else{
+                tr_options.force_ref_nonoverlap = true;
+            }
+
+            // if read.id.contains("0f6f4a99-e0ff-4e5a-a7dd-00b4d45b0120") {
             //     dbg!(contig_id);
             //     dbg!(&anchors.anchors);
             // }
@@ -1320,7 +1363,7 @@ pub fn map_reads_to_unitigs(
                 &tr_options,
                 args
             ) {
-                log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}", &read.id, &tr_unitigs[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2);
+                log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}; anchor mult {}", &read.id, &tr_unitigs[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2, anchors.max_mult);
                 
                 //Disallow large indels because they may cause windowed POA to fail
                 let ol_len = twinol.end2 - twinol.start2;
@@ -1336,6 +1379,7 @@ pub fn map_reads_to_unitigs(
                 unitig_hits.push(twinol);
             }
         }
+
         let mut ss_hits = unitig_hits.into_iter().filter(|x| same_strain(
                 x.shared_minimizers,
                 x.diff_snpmers,
@@ -1399,7 +1443,7 @@ pub fn map_reads_to_unitigs(
             let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
             let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse, end_fuzz);
 
-            log::trace!("MAPPING: {} start {} end {} ref {} snp_shared {} snp_diff {}", read.id, hit.start1, hit.end1, hit.start2, hit.shared_snpmers, hit.diff_snpmers);
+            log::trace!("MAPPING: {} query:{}-{} ref:{}-{} snp_shared {} snp_diff {} unitig u{}", first_word(&read.id), hit.start1, hit.end1, hit.start2, hit.end2, hit.shared_snpmers, hit.diff_snpmers, &tr_unitigs[&(hit.i2 as usize)].id);
 
             if !retained{
                 continue;
@@ -1423,10 +1467,12 @@ pub fn map_reads_to_unitigs(
                         //of the distance to a perfect hit 
                         let id = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64, hit.large_indel);
                         let cutoff = imperfect_ids[0] - (1.0 - max_id.unwrap_or(imperfect_ids[0])) * 0.33 + 0.000000000001;
+
                         if id < cutoff {
                             break;
                         }
-                        if (mini_cumulative as f64) < max_perfect_mini as f64 * 0.9 {
+
+                        if (mini_cumulative as f64) < max_perfect_mini as f64 * 0.9{
                             break;
                         }
                     }
@@ -1452,7 +1498,7 @@ pub fn map_reads_to_unitigs(
         }
 
         retained_hits.sort_by(|a, b| b.chain_score.partial_cmp(&a.chain_score).unwrap());
-        let mut query_intervals : Vec<Interval<u32, bool>> = vec![];
+        let mut query_intervals : Vec<Interval<u32, (u32, u32, u32)>> = vec![];
         let mut max_score = 0;
         let max_chain = retained_hits.first();
         if let Some(max_chain) = max_chain{
@@ -1460,7 +1506,7 @@ pub fn map_reads_to_unitigs(
             query_intervals.push(Interval{
                 start: max_chain.start1 as u32,
                 stop: max_chain.end1 as u32,
-                val: true
+                val: (max_chain.start2 as u32, max_chain.end2 as u32, max_chain.i2 as u32)
             });
         }
 
@@ -1469,17 +1515,44 @@ pub fn map_reads_to_unitigs(
             let interval = Interval{
                 start: hit.start1 as u32,
                 stop: hit.end1 as u32,
-                val: true
+                val: (hit.start2 as u32, hit.end2 as u32, hit.i2 as u32)
             };
 
-            //Not repopulating the query intervals for now, could change later
-            if query_intervals.iter().any(|x| {
-                let intersect = x.intersect(&interval);
-                intersect as f64 / (interval.stop - interval.start) as f64 > 0.50
-            }) {
-                if (hit.chain_score as f64) < (max_score as f64) * 0.70 {
-                    break;
+            let reference_length = tr_unitigs[&hit.i2].base_length;
+            let read_length = twin_reads[hit.i1].base_length;
+
+            //Internal secondary filter in chaining procedure (compare twin reads)
+            // This is an additional filter for finer control
+            let mut proceed = true;
+            for q_interval in query_intervals.iter(){
+                let intersect = interval.intersect(q_interval);
+                let overlap = intersect as f64 / (interval.stop - interval.start) as f64;
+                if overlap > 0.25{
+                    if (hit.chain_score as f64) < (max_score as f64) * 0.70 {
+                        //Allow duplicate mappings to small circular contigs
+                        if read_length * 3 < reference_length{
+
+                            // Allow mappings to "repeats" caused by end circularity
+                            if circular_unitigs.contains(&(hit.i2 as usize)) && q_interval.val.2 == hit.i2 as u32{
+                                let reference_length = tr_unitigs[&hit.i2].base_length;
+                                if overlap < 0.7 
+                                || (q_interval.val.1 as i32 - interval.val.0 as i32).abs() + 100_000 < reference_length as i32 {
+                                //|| ((hit.chain_score as f64) < 0.1 * (max_score as f64)){
+                                    proceed = false;
+                                    break
+                                }
+                            }
+                            else{
+                                proceed = false;
+                                break;
+                            }
+                        }
+                    }
                 }
+            }
+
+            if !proceed{
+                break;
             }
 
             let alignment_result = alignment::get_full_alignment(
@@ -1498,7 +1571,7 @@ pub fn map_reads_to_unitigs(
                 alignment_result.as_ref().unwrap().q_start,
                 alignment_result.as_ref().unwrap().q_end,
                 if hit.chain_reverse { "-" } else { "+" },
-                tr_unitigs[&hit.i2].id,
+                format!("{}ctg", &tr_unitigs[&hit.i2].id),
                 tr_unitigs[&hit.i2].base_length,
                 alignment_result.as_ref().unwrap().r_start,
                 alignment_result.as_ref().unwrap().r_end,

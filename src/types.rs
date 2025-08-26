@@ -879,7 +879,8 @@ pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{
 pub struct CompareTwinReadOptions{
     pub compare_snpmers: bool,
     pub retain_chain: bool,
-    pub force_one_to_one_alignments: bool,
+    pub force_query_nonoverlap: bool,
+    pub force_ref_nonoverlap: bool,
     pub supplementary_threshold_score: Option<f64>,
     pub supplementary_threshold_ratio: Option<f64>, 
     // When not forcing 1-to-1 alignments, allow query overlaps only if secondary threshold is below a certain amount
@@ -896,7 +897,8 @@ impl Default for CompareTwinReadOptions{
         CompareTwinReadOptions{
             compare_snpmers: true,
             retain_chain: false,
-            force_one_to_one_alignments: false,
+            force_query_nonoverlap: false,
+            force_ref_nonoverlap: true,
             supplementary_threshold_score: Some(500.0),
             supplementary_threshold_ratio: Some(0.25),
             secondary_threshold: Some(0.50),

@@ -35,7 +35,7 @@ gcollections = "1"
 fastrand="1"
 gbdt = "0"
 serde_json = "1"
-statrs = "0"
+statrs = "0.16"
 
 [dependencies.clap]
 version = "3"

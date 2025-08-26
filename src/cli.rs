@@ -7,7 +7,7 @@ use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
 #[command(
     name = "myloasm",
     about = 
-    "myloasm - high-resolution metagenomic assembly with noisy long reads.\n\nEXAMPLE (Nanopore R10): myloasm nanopore_reads.fq.gz -o output_directory -t 50\nEXAMPLE (PacBio HiFi): myloasm pacbio_reads.fq.gz -o output_directory -t 50 --hifi",
+    "myloasm - high-resolution metagenomic assembly with noisy long reads. See online documentation for full options. \n\nEXAMPLE (Nanopore R10): myloasm nanopore_reads.fq.gz -o output_directory -t 50\nEXAMPLE (PacBio HiFi): myloasm pacbio_reads.fq.gz -o output_directory -t 50 --hifi",
     version,
     author
 )]
@@ -45,11 +45,7 @@ pub struct Cli {
     /// Compression ratio (1/c k-mers selected). Must be <= 15  
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
-
-    /// Output contigs with >= this number of reads
-    #[arg(long, default_value_t = 1, help_heading = CLI_HEADINGS[1])]
-    pub min_reads_contig: usize,
-    
+        
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
     pub quality_value_cutoff: f64,
@@ -65,11 +61,26 @@ pub struct Cli {
     /// More aggressive filtering of low-abundance k-mers. May be non-deterministic
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub aggressive_bloom: bool,
-
     
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]
     pub log_level: LogLevel,
+
+    /// Output contigs with >= this number of reads
+    #[arg(long, default_value_t = 1, help_heading = "Output thresholds")]
+    pub min_reads_contig: usize,
+
+    /// Remove singleton contigs with <= this estimated coverage depth (DP1 coverage; 99% identity coverage)
+    #[arg(long, default_value_t=3., help_heading = "Output thresholds")]
+    pub singleton_coverage_threshold: f64,
+
+    /// Remove contigs with <= this estimated coverage depth and <= 2 reads (DP1 coverage; 99% identity coverage)
+    #[arg(long, default_value_t=1., help_heading = "Output thresholds")]
+    pub secondary_coverage_threshold: f64,
+
+    /// Remove all contigs with <= this estimated coverage depth (DP1 coverage; 99% identity coverage)
+    #[arg(long, default_value=None, help_heading = "Output thresholds")]
+    pub absolute_coverage_threshold: Option<f64>,
 
     /// No polishing (not recommended)
     #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
@@ -80,72 +91,75 @@ pub struct Cli {
     pub no_snpmers: bool,
 
     /// Batch size of indexing for read-to-read mapping and overlap stage
-    #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3], hide = true)]
     pub read_map_batch_size: usize,
     
     /// Snpmer identity threshold for containment and strict overlaps
-    #[arg(long, default_value_t=IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100., help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100., help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_threshold_strict: f64,
 
     /// Snpmer identity threshold for relaxed overlaps
-    #[arg(long, default_value_t=IDENTITY_THRESHOLDS[0] * 100., help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=IDENTITY_THRESHOLDS[0] * 100., help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_threshold_lax: f64,
 
     /// Binomial test error parameter for relaxed overlaps
-    #[arg(long, default_value_t=0.025, help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=0.025, help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_error_rate_lax: f64,
 
     /// Binomial test error parameter strict overlaps
-    #[arg(long, default_value_t=0.00, help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=0.00, help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_error_rate_strict: f64,
 
     /// Relaxed compression ratio during containment; must be > c
-    #[arg(long, default_value_t=44, help_heading = CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=44, help_heading = CLI_HEADINGS[3], hide = true)]
     pub contain_subsample_rate: usize,
     
     /// Cut overlaps with > (c * this) number of bases between minimizers on average
-    #[arg(long, default_value_t=8., help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=8., help_heading =CLI_HEADINGS[3], hide = true)]
     pub absolute_minimizer_cut_ratio: f64,
 
     /// Cut overlaps with > (this) times more bases between minimizers than the best overlap on average
-    #[arg(long, default_value_t=5., help_heading =CLI_HEADINGS[3])]
+    #[arg(long, default_value_t=5., help_heading =CLI_HEADINGS[3], hide = true)]
     pub relative_minimizer_cut_ratio: f64,
 
     /// Disables a SNPmer error overlap rescue heuristic during graph construction
-    #[arg(long, help_heading =CLI_HEADINGS[3])]
+    #[arg(long, help_heading =CLI_HEADINGS[3], hide = true)]
     pub disable_error_overlap_rescue: bool,
     
     /// Base bubble popping length threshold; this gets multiplied by 5-30x during progressive graph cleaning
-    #[arg(long, default_value_t=50000, help_heading = CLI_HEADINGS[4])]
+    #[arg(long, default_value_t=50000, help_heading = CLI_HEADINGS[4], hide = true)]
     pub small_bubble_threshold: usize,
 
     /// Cut z-edges that are < this times smaller than the adjacent overlaps
-    #[arg(long, default_value_t=1.0, help_heading = CLI_HEADINGS[4])]
+    #[arg(long, default_value_t=1.0, help_heading = CLI_HEADINGS[4], hide = true)]
     pub z_edge_threshold: f64,
 
     /// Base length of tip to remove; this gets multiplied by 5-30x during simplification
-    #[arg(long, default_value_t = 20000, help_heading = CLI_HEADINGS[4])]
+    #[arg(long, default_value_t = 20000, help_heading = CLI_HEADINGS[4], hide = true)]
     pub tip_length_cutoff: usize,
 
     /// Number of reads in tips to remove; this gets multiplied by 5-30x during simplification
-    #[arg(long, default_value_t = 3, help_heading = CLI_HEADINGS[4])]
+    #[arg(long, default_value_t = 3, help_heading = CLI_HEADINGS[4], hide = true)]
     pub tip_read_cutoff: usize,
 
 
     // ------ HIDDEN ARGUMENTS -----
     
     /// K-mer size (must be odd and < 24)
-    #[arg(short, long, default_value = "21", help_heading = "Advanced", hide = true)]
+    #[arg(short, long, default_value = "21", help_heading = CLI_HEADINGS[1], hide = true)]
     pub kmer_size: usize,
 
     /// Soft clips with < this # of bases are allowed for alignment
-    #[arg(long, default_value_t=300, help_heading = "Alignment Parameters", hide = true)]
+    #[arg(long, default_value_t=300, help_heading = CLI_HEADINGS[3], hide = true)]
     pub maximal_end_fuzz: usize, 
 
     /// Maximum bubble length to pop; keep alternates
-    #[arg(long, default_value_t=500000, help_heading = "Graph Parameters", hide = true)]
+    #[arg(long, default_value_t=500000, help_heading = CLI_HEADINGS[4], hide = true)]
     pub max_bubble_threshold: usize,
 
+    /// Print this markdown document
+    #[arg(long, hide = true)]
+    pub markdown_help: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]

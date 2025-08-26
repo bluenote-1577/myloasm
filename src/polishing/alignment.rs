@@ -1,7 +1,5 @@
 use crate::cli::Cli;
 use crate::constants::GAPS;
-use crate::constants::MAX_BLOCK_SIZE;
-use crate::constants::MIN_BLOCK_SIZE;
 use crate::constants::SUB_MATRIX;
 use crate::types::*;
 use bio_seq::prelude::*;
@@ -434,16 +432,17 @@ pub fn align_seq_to_ref_slice_local(
     gaps: &Gaps,
 ) -> (usize, usize, Vec<OpLen>) {
     let mut cigar; 
-    let mut a = Block::<true, true, true>::new(query_sliced.len(), reference_sliced.len(), MAX_BLOCK_SIZE);
+    let max_block = 256;
+    let mut a = Block::<true, true, true>::new(query_sliced.len(), reference_sliced.len(), max_block);
     let score_mat = SUB_MATRIX;
-    let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, MAX_BLOCK_SIZE);
-    let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, MAX_BLOCK_SIZE);
+    let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, max_block);
+    let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, max_block);
     a.align(
         &query_pad,
         &reference_pad,
         &score_mat,
         *gaps,
-        MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE,
+        max_block..=max_block,
         i32::MAX,
     );
     let res = a.res();
@@ -456,10 +455,16 @@ pub fn align_seq_to_ref_slice_local(
         &mut cigar,
     );
 
-    log::trace!("cig:{}, queryend:{}, refend:{}", fmt(&cigar.to_vec()), 
+    log::trace!("cig:{}, queryend:{}, refend:{}, score:{}", fmt(&cigar.to_vec()), 
         res.query_idx, 
         res.reference_idx,
+        res.score,
     );
+
+    //Unlikely, very low score indicates that we should not trust these alignments, just concatenate instead. 
+    if res.score < 10 && query_sliced.len().min(reference_sliced.len()) > 100 {
+        return (query_sliced.len(), 1, vec![]);
+    }
     
     return (res.query_idx, res.reference_idx, cigar.to_vec());
 }

@@ -16,7 +16,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
         ref_files: vec![initial_fasta_path.to_str().unwrap().to_string()],
         individual_contig_q: true,
         individual_contig_r: true,
-        min_aligned_frac: 0.30,
+        min_aligned_frac: 0.15,
         learned_ani: true,
         rescue_small: false,
         mode: params::Mode::Triangle,
@@ -45,7 +45,27 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
                 continue;
             }
 
-            //Too similar - duplicate, not alternate
+            // STEP 1: REMOVE REPETITIVE, misassembled THINGS
+            //If something with huge multiplicity consumes a small k-mer multiplicity object,
+            // it's likely a duplicated repeat. Remove it. 
+            if (ani_result.align_fraction_ref > 0.9 || ani_result.align_fraction_query > 0.9) && ani_result.ani > 0.98{
+                let length_id_query = (ani_result.quant_50_contig_len_q, query_id, &ani_result.query_contig);
+                let length_id_ref = (ani_result.quant_50_contig_len_r, ref_id, &ani_result.ref_contig);
+                let smaller = if length_id_query < length_id_ref {length_id_query} else {length_id_ref};
+                let larger = if smaller == length_id_query {length_id_ref} else {length_id_query};
+                let kmer_mult_larger_str = larger.2.split("mult=").nth(1).unwrap();
+                dbg!(&kmer_mult_larger_str);
+                let kmer_mult_larger = kmer_mult_larger_str.parse::<f64>().unwrap_or(1.00);
+
+                if kmer_mult_larger > 1.25 && larger.0 < 1_000_000. {
+                    duplicate_indices.insert(larger.1, (smaller.2, ani_result));
+                    contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
+                    contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);
+                    continue;
+                }
+            }
+
+            // STEP 2: REMOVE DUPLICATED things
             if (ani_result.align_fraction_ref > 0.99 || ani_result.align_fraction_query > 0.99) && ani_result.ani > 0.999 {
                 let length_id_query = (ani_result.quant_50_contig_len_q, query_id, &ani_result.query_contig);
                 let length_id_ref = (ani_result.quant_50_contig_len_r, ref_id, &ani_result.ref_contig);
@@ -69,6 +89,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
                 }
             }
 
+            // STEP 3: Remove ALTERNATE things
             else if (ani_result.align_fraction_ref > 0.90 || ani_result.align_fraction_query > 0.90) && ani_result.ani > 0.99 {
 
                 let length_id_query = (ani_result.quant_50_contig_len_q, query_id, &ani_result.query_contig);
@@ -79,6 +100,14 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
                 // Don't allow circular contigs to be considered alternate if they are not duplicates
                 // If smaller is the query, remove the reference
                 if smaller.0 < 500_000. && !smaller.2.contains(CIRC_STRICT_STRING){
+                    alternate_indices.insert(smaller.1, (larger.2, ani_result));
+                    contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
+                    contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);
+                }
+                
+                // Really similar small things, doesn't matter if circular, dereplicate. 
+                // Small things could arise by sequencing artifacts anyways. 
+                else if ani_result.align_fraction_query > 0.90 && ani_result.align_fraction_ref > 0.90  && smaller.0 < 100_000. {
                     alternate_indices.insert(smaller.1, (larger.2, ani_result));
                     contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
                     contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);

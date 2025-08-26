@@ -43,8 +43,11 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
                 .map(|x| bits_to_ascii(x as u8))
                 .collect::<Vec<u8>>(),
         );
-        poa_cons_builder.generate_breakpoints(350, 150);
+        poa_cons_builder.generate_breakpoints(405, 205);
         if contig.mapping_info.max_alignment_boundaries.is_none() {
+            return;
+        }
+        if contig.mapping_info.max_alignment_boundaries.as_ref().unwrap().len() == 1 {
             return;
         }
         let mapping_boundaries = contig
@@ -111,14 +114,23 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
         let depths = contig.min_read_depth_multi.unwrap_or([0., 0., 0.]);
         let depth_string = format!("{}-{}-{}", depths[0], depths[1], depths[2]);
         let kmer_mult = kmer_multiplicity(&final_seq);
+        let duplicate_status;
+        if kmer_mult < 1.10 {
+            duplicate_status = "no";
+        } else if kmer_mult < 1.50 {
+            duplicate_status = "possibly";
+        } else {
+            duplicate_status = "yes";
+        }
 
         write!(
             &mut fasta_writer,
-            ">u{}ctg_len-{}_{}_depth-{}_mult-{:.2}\n",
+            ">u{}ctg_len-{}_{}_depth-{}_duplicated-{} mult={:.2}\n",
             contig.node_id,
             final_seq.len(),
             circ_string,
             depth_string,
+            duplicate_status,
             kmer_mult
         )
         .unwrap();

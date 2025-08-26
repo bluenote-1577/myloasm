@@ -17,6 +17,7 @@ use std::io::BufWriter;
 use std::io::Write;
 use std::panic;
 use std::sync::Mutex;
+use crate::utils::*;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UnitigNode {
@@ -745,7 +746,7 @@ impl UnitigGraph {
                         range.1,
                         read_idx,
                         curr_pos,
-                        read.id,
+                        first_word(&read.id),
                         ori_string,
                         length,
                         read.min_depth_multi.as_ref().unwrap()[0],

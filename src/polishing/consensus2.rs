@@ -1,6 +1,10 @@
 use crate::constants::*;
+use std::io::Write;
+use std::fs::File;
+use std::io::BufWriter;
 use crate::mapping;
 use crate::polishing::alignment;
+use crate::seeding::estimate_sequence_identity;
 use crate::types::SmallTwinOl;
 use crate::types::*;
 use crate::cli::Cli;
@@ -61,15 +65,44 @@ impl PoaConsensusBuilder {
                 //log::trace!("Processing block {} of {}: {:?}",i, self.contig_name, seqs.iter().map(|x| x.len()).collect::<Vec<_>>());
 
                 let mut qual_map = FxHashMap::default();
+                let mut length_dist = vec![];
                 for (i, qual) in quals.iter().enumerate() {
-                    let mean_qual = qual.iter().map(|x| *x as i32).sum::<i32>() / qual.len() as i32;
-                    qual_map.insert(i, -(qual.len() as i32) * mean_qual);
+                    let mean_qual = estimate_sequence_identity(Some(&qual[0..qual.len()-1])).unwrap_or(0.0);
+                    //let mean_qual = qual.iter().map(|x| (*x - 33)as f64).sum::<f64>() / qual.len() as f64;
+                    length_dist.push(qual.len());
+                    //qual_map.insert(i, -(qual.len() as i32) * mean_qual);
+                    qual_map.insert(i, (mean_qual) as i32);
+                }
+                length_dist.sort();
+                let median_length_dist;
+                let twenty_five_length;
+                let seventy_five_length;
+                if quals.len() == 0{
+                    median_length_dist = self.window_overlap_len + self.bp_len;
+                    twenty_five_length = self.window_overlap_len + self.bp_len;
+                    seventy_five_length = self.window_overlap_len + self.bp_len;
+                } 
+                else{
+                    median_length_dist = length_dist[length_dist.len() / 2];
+                    twenty_five_length = length_dist[length_dist.len() / 4];
+                    seventy_five_length = length_dist[length_dist.len() * 3 / 4];
+                }
+                log::trace!("Median length distribution: {} ({}-{}) with {} seqs at block {}", median_length_dist, twenty_five_length, seventy_five_length, quals.len(), i);
+
+                for (i, mean_qual) in qual_map.iter_mut() {
+                    //De-prioritize reads that are very different in length from the median
+                    let length_penalty = (seventy_five_length as i32 - quals[*i].len() as i32).abs();
+                    *mean_qual -= length_penalty;
                 }
 
                 //Sort seqs and quals by the qual_map
                 let mut sorted_indices = qual_map.into_iter().collect::<Vec<_>>();
-                sorted_indices.sort_by_key(|x| x.1);
-                let sorted_indices = sorted_indices.into_iter().map(|x| x.0).collect::<Vec<_>>();
+                sorted_indices.sort_by_key(|x| -x.1);
+                let mut sorted_indices = sorted_indices.into_iter().map(|x| x.0).collect::<Vec<_>>();
+                if seqs.len() > 20{
+                    let trim = seqs.len()  / 20;
+                    sorted_indices = sorted_indices[..sorted_indices.len() - trim].to_vec();
+                }
 
                 let mut seqs = sorted_indices
                     .iter()
@@ -113,6 +146,11 @@ impl PoaConsensusBuilder {
                     );
                 }
 
+                if cons.len() as i32 - seventy_five_length as i32 > 300 {
+                    log::debug!("Warning: Consensus for block at approximately {} of {} is much longer than expected ({} vs {}). This may indicate low coverage or poor consensus.", 
+                    i * (self.bp_len) - self.window_overlap_len, self.contig_name, cons.len(), seventy_five_length);
+                }
+
                 //log::trace!("Consensus for block {} complete", i);
 
                 consensuses.lock().unwrap().push((i, cons));
@@ -122,6 +160,19 @@ impl PoaConsensusBuilder {
         let mut consensuses = consensuses.into_inner().unwrap();
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();
+        // if log trace level
+        if log::log_enabled!(log::Level::Trace){
+            //mkdir cons/
+            std::fs::create_dir_all("cons/").unwrap();
+
+            let filename = format!("cons/cons_test_{}.fa", self.contig_name);
+            let mut fasta_writer = BufWriter::new(File::create(&filename).unwrap());
+            for (i, cons) in consensuses.iter().enumerate() {
+                writeln!(fasta_writer, ">contig_{}_block_{}", self.contig_name, i).unwrap();
+                writeln!(fasta_writer, "{}", std::str::from_utf8(cons).unwrap()).unwrap();
+            }
+            
+        }
         let consensuses =
             PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, self.bp_len, &self.contig_name);
         return consensuses;
@@ -156,7 +207,9 @@ impl PoaConsensusBuilder {
             //dbg!(&overhang_i, &overhang_j);
 
             //i is query
+            log::trace!("Aligning overhangs for blocks {} and {}", i, i + 1);
             let (i_end, j_end, _) = alignment::align_seq_to_ref_slice_local(overhang_i, overhang_j, &GAPS_LAX_INDEL);
+            //log::debug!("Alignment for block {} complete, i_end {} j_end {}", i);
 
             //breakpoints.push((query_pos, ref_pos));
             breakpoints.lock().unwrap().push((i, i_end, j_end, cut));
@@ -177,9 +230,9 @@ impl PoaConsensusBuilder {
             //I believe this happens when the overlap alignments are discordant or near the ends of contigs
             if bp.0 > ol_len{
                 if i != num_bps - 1 {
-                    log::debug!("Potential error in consensus joining at block {} for contig {}", (i+1) * bp_length - window_len, contig_name);
+                    log::trace!("Potential error in consensus joining at block {} for contig {}. Iblock len {}, Jblock len {}", (i+1) * bp_length - window_len, contig_name, new_cons_i.len(), new_cons_j.len());
                 }
-                hang = ol_len;
+                hang = 0;
             }
             else{
                 hang = ol_len - bp.0;
@@ -474,7 +527,8 @@ pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, h
     let tr_options = CompareTwinReadOptions{
         compare_snpmers: false,
         retain_chain: false,
-        force_one_to_one_alignments: true,
+        //force_one_to_one_alignments: true,
+        force_query_nonoverlap: true,
         ..Default::default()
     };
 
@@ -674,7 +728,7 @@ mod tests {
             let mut builder = PoaConsensusBuilder::new_test(100);
             builder.generate_breakpoints(10, window_len);
             let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
-            let qual = vec![30; 32];
+            let qual = vec![50; 32];
             let cigar = vec![
                 OpLen {
                     op: Operation::M,
@@ -692,7 +746,7 @@ mod tests {
             builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             let seq = b"ACGTACGTACGTACGTACGTACGTACGTATTC".to_vec();
-            let qual = vec![30; 32];
+            let qual = vec![50; 32];
             let cigar = vec![
                 OpLen {
                     op: Operation::M,
@@ -710,7 +764,7 @@ mod tests {
             builder.add_seq(seq, qual, &OpLenVec::new(cigar), 0, 0);
 
             let seq = b"ACGTACGTACGTACGTACGTACGTACGTAC".to_vec();
-            let qual = vec![30; 32];
+            let qual = vec![50; 32];
             let cigar = vec![
                 OpLen {
                     op: Operation::M,
