@@ -54,13 +54,18 @@ pub struct Cli {
     #[arg(long, default_value_t=500, help_heading = CLI_HEADINGS[1])]
     pub min_ol: usize,
         
-    /// Bloom filter size in GB. Increase for massive datasets
-    #[arg(short, long, default_value_t=10., help_heading = CLI_HEADINGS[1])]
-    pub bloom_filter_size: f64,
+    /// Bloom filter size in GB. Increase for massive datasets if initial k-mer counting is a bottleneck (default: automatic estimation)
+    #[arg(short, long, help_heading = CLI_HEADINGS[1])]
+    pub bloom_filter_size: Option<f64>,
 
     /// More aggressive filtering of low-abundance k-mers. May be non-deterministic
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub aggressive_bloom: bool,
+
+
+    /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
+    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    pub new_polish_trimming: bool,
     
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]
@@ -81,6 +86,14 @@ pub struct Cli {
     /// Remove all contigs with <= this estimated coverage depth (DP1 coverage; 99% identity coverage)
     #[arg(long, default_value=None, help_heading = "Output thresholds")]
     pub absolute_coverage_threshold: Option<f64>,
+
+    /// Mark contigs with >= this average nucleotide identity (ANI) to a larger contig as alternate
+    #[arg(long, default_value_t=99.0, help_heading = "Output thresholds")]
+    pub dereplication_ani: f32,
+
+    /// Mark contigs with > 90% aligned, < this length, and >= --dereplication-ani as alternate
+    #[arg(long, default_value_t=500_000., help_heading = "Output thresholds")]
+    pub dereplication_length: f32,
 
     /// No polishing (not recommended)
     #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]

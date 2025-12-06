@@ -530,6 +530,10 @@ pub fn get_twin_read_syncmer(
             if upper == b'N' || upper == b'n' {
                 b'A' // Replace 'N' with 'A'
             }
+            else if upper != b'A' && upper != b'C' && upper != b'G' && upper != b'T' {
+                log::debug!("Non-ACGT character found in read {}: {}, replacing with 'A'", id, *b);
+                b'A' // Replace any other non-ACGT character with 'A'
+            }
             else {
                 upper
             }

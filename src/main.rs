@@ -123,7 +123,7 @@ fn main() {
     log_memory_usage(true, "STAGE 4: Obtained unpolished contigs");
     contig_graph.print_statistics(&args);
 
-    if log::log_enabled!(log::Level::Trace) {
+    if log::log_enabled!(log::Level::Trace) || !args.clean_dir {
         contig_graph.to_fasta(mapping_dir.join("final_contigs_nopolish.fa"), &args);
     }
 
@@ -152,7 +152,15 @@ fn main() {
         start.elapsed()
     );
 
-    
+    // Step 9.5: Analyze coverage and filter low-quality unitigs
+    log::info!("Analyzing coverage and filtering low-quality unitigs...");
+    let coverage_start = Instant::now();
+    map_processing::filter_low_coverage_unitigs(&mut contig_graph, &mapping_dir, &args);
+    log::info!(
+        "Time elapsed for coverage filtering is {:?}",
+        coverage_start.elapsed()
+    );
+
     log::info!("Polishing final contigs...");
     polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
     log::info!("Time elapsed for polishing is {:?}", start.elapsed());

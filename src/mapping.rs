@@ -1,6 +1,5 @@
 use crate::cli::Cli;
 use crate::constants::IDENTITY_THRESHOLDS;
-use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MAX_ALLOWABLE_SNPMER_ERROR_MISC;
 use crate::constants::MAX_MULTIPLICITY_KMER;
 use crate::constants::MIN_CHAIN_SCORE_COMPARE;
@@ -606,6 +605,27 @@ pub fn compare_twin_reads(
             continue;
         }
 
+        if options.maximal_only{
+            let l1 = seq1.minimizer_positions[mini_chain[0].i as usize];
+            let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize];
+            let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
+            let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
+            let start1 = l1.min(r1);
+            let end1 = l1.max(r1) + k as u32 - 1;
+            let start2 = l2.min(r2);
+            let end2 = l2.max(r2) + k as u32 - 1;
+            let shared_minimizers = mini_chain.len();
+            let end_fuzz_pair = twin_graph::overlap_hang_length(&seq1, args);
+            let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
+            let max_mapping = check_maximal_overlap(start1 as usize, end1 as usize, start2 as usize, end2 as usize, seq1.base_length, seq2.base_length, mini_chain_info.reverse, end_fuzz);
+            if !max_mapping{
+                continue;
+            }
+            if (shared_minimizers as f64) < (seq1.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
+                continue;
+            }
+        }
+
         let mut shared_snpmer = usize::MAX;
         let mut diff_snpmer = usize::MAX;
 
@@ -794,7 +814,7 @@ fn unitigs_to_tr(
     high_freq_kmers: &HashSet<Kmer48>,
     args: &Cli,
 ) -> FxHashMap<usize, TwinRead> {
-    let mut tr_unitigs = FxHashMap::default();
+    let tr_unitigs = Mutex::new(FxHashMap::default());
     for (&node_hash_id, unitig) in unitig_graph.nodes.iter() {
         let id = format!("u{}", unitig.read_indices_ori[0].0);
         let u8_seq = unitig
@@ -833,10 +853,10 @@ fn unitigs_to_tr(
             }
             tr.retain_mini_indices(solid_mini_indices);
             tr.retain_snpmer_indices(solid_snpmer_indices);
-            tr_unitigs.insert(node_hash_id, tr);
+            tr_unitigs.lock().unwrap().insert(node_hash_id, tr);
         }
     }
-    return tr_unitigs;
+    return tr_unitigs.into_inner().unwrap();
 }
 
 pub fn get_minimizer_index(
@@ -1131,48 +1151,29 @@ pub fn map_to_dereplicate(
     }
 
     //Convert unitigs to twinreads
-    let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
-    let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
+    let mut tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     let contained_contigs = Mutex::new(FxHashSet::default());
+    
+    //Put low abund unitigs into contained contigs
+    for (&id, _) in unitig_graph.nodes.iter() {
+        let node_unitig = &unitig_graph.nodes[&id];
+        if !node_unitig.passes_abundance_thresholds(args){
+            contained_contigs.lock().unwrap().insert(id);
+        }
+    }
+
+    // Remove unitigs that fail the three filters below
+    tr_unitigs.retain(|&id, _| {
+        let node_unitig = &unitig_graph.nodes[&id];
+        node_unitig.passes_abundance_thresholds(args)
+    });
+
+    let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
 
     log::debug!("Built minimizer index of size {}", mini_index.len());
     
     tr_unitigs.par_iter().for_each(|(q_id, q_unitig)| {
         
-        let q_node_unitig = &unitig_graph.nodes[q_id];
-
-        //Remove singletons with 0 coverage; probably errors
-        if q_node_unitig.read_indices_ori.len() == 1 && 
-            (q_node_unitig.min_read_depth_multi.unwrap()[0] <= args.singleton_coverage_threshold
-            || q_node_unitig.min_read_depth_multi.unwrap()[ID_THRESHOLD_ITERS-1] <= args.singleton_coverage_threshold)
-        {
-            contained_contigs.lock().unwrap().insert(*q_id);
-            return;
-        }
-
-        //Remove contigs with <= 2 reads with this threshold
-        else if q_node_unitig.read_indices_ori.len() <= 2 && 
-            (q_node_unitig.min_read_depth_multi.unwrap()[0] <= args.secondary_coverage_threshold)
-        {
-            let circular = q_node_unitig.has_circular_walk();
-            if !circular{
-                contained_contigs.lock().unwrap().insert(*q_id);
-                return;
-            }
-        }
-
-        // Absolute threshold
-        else if let Some(absolute_cov_thresh) = args.absolute_coverage_threshold{
-            if q_node_unitig.min_read_depth_multi.unwrap()[0] <= absolute_cov_thresh
-            {
-                let circular = q_node_unitig.has_circular_walk();
-                if !circular{
-                    contained_contigs.lock().unwrap().insert(*q_id);
-                    return;
-                }
-            }
-        }
-
         let mut tr_options = CompareTwinReadOptions::default();
         tr_options.read1_snpmers = Some(q_unitig.snpmers_vec());
         tr_options.retain_chain = true;
@@ -1195,7 +1196,7 @@ pub fn map_to_dereplicate(
             if *x as usize == *q_id as usize{
                 return false;
             }
-            if r_unitig.base_length * 2 >  q_unitig.base_length {
+            if r_unitig.base_length as f64 * 1.1  >  q_unitig.base_length as f64 {
                 return false;
             }
             true
@@ -1205,6 +1206,7 @@ pub fn map_to_dereplicate(
         //for contig_id in mini_anchor_sorted_indices.iter() {
         mini_anchor_sorted_indices.par_iter().for_each(|contig_id| {
             let r_unitig = &tr_unitigs[&(*contig_id as usize)];
+            let _r_node_unitig = &unitig_graph.nodes[&(*contig_id as usize)];
 
             if contained_contigs.lock().unwrap().contains(&(*contig_id as usize)){
                 return;
@@ -1212,6 +1214,11 @@ pub fn map_to_dereplicate(
 
             let anchors = mini_anchors.get(contig_id).unwrap();
             if anchors.anchors.len() < 10{
+                return;
+            }
+
+            //TODO change strictness
+            if (anchors.anchors.len() as f64) < (r_unitig.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
                 return;
             }
 
@@ -1240,9 +1247,19 @@ pub fn map_to_dereplicate(
                     uni_ol.large_indel,
                 );
 
+                let id_derep_ol = id_est(
+                    uni_ol.shared_minimizers,
+                    uni_ol.diff_snpmers,
+                    args.c as u64,
+                    uni_ol.large_indel,
+                );
                 //Allow 2 snpmer mismatches for these small contigs -- this level of variation is filtered into alternate anyways
                 // OR is snpmer error
-                let ss_strict = ss_strict || (uni_ol.diff_snpmers <= MAX_ALLOWABLE_SNPMER_ERROR_MISC && uni_ol.shared_snpmers > 0);
+                // OR TODO v0.3.0 -- allow if identity is very high
+
+                let ss_strict = ss_strict 
+                || (uni_ol.diff_snpmers <= MAX_ALLOWABLE_SNPMER_ERROR_MISC && uni_ol.shared_snpmers > 0)
+                || (id_derep_ol > IDENTITY_THRESHOLDS[0] - 0.05 / 100.);
 
                 if uni_ol.end2 - uni_ol.start2 < r_unitig.base_length / 2 {
                     return;
@@ -1390,6 +1407,20 @@ pub fn map_reads_to_unitigs(
                 x.large_indel,
             )).collect::<Vec<_>>();
 
+        let end_fuzz_pair = twin_graph::overlap_hang_length(&read, args);
+        let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
+
+        ss_hits.retain(|x| check_maximal_overlap(
+            x.start1,
+            x.end1,
+            x.start2,
+            x.end2,
+            read.base_length,
+            tr_unitigs[&x.i2].base_length,
+            x.chain_reverse,
+            end_fuzz
+        ));
+
         let mut retained_hits = vec![];
         //TODO group similar hits together, allow some overlap ...
         ss_hits.sort_by(|a, b| id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel).
@@ -1404,8 +1435,7 @@ pub fn map_reads_to_unitigs(
             args.snpmer_error_rate_strict,
             x.large_indel,
         )).collect::<Vec<_>>();
-
-
+        
         let mut imperfect_hits = ss_hits.iter().filter(|x| !same_strain(
             x.shared_minimizers,
             x.diff_snpmers,
@@ -1416,38 +1446,46 @@ pub fn map_reads_to_unitigs(
             x.large_indel,
         )).collect::<Vec<_>>();
 
-        // imperfect_hits.sort_by(|a, b| {
-        //     let id_a = id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel);
-        //     let id_b = id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel);
-        //     ((id_b - args.snpmer_threshold_lax/100. - 0.01) * b.shared_minimizers as f64).partial_cmp(&((id_a - &args.snpmer_threshold_lax / 100. - 0.01) * a.shared_minimizers as f64)).unwrap()
-        // });
+        if args.hifi{
+            imperfect_hits.sort_by(|a, b| {
+                let id_a = id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel) - 0.98;
+                let id_b = id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel) - 0.98;
+                let mini_cumulative_a = (a.shared_minimizers + a.shared_snpmers) as f64 - a.diff_snpmers as f64;
+                let mini_cumulative_b = (b.shared_minimizers + b.shared_snpmers) as f64 - b.diff_snpmers as f64;
+                (mini_cumulative_b * id_b).partial_cmp(&(mini_cumulative_a * id_a)).unwrap()
+            });
+        }
+        else{
+            imperfect_hits.sort_by(|a, b| {
+                let rate_a = a.shared_minimizers as f64 * (args.c as f64) * 0.10;
+                let rate_b = b.shared_minimizers as f64 * (args.c as f64) * 0.10;
+                let prob_nosnp_a = 1. - 2.718f64.powf(-rate_a / args.kmer_size as f64);
+                let prob_nosnp_b = 1. - 2.718f64.powf(-rate_b / args.kmer_size as f64);
 
-        imperfect_hits.sort_by(|a, b| {
-            let id_a = id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel) - 0.98;
-            let id_b = id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel) - 0.98;
-            let mini_cumulative_a = (a.shared_minimizers + a.shared_snpmers) as f64 - a.diff_snpmers as f64;
-            let mini_cumulative_b = (b.shared_minimizers + b.shared_snpmers) as f64 - b.diff_snpmers as f64;
-            (mini_cumulative_b * id_b).partial_cmp(&(mini_cumulative_a * id_a)).unwrap()
-        });
+                let id_a = id_est(a.shared_minimizers, a.diff_snpmers, args.c.try_into().unwrap(), a.large_indel);
+                let id_b = id_est(b.shared_minimizers, b.diff_snpmers, args.c.try_into().unwrap(), b.large_indel);
+                let id_kmer_a = rate_a.powf(1. / args.kmer_size as f64);
+                let id_kmer_b = rate_b.powf(1. / args.kmer_size as f64);
 
-        let mut imperfect_ids = imperfect_hits.iter().map(|x| id_est(x.shared_minimizers, x.diff_snpmers, args.c.try_into().unwrap(), x.large_indel)).collect::<Vec<_>>();
-        imperfect_ids.sort_by(|a, b| b.partial_cmp(a).unwrap());
+                let weighted_id_a = id_a * prob_nosnp_a + id_kmer_a * (1. - prob_nosnp_a);
+                let weighted_id_b = id_b * prob_nosnp_b + id_kmer_b * (1. - prob_nosnp_b);
+
+                weighted_id_b.partial_cmp(&weighted_id_a).unwrap()
+            });
+        }
+        
+        let imperfect_ids = imperfect_hits.iter().map(|x| id_est(x.shared_minimizers, x.diff_snpmers, args.c.try_into().unwrap(), x.large_indel)).collect::<Vec<_>>();
+        let max_imperfect_id = imperfect_ids.first().cloned().unwrap_or(1.0);
+
+        //let mut imperfect_ids = imperfect_hits.iter().map(|x| id_est(x.shared_minimizers, x.diff_snpmers, args.c.try_into().unwrap(), x.large_indel)).collect::<Vec<_>>();
+        //imperfect_ids.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
         let mut max_perfect_mini_opt = None;
         let mut max_id = None;
 
         for hit in perfect_hits.iter().chain(imperfect_hits.iter()) {
 
-            let read_length = twin_reads[hit.i1].base_length;
-            let unitig_length = tr_unitigs[&hit.i2].base_length;
-            let end_fuzz_pair = twin_graph::overlap_hang_length(&read, args);
-            let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
-            let retained = check_maximal_overlap(hit.start1, hit.end1, hit.start2, hit.end2, read_length, unitig_length, hit.chain_reverse, end_fuzz);
-
-            log::trace!("MAPPING: {} query:{}-{} ref:{}-{} snp_shared {} snp_diff {} unitig u{}", first_word(&read.id), hit.start1, hit.end1, hit.start2, hit.end2, hit.shared_snpmers, hit.diff_snpmers, &tr_unitigs[&(hit.i2 as usize)].id);
-
-            if !retained{
-                continue;
-            }
+            log::trace!("FULL LENGTH MAPPING: {} query:{}-{} ref:{}-{} snp_shared {} snp_diff {} unitig u{}", first_word(&read.id), hit.start1, hit.end1, hit.start2, hit.end2, hit.shared_snpmers, hit.diff_snpmers, &tr_unitigs[&(hit.i2 as usize)].id);
 
             // If this passes stringent standards, retain the hit. Otherwise, only retain the top hit. 
             if !same_strain(
@@ -1461,19 +1499,26 @@ pub fn map_reads_to_unitigs(
             ){
                 if let Some(max_perfect_mini) = max_perfect_mini_opt {
                     let mini_cumulative = (hit.shared_minimizers + hit.shared_snpmers) as i64 - (hit.diff_snpmers as i64);
-                    if mini_cumulative < max_perfect_mini {
-
+                    if mini_cumulative < max_perfect_mini || !args.hifi {
                         //Still take the best imperfect hit IF no perfect hits found, otherwise set a threshold at 1/3 
                         //of the distance to a perfect hit 
                         let id = id_est(hit.shared_minimizers, hit.diff_snpmers, args.c as u64, hit.large_indel);
-                        let cutoff = imperfect_ids[0] - (1.0 - max_id.unwrap_or(imperfect_ids[0])) * 0.33 + 0.000000000001;
+                        let max_id_unwr = max_id.unwrap_or(max_imperfect_id);
+                        let cutoff = max_imperfect_id - (1.0 - max_id_unwr) * 0.33 + 0.000000000001;
 
-                        if id < cutoff {
+                        if id <= cutoff || max_id_unwr == 1.0{
                             break;
                         }
 
-                        if (mini_cumulative as f64) < max_perfect_mini as f64 * 0.9{
-                            break;
+                        if args.hifi{
+                            if (mini_cumulative as f64) < max_perfect_mini as f64 * 0.9{
+                                break;
+                            }
+                        }
+                        else{
+                            if (mini_cumulative as f64) < max_perfect_mini as f64 * 0.5{
+                                break;
+                            }
                         }
                     }
                 }
@@ -1497,10 +1542,12 @@ pub fn map_reads_to_unitigs(
             retained_hits.push(hit);
         }
 
-        retained_hits.sort_by(|a, b| b.chain_score.partial_cmp(&a.chain_score).unwrap());
+        // CHANGE v0.3.0 -- dont' use simple chain score, 
+        //retained_hits.sort_by(|a, b| b.chain_score.partial_cmp(&a.chain_score).unwrap());
+
         let mut query_intervals : Vec<Interval<u32, (u32, u32, u32)>> = vec![];
         let mut max_score = 0;
-        let max_chain = retained_hits.first();
+        let max_chain = retained_hits.iter().max_by_key(|hit| hit.chain_score);
         if let Some(max_chain) = max_chain{
             max_score = max_chain.chain_score;
             query_intervals.push(Interval{
@@ -1524,11 +1571,12 @@ pub fn map_reads_to_unitigs(
             //Internal secondary filter in chaining procedure (compare twin reads)
             // This is an additional filter for finer control
             let mut proceed = true;
+            let chain_threshold = if args.hifi {0.70} else {0.30};
             for q_interval in query_intervals.iter(){
                 let intersect = interval.intersect(q_interval);
                 let overlap = intersect as f64 / (interval.stop - interval.start) as f64;
                 if overlap > 0.25{
-                    if (hit.chain_score as f64) < (max_score as f64) * 0.70 {
+                    if (hit.chain_score as f64) < (max_score as f64) * chain_threshold {
                         //Allow duplicate mappings to small circular contigs
                         if read_length * 3 < reference_length{
 

@@ -261,7 +261,9 @@ pub struct TwinRead {
     //pub snpmers: Vec<(usize, u64)>,
     //pub snpmer_kmers: Vec<Kmer48>,
     pub snpmer_positions: Vec<u32>,
+    // Full record id
     pub id: String,
+    // First word of record id
     pub base_id: String,
     pub k: u8,
     pub base_length: usize,
@@ -610,6 +612,16 @@ pub struct TwinOverlap{
     pub minimizer_chain: Option<Vec<Anchor>>,
 }
 
+impl TwinOverlap{
+    pub fn length1(&self) -> usize{
+        self.end1 - self.start1
+    }
+
+    pub fn length2(&self) -> usize{
+        self.end2 - self.start2
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub struct SnpmerHit {
     pub pos1: u32,
@@ -890,6 +902,7 @@ pub struct CompareTwinReadOptions{
     pub read1_snpmers: Option<Vec<(u32,Kmer48)>>,
     pub max_gap: usize,
     pub double_gap: usize,
+    pub maximal_only: bool,
 }
 
 impl Default for CompareTwinReadOptions{
@@ -906,6 +919,7 @@ impl Default for CompareTwinReadOptions{
             read1_snpmers: None,
             max_gap: MAX_GAP_CHAINING,
             double_gap: 10_000,
+            maximal_only: false,
         }
     }
 }

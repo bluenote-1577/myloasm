@@ -347,8 +347,8 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
                             };
                             snpmers.lock().unwrap().push(snpmer);
 
-                            let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
-                            let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
+                            let snpmer1 = splitmer as u64 | ((mid_bases[0] as u64) << (k-1));
+                            let snpmer2 = splitmer as u64 | ((mid_bases[1] as u64) << (k-1));
                             log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer64(snpmer1, k as u8), pairsvec[0].1, decode_kmer64(snpmer2, k as u8), pairsvec[1].1, p_value, odds);
                             *potential_snps.lock().unwrap() += 1;
                         }

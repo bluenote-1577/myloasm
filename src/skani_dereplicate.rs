@@ -89,7 +89,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
             }
 
             // STEP 3: Remove ALTERNATE things
-            else if (ani_result.align_fraction_ref > 0.90 || ani_result.align_fraction_query > 0.90) && ani_result.ani > 0.99 {
+            else if (ani_result.align_fraction_ref > 0.90 || ani_result.align_fraction_query > 0.90) && ani_result.ani > args.dereplication_ani / 100. {
 
                 let length_id_query = (ani_result.quant_50_contig_len_q, query_id, &ani_result.query_contig);
                 let length_id_ref = (ani_result.quant_50_contig_len_r, ref_id, &ani_result.ref_contig);
@@ -98,7 +98,7 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli){
 
                 // Don't allow circular contigs to be considered alternate if they are not duplicates
                 // If smaller is the query, remove the reference
-                if smaller.0 < 500_000. && !smaller.2.contains(CIRC_STRICT_STRING){
+                if smaller.0 < args.dereplication_length && !smaller.2.contains(CIRC_STRICT_STRING){
                     alternate_indices.insert(smaller.1, (larger.2, ani_result));
                     contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
                     contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);

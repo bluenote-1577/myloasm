@@ -163,7 +163,43 @@ impl GraphNode for UnitigNode {
     }
 }
 
-impl UnitigNode {}
+impl UnitigNode {
+
+    pub fn passes_abundance_thresholds(&self, args: &Cli) -> bool {
+        let node_unitig = &self;
+
+        //Remove singletons with 0 coverage; probably errors
+        if node_unitig.read_indices_ori.len() == 1 && 
+            (node_unitig.min_read_depth_multi.unwrap()[0] <= args.singleton_coverage_threshold
+            || node_unitig.min_read_depth_multi.unwrap()[ID_THRESHOLD_ITERS-1] <= args.singleton_coverage_threshold)
+        {
+            return false;
+        }
+
+        //Remove contigs with <= 2 reads with this threshold
+        else if node_unitig.read_indices_ori.len() <= 2 && 
+            (node_unitig.min_read_depth_multi.unwrap()[0] <= args.secondary_coverage_threshold)
+        {
+            let circular = node_unitig.has_circular_walk();
+            if !circular{
+                return false;
+            }
+        }
+
+        // Absolute threshold
+        else if let Some(absolute_cov_thresh) = args.absolute_coverage_threshold{
+            if node_unitig.min_read_depth_multi.unwrap()[0] <= absolute_cov_thresh
+            {
+                let circular = node_unitig.has_circular_walk();
+                if !circular{
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+}
 
 // UnitigEdge is essentially a wrapper around ReadOverlapEdgeTwin with unitig context
 #[derive(Debug, Clone, PartialEq)]

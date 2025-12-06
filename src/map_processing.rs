@@ -8,6 +8,7 @@ use crate::constants::MINIMIZER_END_NTH_COV;
 use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
+use crate::graph::GraphNode;
 use crate::utils;
 use std::io::Write;
 use flate2::write::GzEncoder;
@@ -179,7 +180,7 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, BareMappingOverlap>
     return Some((median_over_min_blocks as f64, median_over_median_blocks as f64));
 }
 
-pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: u32, args: &Cli) -> Vec<Breakpoints>
+pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: u32, id: &str, args: &Cli) -> Vec<Breakpoints>
 {
     if intervals.is_empty() {
         return vec![];
@@ -242,6 +243,10 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         let cond3;
         let cond4; 
         let cond5;
+
+        if depths[i].start - depths[i-1].stop > 1 || depths[i+1].start - depths[i].stop > 1 {
+            log::trace!("Gap in coverage intervals detected at {}-{} for read {}", depths[i].start, depths[i].stop, id);
+        }
 
         if start > 200 && stop + 200 < reference_length as usize {
             // let left_count = mapped.mapping_boundaries().count(start - 200, start - 198);
@@ -509,7 +514,7 @@ pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMap
     twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
         if tr_map_info_dict.contains_key(&i){
             let map_info = tr_map_info_dict.get(&i).unwrap();
-            let breakpoints = cov_mapping_breakpoints(&map_info.all_intervals, map_info.mapping_info.length as u32, args);
+            let breakpoints = cov_mapping_breakpoints(&map_info.all_intervals, map_info.mapping_info.length as u32, &twin_read.id, args);
 
             //Broke right now 
             if log::log_enabled!(log::Level::Trace) {
@@ -652,7 +657,7 @@ pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end:
     result
 }
 
-pub fn depths_at_points<T>(lapper: &Lapper<u32, T>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)> 
+pub fn depths_at_points<T>(lapper: &Lapper<u32, T>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)>
 where
     T: Eq + Clone + Send + Sync
 {
@@ -663,7 +668,7 @@ where
     let mut result = Vec::new();
     let points = (end - start) / step + 1;
     result.reserve(points as usize);
-    
+
     let mut pos = start;
     let mut active_intervals = FxHashSet::default();
     let mut next_interval_idx = 0;
@@ -693,8 +698,8 @@ where
         }
 
         // Add new intervals that start before or at current position
-        while next_interval_idx < lapper.intervals.len() 
-            && lapper.intervals[next_interval_idx].start <= pos 
+        while next_interval_idx < lapper.intervals.len()
+            && lapper.intervals[next_interval_idx].start <= pos
         {
             if lapper.intervals[next_interval_idx].stop > pos {
                 active_intervals.insert(next_interval_idx);
@@ -713,12 +718,369 @@ where
     result
 }
 
+/// Result of analyzing a single unitig for poor coverage regions
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoorCoverageAnalysis {
+    pub unitig_id: String,
+    pub unitig_length: usize,
+    pub num_reads: usize,
+    pub poor_coverage_regions: Vec<PoorCoverageRegion>,
+    pub poor_coverage_fraction: f64,
+}
+
+/// A region with poor (zero) coverage
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoorCoverageRegion {
+    pub start: usize,
+    pub end: usize,
+    pub avg_depth: f64,
+    pub is_chimeric: bool,
+    pub chimera_condition: i64,
+}
+
+/// Analyzes unitigs for poor coverage regions after polishing mapping
+/// Returns regions with poor coverage and flags unitigs that should be filtered
+pub fn analyze_unitig_coverage(
+    intervals: &Vec<BareInterval>,
+    reference_length: u32,
+    unitig_id: String,
+    num_reads: usize,
+    args: &Cli,
+) -> PoorCoverageAnalysis {
+
+    let mut poor_coverage_regions = vec![];
+
+    if intervals.is_empty() {
+        // No mapping at all - entire unitig is poor coverage
+        return PoorCoverageAnalysis {
+            unitig_id,
+            unitig_length: reference_length as usize,
+            num_reads,
+            poor_coverage_regions: vec![PoorCoverageRegion {
+                start: 0,
+                end: reference_length as usize,
+                avg_depth: 0.0,
+                is_chimeric: false,
+                chimera_condition: -1,
+            }],
+            poor_coverage_fraction: 1.0,
+        };
+    }
+
+    // Get depth intervals using lapper (collapses all read mappings into depth structure)
+    let intervals_lapper = intervals.iter()
+        .map(|x| Interval {
+            start: x.start,
+            stop: x.stop,
+            val: false,
+        })
+        .collect::<Vec<Interval<u32, bool>>>();
+    let lapper = Lapper::new(intervals_lapper);
+    let depths = lapper.depth().collect::<Vec<_>>();
+
+    if depths.is_empty() {
+        return PoorCoverageAnalysis {
+            unitig_id,
+            unitig_length: reference_length as usize,
+            num_reads,
+            poor_coverage_regions: vec![],
+            poor_coverage_fraction: 0.0,
+        };
+    }
+
+    // Get coverage at sampling points for chimera detection
+    let sampling = 5;
+    let coverages_at_sampling = depths_at_points_interval(
+        intervals,
+        0,
+        reference_length,
+        sampling,
+    );
+
+    let mut total_poor_coverage_length = 0;
+
+    // Check if there's a gap at the start
+    if depths[0].start > ENDPOINT_MAPPING_FUZZ {
+        let gap_start = 0;
+        let gap_end = depths[0].start as usize;
+
+        poor_coverage_regions.push(PoorCoverageRegion {
+            start: gap_start,
+            end: gap_end,
+            avg_depth: 0.0,
+            is_chimeric: false,
+            chimera_condition: -1,
+        });
+        total_poor_coverage_length += gap_end - gap_start;
+    }
+
+    // Find zero-coverage gaps between consecutive depth intervals
+    for i in 0..depths.len() - 1 {
+        let current_end = depths[i].stop as usize;
+        let next_start = depths[i + 1].start as usize;
+
+        // If there's a gap between this depth interval and the next (zero coverage region)
+        if next_start > current_end {
+            let gap_start = current_end;
+            let gap_end = next_start;
+
+            // Check for chimeric patterns around this gap
+            let (is_chimeric, condition) = check_chimeric_pattern_gap(
+                gap_start,
+                gap_end,
+                &coverages_at_sampling,
+                sampling,
+                reference_length,
+                args,
+            );
+
+            poor_coverage_regions.push(PoorCoverageRegion {
+                start: gap_start,
+                end: gap_end,
+                avg_depth: 0.0,
+                is_chimeric,
+                chimera_condition: condition,
+            });
+
+            total_poor_coverage_length += gap_end - gap_start;
+        }
+    }
+
+    // Check if there's a gap at the end
+    let last_interval_end = depths[depths.len() - 1].stop as usize;
+    if last_interval_end + (ENDPOINT_MAPPING_FUZZ as usize) < reference_length as usize {
+        let gap_start = last_interval_end;
+        let gap_end = reference_length as usize;
+
+        poor_coverage_regions.push(PoorCoverageRegion {
+            start: gap_start,
+            end: gap_end,
+            avg_depth: 0.0,
+            is_chimeric: false,
+            chimera_condition: -4,
+        });
+        total_poor_coverage_length += gap_end - gap_start;
+    }
+
+    let poor_coverage_fraction = total_poor_coverage_length as f64 / reference_length as f64;
+
+    // Determine if unitig should be filtered:
+    // - Has <= 3 reads AND
+    // - > 10% of unitig has poor coverage
+    PoorCoverageAnalysis {
+        unitig_id,
+        unitig_length: reference_length as usize,
+        num_reads,
+        poor_coverage_regions,
+        poor_coverage_fraction,
+    }
+}
+
+/// Check if a zero-coverage gap shows chimeric patterns
+/// Similar to logic in cov_mapping_breakpoints
+fn check_chimeric_pattern_gap(
+    gap_start: usize,
+    gap_end: usize,
+    coverages_at_sampling: &[(u32, usize)],
+    sampling: u32,
+    reference_length: u32,
+    args: &Cli,
+) -> (bool, i64) {
+    // Gap must be within bounds for chimera detection
+    if gap_start < 200 || gap_end + 200 >= reference_length as usize {
+        return (false, 0);
+    }
+
+    if coverages_at_sampling.is_empty() {
+        return (false, 0);
+    }
+
+    // Get coverage just before and after the gap
+    let left_idx = (gap_start.saturating_sub(200)) / sampling as usize;
+    let right_idx = ((gap_end + 200).min(reference_length as usize - 1)) / sampling as usize;
+
+    if left_idx >= coverages_at_sampling.len() || right_idx >= coverages_at_sampling.len() {
+        return (false, 0);
+    }
+
+    let left_count = coverages_at_sampling[left_idx].1;
+    let right_count = coverages_at_sampling[right_idx].1;
+
+    // Conditions similar to cov_mapping_breakpoints
+    // (Gap is zero coverage by definition)
+    // cond1: surrounded by decent coverage on both sides
+    let cond1 = left_count > 3 && right_count > 3;
+
+    // cond2: same as cond1 for zero coverage gaps
+    let cond2 = cond1;
+
+    // cond3: high coverage flanking zero coverage region
+    let cond3 = (left_count > 10 && right_count > 10) && !args.hifi;
+
+    // cond5: very high coverage flanking zero coverage region
+    let cond5 = (left_count > 25 && right_count > 25) && !args.hifi;
+
+    // Chimera patterns: jumps from high to zero coverage
+    let cond6 = left_count > 5 || right_count > 5;
+    let cond7 = left_count > 10 || right_count > 10;
+    let cond8 = (left_count > 25 || right_count > 25) && !args.hifi;
+
+    if cond1 {
+        return (true, 1);
+    } else if cond2 {
+        return (true, 2);
+    } else if cond3 {
+        return (true, 3);
+    } else if cond5 {
+        return (true, 5);
+    } else if cond6 {
+        return (true, 6);
+    } else if cond7 {
+        return (true, 7);
+    } else if cond8 {
+        return (true, 8);
+    }
+
+    (false, 0)
+}
+
+/// Process all unitigs, analyze coverage, filter low-quality ones, and write BED file
+/// This should be called after map_reads_to_unitigs in main.rs
+pub fn filter_low_coverage_unitigs(
+    unitig_graph: &mut crate::unitig::UnitigGraph,
+    output_dir: &Path,
+    args: &Cli,
+) -> Vec<usize> {
+    use std::fs::File;
+    use std::io::BufWriter;
+    use std::io::Write;
+
+    let bed_file_path = output_dir.join("low_quality_regions.bed");
+    let bed_writer = Mutex::new(BufWriter::new(File::create(&bed_file_path).expect("Could not create BED file")));
+
+    // Write BED header
+    {
+        writeln!(bed_writer.lock().unwrap(), "# Unitig\tStart\tEnd\tLength\tUnpolishedLength\tAvgDepth\tIsChimeric\tCondition")
+            .expect("Could not write to BED file");
+    }
+
+    let unitigs_to_filter = Mutex::new(vec![]);
+    let total_regions_flagged = Mutex::new(0);
+    let total_filtered = Mutex::new(0);
+
+    // Collect all unitig IDs to process
+    let unitig_ids: Vec<usize> = unitig_graph.nodes.keys().cloned().collect();
+
+    //for unitig_hash_id in unitig_ids.iter() {
+    unitig_ids.par_iter().for_each(|unitig_hash_id| {
+        let unitig = match unitig_graph.nodes.get(unitig_hash_id) {
+            Some(u) => u,
+            None => return,
+        };
+
+        // Skip if no mapping info
+        if !unitig.mapping_info.present {
+            return;
+        }
+
+
+        // Get intervals from mapping boundaries
+        let intervals = if let Some(ref boundaries) = unitig.mapping_info.max_alignment_boundaries {
+            boundaries.intervals.iter().map(|interval| BareInterval {
+                start: interval.start,
+                stop: interval.stop,
+            }).collect::<Vec<BareInterval>>()
+        } else {
+            vec![]
+        };
+
+        let num_reads = unitig.read_indices_ori.len();
+        let unitig_id = format!("u{}ctg_unpolished", unitig.node_id);
+
+        // Analyze coverage
+        let mut analysis = analyze_unitig_coverage(
+            &intervals,
+            unitig.mapping_info.length as u32,
+            unitig_id.clone(),
+            num_reads,
+            args,
+        );
+
+        // If genome is circular, prune poor coverage regions along the ends
+        if unitig.has_circular_walk() && !analysis.poor_coverage_regions.is_empty() {
+            analysis.poor_coverage_regions.retain(|region| {
+                !(region.start == 0 || region.end + 10 > analysis.unitig_length)
+            });
+        };
+
+        // Write poor coverage regions to BED file
+        for region in &analysis.poor_coverage_regions {
+            writeln!(
+                bed_writer.lock().unwrap(),
+                "{}\t{}\t{}\t{}\t{}\t{:.2}\t{}\t{}",
+                unitig_id,
+                region.start,
+                region.end,
+                region.end - region.start,
+                analysis.unitig_length,
+                region.avg_depth,
+                region.is_chimeric,
+                region.chimera_condition
+            ).expect("Could not write to BED file");
+            let mut total_regions_flagged = total_regions_flagged.lock().unwrap();
+            *total_regions_flagged += 1;
+        }
+
+        // Mark unitig for filtering if it meets criteria
+        if analysis.poor_coverage_fraction > 0.10 && !unitig.has_circular_walk() && unitig.min_read_depth_multi.unwrap()[0] <= 5.0{
+            let mut unitigs_to_filter = unitigs_to_filter.lock().unwrap();
+            unitigs_to_filter.push(*unitig_hash_id);
+            let mut total_filtered = total_filtered.lock().unwrap();
+            *total_filtered += 1;
+
+            log::debug!(
+                "Flagging unitig {} (len={}, reads={}) for filtering: {:.1}% poor coverage",
+                unitig_id,
+                analysis.unitig_length,
+                analysis.num_reads,
+                analysis.poor_coverage_fraction * 100.0
+            );
+        } else if !analysis.poor_coverage_regions.is_empty() {
+            log::debug!(
+                "Unitig {} has {} poor coverage regions ({:.1}% of length) but passes filters",
+                unitig_id,
+                analysis.poor_coverage_regions.len(),
+                analysis.poor_coverage_fraction * 100.0
+            );
+        }
+    });
+
+    bed_writer.lock().unwrap().flush().expect("Could not flush BED file");
+
+    log::info!(
+        "Coverage analysis complete: flagged {} regions, filtering {} unitigs",
+        *total_regions_flagged.lock().unwrap(),
+        *total_filtered.lock().unwrap()
+    );
+    log::info!("Poor coverage regions written to: {}", bed_file_path.display());
+
+    // Actually remove the filtered unitigs from the graph
+    let unitigs_to_filter = unitigs_to_filter.into_inner().unwrap();
+    if !unitigs_to_filter.is_empty() {
+        log::info!("Removing {} low-quality unitigs from graph", unitigs_to_filter.len());
+        unitig_graph.remove_nodes(&unitigs_to_filter, false);
+    }
+
+    unitigs_to_filter
+}
+
 
 #[cfg(test)]
 mod tests {
 
     use super::*;
     use approx::assert_relative_eq;
+    use crate::cli::Cli;
 
 
     fn create_small_twinol(identity: f32, _maximal: bool) -> BareMappingOverlap{
@@ -1406,5 +1768,139 @@ mod tests {
         if let Some(min_depths) = read.min_depth_multi {
             assert!(min_depths[0] < 1.0);  // Should be less than 1 due to gaps
         }
+    }
+
+    fn get_test_args() -> Cli {
+        let mut args = Cli::default();
+        args.c = 9;
+        args.tip_length_cutoff = 20000;
+        args.tip_read_cutoff = 3;
+        args.z_edge_threshold = 1.0;
+        args.kmer_size = 21;
+        args
+    }
+
+    #[test]
+    fn test_analyze_unitig_coverage_no_coverage() {
+        let args = get_test_args();
+        let intervals = vec![];
+
+        let analysis = analyze_unitig_coverage(
+            &intervals,
+            1000,
+            "test_unitig".to_string(),
+            2,
+            &args,
+        );
+
+        assert_eq!(analysis.unitig_length, 1000);
+        assert_eq!(analysis.num_reads, 2);
+        assert_eq!(analysis.poor_coverage_fraction, 1.0);
+        assert_eq!(analysis.poor_coverage_regions.len(), 1);
+        assert_eq!(analysis.poor_coverage_regions[0].start, 0);
+        assert_eq!(analysis.poor_coverage_regions[0].end, 1000);
+    }
+
+    #[test]
+    fn test_analyze_unitig_coverage_with_gap() {
+        let args = get_test_args();
+
+        // Coverage from 0-300, gap from 300-400, coverage from 400-1000
+        let intervals = vec![
+            BareInterval { start: 0, stop: 300 },
+            BareInterval { start: 400, stop: 1000 },
+        ];
+
+        let analysis = analyze_unitig_coverage(
+            &intervals,
+            1000,
+            "test_unitig".to_string(),
+            3,
+            &args,
+        );
+
+        assert_eq!(analysis.unitig_length, 1000);
+        assert_eq!(analysis.num_reads, 3);
+
+        // Should have one gap region from 300-400 (100bp out of 1000 = 10%)
+        assert!(analysis.poor_coverage_regions.len() >= 1);
+        assert!((analysis.poor_coverage_fraction - 0.1).abs() < 0.05); // ~10% poor coverage
+
+        // 3 reads and 10% poor coverage exactly meets the threshold
+        // Since threshold is >, this should NOT filter
+    }
+
+    #[test]
+    fn test_analyze_unitig_coverage_high_quality() {
+        let args = get_test_args();
+
+        // Full coverage
+        let intervals = vec![
+            BareInterval { start: 0, stop: 1000 },
+        ];
+
+        let analysis = analyze_unitig_coverage(
+            &intervals,
+            1000,
+            "test_unitig".to_string(),
+            10,
+            &args,
+        );
+
+        assert_eq!(analysis.unitig_length, 1000);
+        assert_eq!(analysis.num_reads, 10);
+
+        // May have small endpoint gaps, but should be minimal
+        assert!(analysis.poor_coverage_fraction < 0.05);
+    }
+
+    #[test]
+    fn test_analyze_unitig_coverage_should_filter() {
+        let args = get_test_args();
+
+        // Coverage only in first 500bp, rest is uncovered
+        let intervals = vec![
+            BareInterval { start: 0, stop: 500 },
+        ];
+
+        let analysis = analyze_unitig_coverage(
+            &intervals,
+            1000,
+            "test_unitig".to_string(),
+            2, // Low read count
+            &args,
+        );
+
+        assert_eq!(analysis.num_reads, 2);
+
+        // Should have significant poor coverage (>50% from end gap)
+        assert!(analysis.poor_coverage_fraction > 0.10);
+
+        // Should filter: <=3 reads AND >10% poor coverage
+        assert!(analysis.num_reads <= 3 && analysis.poor_coverage_fraction > 0.10);
+    }
+
+    #[test]
+    fn test_analyze_unitig_coverage_many_reads_no_filter() {
+        let args = get_test_args();
+
+        // Large gap but many reads
+        let intervals = vec![
+            BareInterval { start: 0, stop: 400 },
+        ];
+
+        let analysis = analyze_unitig_coverage(
+            &intervals,
+            1000,
+            "test_unitig".to_string(),
+            10, // Many reads
+            &args,
+        );
+
+        assert_eq!(analysis.num_reads, 10);
+        assert!(analysis.poor_coverage_fraction > 0.10);
+
+        // Should NOT filter: >3 reads even though >10% poor coverage
+        assert!(!(analysis.num_reads <= 3 && analysis.poor_coverage_fraction > 0.10));
     }
 }

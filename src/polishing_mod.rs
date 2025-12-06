@@ -42,6 +42,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
                 .iter()
                 .map(|x| bits_to_ascii(x as u8))
                 .collect::<Vec<u8>>(),
+            args,
         );
         poa_cons_builder.generate_breakpoints(405, 205);
         if contig.mapping_info.max_alignment_boundaries.is_none() {

@@ -659,6 +659,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
                 read1_snpmers: Some(read.snpmers_vec()),
                 max_gap: MAX_GAP_CHAINING * 3/2,
                 double_gap: 25_00,
+                maximal_only: false, // Already use "dovetail possibility" as a similar filter
             };
 
             for (outer_ref_id, anchors) in mini_anchors.into_iter(){

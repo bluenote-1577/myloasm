@@ -455,11 +455,11 @@ pub fn align_seq_to_ref_slice_local(
         &mut cigar,
     );
 
-    log::trace!("cig:{}, queryend:{}, refend:{}, score:{}", fmt(&cigar.to_vec()), 
-        res.query_idx, 
-        res.reference_idx,
-        res.score,
-    );
+    // log::trace!("cig:{}, queryend:{}, refend:{}, score:{}", fmt(&cigar.to_vec()), 
+    //     res.query_idx, 
+    //     res.reference_idx,
+    //     res.score,
+    // );
 
     //Unlikely, very low score indicates that we should not trust these alignments, just concatenate instead. 
     if res.score < 10 && query_sliced.len().min(reference_sliced.len()) > 100 {

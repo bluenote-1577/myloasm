@@ -47,6 +47,29 @@ pub fn read_to_split_kmers(
     return vectorized_map;
 }
 
+fn estimate_bf_size(
+    args: &Cli,
+) -> f64{
+    let mut est_bases = 0.;
+    let mut is_gzipped = false;
+    for fq_file in args.input_files.iter(){
+        if fq_file.contains(".gz") || fq_file.contains(".gzip") || fq_file.contains(".bz") {
+            is_gzipped = true;
+        }
+        let metadata = std::fs::metadata(fq_file).expect("Unable to read file metadata");
+        log::debug!("File: {}, size (Gbytes): {}", fq_file, metadata.len() as f64 / 1_000_000_000.);
+        est_bases += metadata.len() as f64 / 1_000_000_000.;
+        if is_gzipped{
+            est_bases *= 1.5; //rough estimate of compression ratio
+        }
+        else{
+            est_bases /= 2.;
+        }
+    }
+    let bf_size = (est_bases / 2.0).min(100.0).max(2.0);
+    return bf_size;
+}
+
 fn first_iteration(
     k: usize,
     threads: usize,
@@ -61,7 +84,15 @@ fn first_iteration(
     // C   C  ...
     let hm_size = threads;
     let mask = !(1 << 63);
-    let bf_size = args.bloom_filter_size;
+    let bf_size;
+    if let Some(bf_size_manual) = args.bloom_filter_size {
+        bf_size = bf_size_manual;
+    }
+     else {
+        bf_size = estimate_bf_size(args);
+        log::info!("Using automatic bloom filter size: {:.2} Gbytes", bf_size);
+    }
+
     let aggressive_bloom = args.aggressive_bloom;
     let mut bf_vec_maps : Vec<FxHashMap<u64, [u32;2]>> = vec![FxHashMap::default(); hm_size];
     if bf_size > 0.{
@@ -242,6 +273,11 @@ fn second_iteration(
         rx_heads.push(rx_head2);
     }
     rx_heads.push(rx_head1);
+    let bf_size = if let Some(bf_size_manual) = bf_size {
+        bf_size_manual
+    } else {
+        estimate_bf_size(args)
+    };
 
     assert!(txs_vecs.len() == rx_heads.len());
 

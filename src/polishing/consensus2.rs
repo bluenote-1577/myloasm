@@ -34,11 +34,12 @@ pub struct PoaConsensusBuilder {
     contig_name: String,
     bp_len: usize,
     genome: Vec<u8>,
+    args: Cli,
 }
 
 impl PoaConsensusBuilder {
     pub fn spoa_blocks(self) -> Vec<Vec<u8>> {
-        let consensus_max_length = 800;
+        let consensus_max_length = 1000;
         let alignment_type = 1; // 0 local, 1 global, 2, semiglobal
         let match_score = 5;
         let mismatch_score = -2;
@@ -116,8 +117,8 @@ impl PoaConsensusBuilder {
                 seqs.truncate(MAX_OL_POLISHING);
                 quals.truncate(MAX_OL_POLISHING);
 
-                //TODO let's break contigs when we get no coverage -- the read itself doesn't even map well. 
-                let cons;
+                //TODO let's break contigs when we get no coverage -- the read itself doesn't even map well.
+                let mut cons;
                 if seqs.len() == 0{
                     let start = i * self.bp_len;
                     let end = (i+1) * self.bp_len + self.window_overlap_len;
@@ -144,11 +145,16 @@ impl PoaConsensusBuilder {
                         gap_open,
                         gap_extend,
                     );
+
+                    // Trim consensus ends based on coverage
+                    if quals.len() > 15 && self.args.new_polish_trimming{
+                        cons = trim_consensus_by_coverage(&cons, &seqs);
+                    }
                 }
 
-                if cons.len() as i32 - seventy_five_length as i32 > 300 {
+                if cons.len() as i32 - seventy_five_length as i32 > 300 && quals.len() >= 5{
                     log::debug!("Warning: Consensus for block at approximately {} of {} is much longer than expected ({} vs {}). This may indicate low coverage or poor consensus.", 
-                    i * (self.bp_len) - self.window_overlap_len, self.contig_name, cons.len(), seventy_five_length);
+                    i * (self.bp_len), self.contig_name, cons.len(), seventy_five_length);
                 }
 
                 //log::trace!("Consensus for block {} complete", i);
@@ -175,6 +181,19 @@ impl PoaConsensusBuilder {
         }
         let consensuses =
             PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, self.bp_len, &self.contig_name);
+
+        if log::log_enabled!(log::Level::Trace){
+            //mkdir cons/
+            std::fs::create_dir_all("cons/").unwrap();
+
+            let filename = format!("cons/cons_test_{}_polished.fa", self.contig_name);
+            let mut fasta_writer = BufWriter::new(File::create(&filename).unwrap());
+            for (i, cons) in consensuses.iter().enumerate() {
+                writeln!(fasta_writer, ">contig_{}_block_{}", self.contig_name, i).unwrap();
+                writeln!(fasta_writer, "{}", std::str::from_utf8(cons).unwrap()).unwrap();
+            }
+            
+        }
         return consensuses;
     }
 
@@ -207,9 +226,10 @@ impl PoaConsensusBuilder {
             //dbg!(&overhang_i, &overhang_j);
 
             //i is query
-            log::trace!("Aligning overhangs for blocks {} and {}", i, i + 1);
+            //log::trace!("Aligning overhangs for blocks {} and {}", i, i + 1);
             let (i_end, j_end, _) = alignment::align_seq_to_ref_slice_local(overhang_i, overhang_j, &GAPS_LAX_INDEL);
             //log::debug!("Alignment for block {} complete, i_end {} j_end {}", i);
+            log::trace!("Alignment for blocks {}, {} and contig {} complete, i_end {} j_end {}", i, i + 1, contig_name, i_end, j_end);
 
             //breakpoints.push((query_pos, ref_pos));
             breakpoints.lock().unwrap().push((i, i_end, j_end, cut));
@@ -252,7 +272,7 @@ impl PoaConsensusBuilder {
         return new_consensus;
     }
 
-    pub fn new(genome_length: usize, contig_name: String, genome_string_u8: Vec<u8>) -> Self {
+    pub fn new(genome_length: usize, contig_name: String, genome_string_u8: Vec<u8>, args: &Cli) -> Self {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
@@ -262,6 +282,7 @@ impl PoaConsensusBuilder {
             bp_len: 0,
             window_overlap_len: 0,
             genome: genome_string_u8,
+            args: args.clone(),
         }
     }
 
@@ -276,6 +297,7 @@ impl PoaConsensusBuilder {
             bp_len: 0,
             window_overlap_len: 0,
             genome: vec![],
+            args: Cli::default(),
         }
     }
 
@@ -508,11 +530,11 @@ pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, h
     }
 
     //let overlap_length = edge.overlap.overlap_len_bases + edge.overlap.hang1 + edge.overlap.hang2 + 1000;
-    let overlap_length = overlap_len + hang1 + hang2 + 500;
+    let mut overlap_length = overlap_len + hang1 + hang2 + (seq.len() / 10).min(500);
 
     if overlap_length > seq_len{
-        log::warn!("Overlap length is greater than sequence length; something went wrong during polishing.");
-        return
+        //log::debug!("Overlap length is greater than sequence length for contig {}; something went wrong during polishing -- unsuccessfully circularized.", contig_name);
+        overlap_length = seq_len * 3 / 4;
     }
 
     let overhang1 = seq[seq_len-overlap_length..seq_len].to_vec();
@@ -544,8 +566,153 @@ pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, h
     //dbg!(&best_overlap);
     let end_trim = overlap_length - best_overlap.start1;
     let start_trim = best_overlap.start2;
+    log::trace!("Overlap length {}, end_trim {}, start_trim {}, contig {}", overlap_length, end_trim, start_trim, contig_name);
+    log::trace!("Best overlap for circular contig {}: {:?}. New length: {}", contig_name, best_overlap, seq_len - end_trim - start_trim);
     let new_seq = seq[start_trim..seq_len-end_trim].to_vec();
     *seq = new_seq;
+}
+
+/// Trims consensus sequence ends based on alignment coverage.
+/// Finds regions where fewer than half of the sequences cover the consensus,
+/// and trims those regions from the ends.
+pub fn trim_consensus_by_coverage(consensus: &[u8], seqs: &[Vec<u8>]) -> Vec<u8> {
+    if consensus.is_empty() || seqs.is_empty() {
+        return consensus.to_vec();
+    }
+
+    // Align each sequence to the consensus and collect coverage intervals
+    let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(seqs.len());
+
+    for seq in seqs {
+        // Skip sequences that are too short
+        if seq.len() < 2 {
+            continue;
+        }
+
+        // Remove null terminator if present
+        let seq_clean = if seq.last() == Some(&0) {
+            &seq[..seq.len()-1]
+        } else {
+            &seq[..]
+        };
+
+        if seq_clean.is_empty() {
+            continue;
+        }
+
+        // Align sequence to consensus using local alignment
+        let (_query_end, ref_end, cigar) = alignment::align_seq_to_ref_slice_local(
+            seq_clean,
+            consensus,
+            &GAPS,
+        );
+
+        // If alignment failed or is too poor, skip this sequence
+        if cigar.is_empty() {
+            continue;
+        }
+
+        // Parse CIGAR to get the reference (consensus) interval covered
+        let (ref_start, ref_stop) = parse_cigar_ref_interval(&cigar, ref_end);
+
+        if ref_start < ref_stop && ref_stop <= consensus.len() {
+            intervals.push((ref_start, ref_stop));
+        }
+    }
+
+    if intervals.is_empty() {
+        return consensus.to_vec();
+    }
+
+    // Find trim positions using median of starts and ends
+    let (trim_start, trim_end) = find_trim_positions(&intervals, consensus.len());
+
+    log::trace!(
+        "Trimming consensus from {} bases to {} bases (trimming {}-{} and {}-{})",
+        consensus.len(),
+        trim_end - trim_start,
+        0,
+        trim_start,
+        trim_end,
+        consensus.len()
+    );
+
+    // Return trimmed consensus
+    if trim_start < trim_end && trim_end <= consensus.len() {
+        consensus[trim_start..trim_end].to_vec()
+    } else {
+        consensus.to_vec()
+    }
+}
+
+/// Parses CIGAR to find the reference interval that was aligned.
+/// Returns (ref_start, ref_end) relative to the reference sequence.
+fn parse_cigar_ref_interval(cigar: &[OpLen], ref_end: usize) -> (usize, usize) {
+    // Work backwards from ref_end to find ref_start
+    let mut ref_consumed = 0;
+    let mut _query_consumed = 0;
+
+    for op_len in cigar {
+        match op_len.op {
+            Operation::M | Operation::X | Operation::Eq => {
+                ref_consumed += op_len.len;
+                _query_consumed += op_len.len;
+            }
+            Operation::D => {
+                ref_consumed += op_len.len;
+            }
+            Operation::I => {
+                _query_consumed += op_len.len;
+            }
+            _ => {}
+        }
+    }
+
+    // ref_end is the position where alignment ends
+    // ref_start is ref_end - ref_consumed
+    let ref_start = ref_end.saturating_sub(ref_consumed);
+
+    (ref_start, ref_end)
+}
+
+/// Finds trim positions by taking the median of interval starts and ends.
+/// Trims ends where fewer than half of sequences have coverage.
+fn find_trim_positions(intervals: &[(usize, usize)], consensus_len: usize) -> (usize, usize) {
+    if intervals.is_empty() {
+        return (0, consensus_len);
+    }
+
+    let half_count = intervals.len() / 2;
+
+    // Sort starts and ends separately
+    let mut starts: Vec<usize> = intervals.iter().map(|(s, _)| *s).collect();
+    let mut ends: Vec<usize> = intervals.iter().map(|(_, e)| *e).collect();
+
+    starts.sort_unstable();
+    ends.sort_unstable();
+
+    // Take the position where at least half of sequences start covering
+    // This is approximately the median start position
+    let trim_start = if starts.len() > half_count {
+        starts[half_count]
+    } else {
+        0
+    };
+
+    // Take the position where at least half of sequences stop covering
+    // This is approximately the median end position
+    let trim_end = if ends.len() > half_count {
+        ends[half_count]
+    } else {
+        consensus_len
+    };
+
+    // Sanity check
+    if trim_start >= trim_end {
+        return (0, consensus_len);
+    }
+
+    (trim_start, trim_end)
 }
 
 #[cfg(test)]
