@@ -1,6 +1,6 @@
 use fxhash::hash64;
 use crate::cli::Cli;
-use crate::constants::{MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MAX_GAP_CHAINING, MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
+use crate::constants::{LONG_OVERLAP_LENGTH, MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MAX_GAP_CHAINING, MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
 use fxhash::FxHashMap;
 use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
@@ -291,7 +291,7 @@ impl OverlapTwinGraph{
         }
     }
 
-    pub fn prune_low_minimizer_overlaps(&mut self, c: usize, absolute_ratio: f64, relative_ratio: f64){
+    pub fn prune_low_minimizer_overlaps(&mut self, twin_reads: Option<&[TwinRead]>, c: usize, k: usize, absolute_ratio: f64, relative_ratio: f64){
         let mut edges_to_remove = FxHashSet::default();
         for i in 0..self.edges.len(){
             let edge_opt = &self.edges[i];
@@ -299,12 +299,32 @@ impl OverlapTwinGraph{
                 continue;
             }
 
+            let mut multiplier = 1.0;
+            if let Some(twin_reads) = twin_reads{
+                let id_1 = twin_reads[edge_opt.as_ref().unwrap().node1].est_id.unwrap_or(100.);
+                let id_2 = twin_reads[edge_opt.as_ref().unwrap().node2].est_id.unwrap_or(100.);
+                let max_id = id_1.max(id_2);
+                multiplier = (max_id / 100.).powi(k as i32).max(0.75);
+                // Slightly less stringent if the overlap is long and reads have low identity
+            }
+
+            let absolute_ratio_long = absolute_ratio / multiplier;
+
             let edge = edge_opt.as_ref().unwrap();
             let num_mini = edge.shared_minimizers;
             let mini_overlap_fraction = edge.overlap_len_bases as f64 / num_mini as f64;
-            if mini_overlap_fraction / c as f64 > absolute_ratio{
-                edges_to_remove.insert(i);
-                continue;
+
+            if edge.overlap_len_bases < LONG_OVERLAP_LENGTH {
+                if mini_overlap_fraction / c as f64 > absolute_ratio{
+                    edges_to_remove.insert(i);
+                    continue;
+                } 
+            }
+            else {
+                if mini_overlap_fraction / c as f64 > absolute_ratio_long{
+                    edges_to_remove.insert(i);
+                    continue;
+                }
             }
 
             let node1 = self.nodes.get(&edge.node1).unwrap();
@@ -1078,7 +1098,7 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
     let mut graph = OverlapTwinGraph { nodes, edges };
 
     //graph.get_maximal_overlaps(args);
-    graph.prune_low_minimizer_overlaps(args.c, args.absolute_minimizer_cut_ratio, args.relative_minimizer_cut_ratio);
+    graph.prune_low_minimizer_overlaps(Some(twin_reads), args.c, args.kmer_size, args.absolute_minimizer_cut_ratio, args.relative_minimizer_cut_ratio);
     graph.prune_lax_overlaps(args.c, Some(twin_reads), args.snpmer_threshold_strict, args.snpmer_error_rate_strict, args.disable_error_overlap_rescue);
     graph.transitive_reduction();
 
@@ -2355,7 +2375,7 @@ mod tests {
         mock_edges1[1].shared_minimizers = 5;
         let mut graph = mock_graph_from_edges(mock_edges1);
 
-        graph.prune_low_minimizer_overlaps(10, 8., 5.);
+        graph.prune_low_minimizer_overlaps(None, 10, 15, 8., 5.);
 
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
         assert_eq!(good_edges, 2);
@@ -2374,7 +2394,7 @@ mod tests {
         mock_edges1[2].shared_minimizers = 50;
         let mut graph = mock_graph_from_edges(mock_edges1);
 
-        graph.prune_low_minimizer_overlaps(10, 100., 4.);
+        graph.prune_low_minimizer_overlaps(None, 10, 21, 100., 4.);
 
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
         assert_eq!(good_edges, 2);
@@ -2390,7 +2410,7 @@ mod tests {
 
         let mut graph = mock_graph_from_edges(mock_edges1);
 
-        graph.prune_low_minimizer_overlaps(10, 8., 4.);
+        graph.prune_low_minimizer_overlaps(None, 10, 21, 8., 4.);
 
         let good_edges = graph.edges.iter().filter(|x| x.is_some()).count();
         assert_eq!(good_edges, 3);

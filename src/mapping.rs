@@ -554,7 +554,7 @@ pub fn compare_twin_reads(
     options: &CompareTwinReadOptions,
     args: &Cli,
 ) -> Vec<TwinOverlap> {
-    let mini_chain_infos;
+    let mut mini_chain_infos;
     if let Some(anchors) = mini_anchors {
         mini_chain_infos = find_optimal_chain(
             &anchors.anchors,
@@ -579,6 +579,42 @@ pub fn compare_twin_reads(
             options,
         );
     }
+
+    if options.maximal_only{
+        mini_chain_infos.retain(|mini_chain_info| {
+            let mini_chain = &mini_chain_info.chain;
+            let l1 = seq1.minimizer_positions[mini_chain[0].i as usize];
+            let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize];
+            let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
+            let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
+            let start1 = l1.min(r1);
+            let end1 = l1.max(r1) + seq1.k as u32 - 1;
+            let start2 = l2.min(r2);
+            let end2 = l2.max(r2) + seq2.k as u32 - 1;
+            let shared_minimizers = mini_chain.len();
+            let end_fuzz_pair = twin_graph::overlap_hang_length(&seq1, args);
+            let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
+            let max_mapping = check_maximal_overlap(start1 as usize, end1 as usize, start2 as usize, end2 as usize, seq1.base_length, seq2.base_length, mini_chain_info.reverse, end_fuzz);
+            if !max_mapping{
+                return false;
+            }
+            if (shared_minimizers as f64) < (seq1.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
+                return false;
+            }
+            return true;
+        });
+    }
+
+    mini_chain_infos.retain(|mini_chain_info|{
+        mini_chain_info.score >= MIN_CHAIN_SCORE_COMPARE
+    });
+
+    let mini_chain_infos = mini_chain_infos;
+
+    if mini_chain_infos.is_empty() {
+        return vec![];
+    }
+
     let mut twin_overlaps = vec![];
     let k = seq1.k as usize;
 
@@ -587,6 +623,8 @@ pub fn compare_twin_reads(
 
     let temp_vec2;
     let mut snpmer_vec_2 = &vec![];
+
+    // We have to populate snpmers_vec() which may be large for contigs
     if options.compare_snpmers{
         if let Some(snpmers_vec_1) = options.read1_snpmers.as_ref() {
             snpmer_vec = snpmers_vec_1;
@@ -601,30 +639,6 @@ pub fn compare_twin_reads(
 
     for mini_chain_info in mini_chain_infos {
         let mini_chain = &mini_chain_info.chain;
-        if mini_chain_info.score < MIN_CHAIN_SCORE_COMPARE {
-            continue;
-        }
-
-        if options.maximal_only{
-            let l1 = seq1.minimizer_positions[mini_chain[0].i as usize];
-            let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize];
-            let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
-            let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
-            let start1 = l1.min(r1);
-            let end1 = l1.max(r1) + k as u32 - 1;
-            let start2 = l2.min(r2);
-            let end2 = l2.max(r2) + k as u32 - 1;
-            let shared_minimizers = mini_chain.len();
-            let end_fuzz_pair = twin_graph::overlap_hang_length(&seq1, args);
-            let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
-            let max_mapping = check_maximal_overlap(start1 as usize, end1 as usize, start2 as usize, end2 as usize, seq1.base_length, seq2.base_length, mini_chain_info.reverse, end_fuzz);
-            if !max_mapping{
-                continue;
-            }
-            if (shared_minimizers as f64) < (seq1.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio){
-                continue;
-            }
-        }
 
         let mut shared_snpmer = usize::MAX;
         let mut diff_snpmer = usize::MAX;
@@ -1353,6 +1367,10 @@ pub fn map_reads_to_unitigs(
 
         for (contig_id, anchors) in mini_anchors.iter() {
             if anchors.anchors.len() < 10{
+                continue;
+            }
+
+            if (anchors.anchors.len() as f64) < read.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio{
                 continue;
             }
 
