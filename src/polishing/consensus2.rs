@@ -152,7 +152,7 @@ impl PoaConsensusBuilder {
                     }
                 }
 
-                if cons.len() as i32 - seventy_five_length as i32 > 300 && quals.len() >= 5{
+                if cons.len() as i32 - seventy_five_length as i32 > 300 && quals.len() >= 5 && (cons.len() as i32 - (self.bp_len + self.window_overlap_len) as i32) > 150{
                     log::debug!("Warning: Consensus for block at approximately {} of {} is much longer than expected ({} vs {}). This may indicate low coverage or poor consensus.", 
                     i * (self.bp_len), self.contig_name, cons.len(), seventy_five_length);
                 }

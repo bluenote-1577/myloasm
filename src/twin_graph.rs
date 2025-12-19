@@ -446,7 +446,7 @@ impl OverlapTwinGraph{
             if (node1_good_found && node2_good_found) || !rescue {
                 if disable_rescue{
                     edges_to_remove.insert(i);
-                    self.edges[i] = None;
+                    self.remove_edge(i);
                 }
                 else{
                     // 2 or SHARED / 200 allowed. 
@@ -457,11 +457,11 @@ impl OverlapTwinGraph{
 
                     if short_relative_to_good1 && short_relative_to_good2{
                         edges_to_remove.insert(i);
-                        self.edges[i] = None;
+                        self.remove_edge(i);
                     }
                     else if !same_strain_edge(edge, c, snpmer_threshold - 0.05 - additional_fsv_hetero, snpmer_error_rate_strict) || edge.diff_snpmers > max_allowable_diff_snpmers{
                         edges_to_remove.insert(i);
-                        self.edges[i] = None;
+                        self.remove_edge(i);
                     }
                     else{
                         log::trace!("Rescuing edge {}-{} diff snpmers:{} snpmer threshold:{} fsv:{} ol_len:{}", edge.node1, edge.node2, edge.diff_snpmers, snpmer_threshold, edge.edge_id_est(c), edge.overlap_len_bases);
@@ -593,7 +593,7 @@ impl OverlapTwinGraph{
         // Apply reduction by removing edges
         for (i, &reduced) in reduce.iter().enumerate() {
             if reduced {
-                self.edges[i] = None; // Remove reduced edges
+                self.remove_edge(i);
             }
         }
 

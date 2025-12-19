@@ -581,20 +581,29 @@ fn light_progressive_cleaning(
         let read_cutoff = args.tip_read_cutoff;
 
         //First iteration, with spurious haplotype edge removal
+        log::debug!("Starting first round of tip removal...");
         unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
+        log::debug!("Tip removal done");
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        log::debug!("Starting first round of bubble removal...");
         unitig_graph.pop_bubbles(bubble_length_cutoff, None, false);
+        log::debug!("Bubble removal done");
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+        log::debug!("Removing low identity edges...");
         unitig_graph.remove_low_id_haplotype_edges(&args);
+        log::debug!("Low identity edge removal doone");
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
+
+        log::debug!("Finished first round of tip/bubble removal. Now iterating...");
 
         // unitig_graph.remove_singleton_lowcov_nodes(&args);
         // unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
         // Remove tips
         loop {
+            log::debug!("Loop {} of tip/bubble removal...", {counter});
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
             //unitig_graph.remove_caps();

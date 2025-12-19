@@ -142,11 +142,51 @@ pub struct BidirectedGraph<N, E> {
 
 impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedGraph<N, E> {
 
-    pub fn remove_edges(&mut self, edges: FxHashSet<EdgeIndex>) {
+    pub fn remove_edges_2(&mut self, edges: FxHashSet<EdgeIndex>) {
         for node in self.nodes.values_mut() {
             node.in_edges_mut().retain(|x| !edges.contains(x));
             node.out_edges_mut().retain(|x| !edges.contains(x));
         }
+        for edge_id in edges {
+            self.edges[edge_id] = None;
+        }
+    }
+
+    pub fn remove_edge(&mut self, edge_id: EdgeIndex) {
+        if let Some(edge_to_delete) = &self.edges[edge_id] {
+            let node1 = edge_to_delete.node1();
+            let node2 = edge_to_delete.node2();
+
+            if let Some(node) = self.nodes.get_mut(&node1) {
+                node.in_edges_mut().retain(|&e| e != edge_id);
+                node.out_edges_mut().retain(|&e| e != edge_id);
+            }
+
+            if let Some(node) = self.nodes.get_mut(&node2) {
+                node.in_edges_mut().retain(|&e| e != edge_id);
+                node.out_edges_mut().retain(|&e| e != edge_id);
+            }
+        }
+
+        self.edges[edge_id] = None;
+    }
+
+    pub fn remove_edges(&mut self, edges: FxHashSet<EdgeIndex>) {
+        let mut touched_nodes = FxHashSet::default();
+        
+        for &edge_id in edges.iter() {
+            if let Some(edge_to_delete) = &self.edges[edge_id] {
+                touched_nodes.insert(edge_to_delete.node1());
+                touched_nodes.insert(edge_to_delete.node2());
+            }
+        }
+
+        for node_id in touched_nodes {
+            let node = self.nodes.get_mut(&node_id).unwrap();
+            node.in_edges_mut().retain(|x| !edges.contains(x));
+            node.out_edges_mut().retain(|x| !edges.contains(x));
+        }
+
         for edge_id in edges {
             self.edges[edge_id] = None;
         }
@@ -292,6 +332,7 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
         let mut touched_nodes = FxHashSet::default();
         let remove_set = FxHashSet::from_iter(nodes_to_remove.iter());
         for &node_idx in nodes_to_remove {
+            let mut remove_edges = FxHashSet::default();
             if let Some(node) = self.nodes.get(&node_idx) {
                 let edge_lists = self.nodes.get(&node_idx).unwrap().both_edges();
                 for &edge_idx in edge_lists {
@@ -306,9 +347,10 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
                 }
                 // Remove edges
                 for &edge_idx in node.both_edges(){
-                    self.edges[edge_idx] = None;
+                    remove_edges.insert(edge_idx);
                 }
             }
+            self.remove_edges(remove_edges);
         }
         for node_idx in touched_nodes{
             let node = self.nodes.get_mut(&node_idx).unwrap();

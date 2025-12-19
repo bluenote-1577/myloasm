@@ -7,6 +7,7 @@ use crate::graph::*;
 use crate::twin_graph::*;
 use crate::types::*;
 use crate::unitig_utils::*;
+use std::time::Instant;
 use bio_seq::prelude::*;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -1091,6 +1092,7 @@ impl UnitigGraph {
     pub fn pop_bubbles(&mut self, max_length: usize, max_number_nodes: Option<usize>, keep: bool) {
         let max_number_nodes = max_number_nodes.unwrap_or(usize::MAX);
         let mut node_ids = self.nodes.keys().copied().collect::<Vec<_>>();
+        let start_time = Instant::now();
 
         // Start with the nodes with the most reads
         node_ids.sort_by_key(|&x| -1 * (self.nodes[&x].read_indices_ori.len() as i64));
@@ -1098,14 +1100,12 @@ impl UnitigGraph {
         let mut visited: FxHashSet<NodeIndex> = FxHashSet::default();
         let mut num_bubbles = 0;
         for n_id in node_ids {
-            if visited.contains(&n_id) {
-                continue;
-            }
             for direction in [Direction::Incoming, Direction::Outgoing].iter() {
                 if visited.contains(&n_id) {
                     continue;
                 }
                 if self.nodes[&n_id].edges_direction(direction).len() > 1 {
+                    let testtime = Instant::now();
                     if let Some(bubble_result) = self.double_bubble_remove_nodes(
                         *direction,
                         n_id,
@@ -1118,13 +1118,20 @@ impl UnitigGraph {
                         self.remove_nodes(&bubble_result.remove_nodes, keep);
                         num_bubbles += 1;
                     }
+                    log::trace!(
+                        "Tested node {} in direction {:?} for bubbles in {} seconds",
+                        n_id,
+                        direction,
+                        testtime.elapsed().as_secs_f64()
+                    );
                 }
             }
         }
         log::trace!(
-            "BUBBLE: Removed {} bubbles at max length {}",
+            "BUBBLE: Removed {} bubbles at max length {} in {} seconds",
             num_bubbles,
-            max_length
+            max_length,
+            start_time.elapsed().as_secs_f64()
         );
         self.re_unitig();
     }

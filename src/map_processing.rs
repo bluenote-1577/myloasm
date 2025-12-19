@@ -1038,7 +1038,7 @@ pub fn filter_low_coverage_unitigs(
             let mut total_filtered = total_filtered.lock().unwrap();
             *total_filtered += 1;
 
-            log::debug!(
+            log::trace!(
                 "Flagging unitig {} (len={}, reads={}) for filtering: {:.1}% poor coverage",
                 unitig_id,
                 analysis.unitig_length,
@@ -1046,7 +1046,7 @@ pub fn filter_low_coverage_unitigs(
                 analysis.poor_coverage_fraction * 100.0
             );
         } else if !analysis.poor_coverage_regions.is_empty() {
-            log::debug!(
+            log::trace!(
                 "Unitig {} has {} poor coverage regions ({:.1}% of length) but passes filters",
                 unitig_id,
                 analysis.poor_coverage_regions.len(),

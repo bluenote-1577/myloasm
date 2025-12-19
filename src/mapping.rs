@@ -1370,7 +1370,7 @@ pub fn map_reads_to_unitigs(
                 continue;
             }
 
-            if (anchors.anchors.len() as f64) < read.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio{
+            if (anchors.anchors.len() as f64) < read.base_length as f64 / args.c as f64 / args.absolute_minimizer_cut_ratio / 1.5 {
                 continue;
             }
 
