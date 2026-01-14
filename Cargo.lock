@@ -1070,6 +1070,7 @@ dependencies = [
  "log",
  "memory-stats",
  "needletail",
+ "nibble_vec",
  "ordered-float 4.6.0",
  "rand 0.8.5",
  "rayon",
@@ -1157,6 +1158,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac8cd24d9f185bb7223958d8c1ff7a961b74b1953fd05dba7cc568a63b3861ec"
 dependencies = [
  "rustc_version",
+]
+
+[[package]]
+name = "nibble_vec"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
+dependencies = [
+ "smallvec",
 ]
 
 [[package]]

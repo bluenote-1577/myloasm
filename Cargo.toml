@@ -42,6 +42,7 @@ clap-num = "1.2.0"
 wide = "=0.7.33"
 block-aligner = { version = "0.5" }
 clap-markdown = { git = "https://github.com/bluenote-1577/clap-markdown.git" }
+nibble_vec = "0.1.0"
 
 [features]
 default = ["avx2"]

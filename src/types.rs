@@ -38,6 +38,7 @@ use bio_seq::prelude::*;
 use rust_lapper::Lapper;
 use block_aligner::cigar::OpLen;
 use std::cmp::Ordering;
+use nibble_vec::*;
 use std::collections::BTreeMap;
 
 use crate::constants::ID_THRESHOLD_ITERS;
@@ -501,6 +502,54 @@ pub fn decode_positions_delta(encoded: &[u8]) -> Vec<u32> {
     }
 
     positions
+}
+
+/// Encode a u32 value as variable-length bytes using continuation-bit scheme.
+/// High bit set = more bytes follow. Returns number of bytes written.
+#[inline]
+pub fn encode_varint_u32(value: u32, buf: &mut Vec<u8>) {
+    let mut v = value;
+    loop {
+        let byte = (v & 0x7F) as u8;
+        v >>= 7;
+        if v == 0 {
+            buf.push(byte);
+            break;
+        } else {
+            buf.push(byte | 0x80);
+        }
+    }
+}
+
+/// Decode a variable-length encoded u32 from a byte slice starting at given index.
+/// Returns (value, bytes_consumed).
+#[inline]
+pub fn decode_varint_u32(buf: &[u8], start: usize) -> (u32, usize) {
+    let mut value = 0u32;
+    let mut shift = 0;
+    let mut i = start;
+
+    loop {
+        let byte = buf[i];
+        i += 1;
+        value |= ((byte & 0x7F) as u32) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+
+    (value, i - start)
+}
+
+/// Encode a slice of u32 values as variable-length bytes.
+#[inline]
+pub fn encode_varints(values: &[u32]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(values.len() * 2);
+    for &v in values {
+        encode_varint_u32(v, &mut buf);
+    }
+    buf
 }
 
 impl TwinRead{
@@ -980,46 +1029,107 @@ pub struct OverlapAdjMap {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct OpLenVec{
-    pub op_vec: Vec<Operation>,
-    pub len_vec: Vec<u32>,
+    op_vec: NibbleVec<[u8; 32]>,
+    // Variable-length encoded lengths
+    len_vec: Vec<u8>,
+    // Number of operations (needed since varints have variable size)
+    count: usize,
 }
 
 impl OpLenVec{
     pub fn new(cigar_vec: Vec<OpLen>) -> Self{
         let mut op_vec = Vec::new();
-        let mut len_vec = Vec::new();
+        let mut lengths: Vec<u32> = Vec::new();
         let mut last_op = Operation::Sentinel;
         for op_len in cigar_vec{
             if op_len.op == last_op{
-                *len_vec.last_mut().unwrap() += op_len.len as u32;
+                *lengths.last_mut().unwrap() += op_len.len as u32;
             }
             else if (op_len.op == Operation::X || op_len.op == Operation::Eq) && last_op == Operation::M{
-                *len_vec.last_mut().unwrap() += op_len.len as u32;
+                *lengths.last_mut().unwrap() += op_len.len as u32;
             }
             else{
-                op_vec.push(op_len.op);
-                len_vec.push(op_len.len as u32);
+                op_vec.push(op_len.op as u8);
+                lengths.push(op_len.len as u32);
                 last_op = op_len.op;
             }
             if last_op == Operation::X || last_op == Operation::Eq{
                 last_op = Operation::M;
             }
         }
-        assert!(op_vec.len() == len_vec.len());
+        assert!(op_vec.len() == lengths.len());
+        let count = op_vec.len();
+        op_vec.shrink_to_fit();
+
+        // Encode lengths as variable-length integers
+        let mut len_vec = encode_varints(&lengths);
+        len_vec.shrink_to_fit();
+
         OpLenVec{
-            op_vec,
+            op_vec: NibbleVec::<[u8; 32]>::from_byte_vec(op_vec),
             len_vec,
+            count,
         }
     }
 
     pub fn len(&self) -> usize{
-        return self.op_vec.len();
+        self.count
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (Operation, u32)> + '_ {
-        self.op_vec.iter()
-            .zip(self.len_vec.iter())
-            .map(|(op, len)| (*op, *len))
+    pub fn iter(&self) -> OpLenIter<'_> {
+        OpLenIter {
+            op_bytes: self.op_vec.as_bytes(),
+            len_bytes: &self.len_vec,
+            op_idx: 0,
+            len_pos: 0,
+            count: self.count,
+        }
+    }
+}
+
+/// Iterator over (Operation, u32) pairs from an OpLenVec
+pub struct OpLenIter<'a> {
+    op_bytes: &'a [u8],
+    len_bytes: &'a [u8],
+    op_idx: usize,
+    len_pos: usize,
+    count: usize,
+}
+
+impl<'a> Iterator for OpLenIter<'a> {
+    type Item = (Operation, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.op_idx >= self.count {
+            return None;
+        }
+
+        let op = u8_to_operation(self.op_bytes[self.op_idx]);
+        let (len, bytes_consumed) = decode_varint_u32(self.len_bytes, self.len_pos);
+
+        self.op_idx += 1;
+        self.len_pos += bytes_consumed;
+
+        Some((op, len))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.count - self.op_idx;
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a> ExactSizeIterator for OpLenIter<'a> {}
+
+pub fn u8_to_operation(b: u8) -> Operation{
+    match b{
+        0 => Operation::Sentinel,
+        1 => Operation::M,
+        2 => Operation::Eq,
+        3 => Operation::X,
+        4 => Operation::I,
+        5 => Operation::D,
+        _ => Operation::Sentinel,
     }
 }
 
