@@ -251,16 +251,11 @@ pub struct TigRead {
 pub type Percentage = f64;
 pub type Fraction = f32;
 
-//TODO: we restructure minimizers and snpmmer positions to another vector
-//and change to u32 to save space
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TwinRead {
-    //pub minimizers: Vec<(usize, u64)>,
-    pub minimizer_positions: Vec<u32>,
-    //pub minimizer_kmers: Vec<Kmer48>,
-    //pub snpmers: Vec<(usize, u64)>,
-    //pub snpmer_kmers: Vec<Kmer48>,
-    pub snpmer_positions: Vec<u32>,
+    // Delta-encoded positions using variable-length encoding
+    pub minimizer_positions_enc: Vec<u8>,
+    pub snpmer_positions_enc: Vec<u8>,
     // Full record id
     pub id: String,
     // First word of record id
@@ -276,7 +271,10 @@ pub struct TwinRead {
     pub split_start: u32,
     pub outer: bool,
     pub snpmer_id_threshold: Option<f64>,
+    pub overlap_hang_length: Option<(usize, usize)>,
 }
+
+
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -434,7 +432,117 @@ fn reverse_bit_pairs(n: u64, k: usize) -> u64 {
 
 }
 
+/// Encode absolute positions as variable-length delta encoding.
+/// Uses continuation-bit scheme: high bit set = more bytes follow.
+/// Supports full u32 range with up to 5 bytes per delta.
+/// Returns the encoded byte vector.
+#[inline]
+pub fn encode_positions_delta(positions: &[u32]) -> Vec<u8> {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut encoded = Vec::with_capacity(positions.len() * 2); // rough estimate
+    let mut prev_pos = 0u32;
+
+    for &pos in positions {
+        let mut delta = pos - prev_pos;
+
+        // Encode delta using variable-length encoding (continuation bit scheme)
+        // Each byte holds 7 bits of data, high bit is continuation flag
+        loop {
+            let byte = (delta & 0x7F) as u8;
+            delta >>= 7;
+
+            if delta == 0 {
+                // Last byte: no continuation bit
+                encoded.push(byte);
+                break;
+            } else {
+                // More bytes to follow: set continuation bit
+                encoded.push(byte | 0x80);
+            }
+        }
+
+        prev_pos = pos;
+    }
+
+    encoded
+}
+
+/// Decode variable-length delta-encoded positions back to absolute positions.
+/// Returns a vector of absolute u32 positions.
+#[inline]
+pub fn decode_positions_delta(encoded: &[u8]) -> Vec<u32> {
+    let mut positions = Vec::new();
+    let mut current_pos = 0u32;
+    let mut i = 0;
+
+    while i < encoded.len() {
+        let mut delta = 0u32;
+        let mut shift = 0;
+
+        loop {
+            let byte = encoded[i];
+            i += 1;
+
+            delta |= ((byte & 0x7F) as u32) << shift;
+
+            if byte & 0x80 == 0 {
+                // No continuation bit, we're done
+                break;
+            }
+
+            shift += 7;
+        }
+
+        current_pos += delta;
+        positions.push(current_pos);
+    }
+
+    positions
+}
+
 impl TwinRead{
+
+    pub fn compact(&mut self){
+
+        // debug capacities vs lengths
+        // log::info!("BEFORE Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
+        // log::info!("BEFORE Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
+        // log::info!("BEFORE DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
+        // log::info!("BEFORE Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
+
+        let mut minimizer_positions_enc = Vec::with_capacity(self.minimizer_positions_enc.len());
+        minimizer_positions_enc.extend(self.minimizer_positions_enc.iter().cloned());
+        self.minimizer_positions_enc = minimizer_positions_enc;
+
+        let mut snpmer_positions_enc = Vec::with_capacity(self.snpmer_positions_enc.len());
+        snpmer_positions_enc.extend(self.snpmer_positions_enc.iter().cloned());
+        self.snpmer_positions_enc = snpmer_positions_enc;
+
+        //self.dna_seq.shrink_to_exact();
+        self.dna_seq.shrink_to_fit();
+        if let Some(qual_seq) = self.qual_seq.as_mut(){
+            // qual_seq.shrink_to_exact();
+             qual_seq.shrink_to_fit();
+        }
+
+        // debug capacities vs lengths
+        // log::info!("Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
+        // log::info!("Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
+        // log::info!("DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
+        // log::info!("Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
+    }
+
+    pub fn shrink_to_fit(&mut self){
+        self.minimizer_positions_enc.shrink_to_fit();
+        self.snpmer_positions_enc.shrink_to_fit();
+        self.dna_seq.shrink_to_fit();
+        if let Some(qual_seq) = self.qual_seq.as_mut(){
+            qual_seq.shrink_to_fit();
+        }
+    }
 
     #[inline]
     pub fn kmer_from_position(&self, pos:u32, k: usize) -> Kmer48{
@@ -474,87 +582,134 @@ impl TwinRead{
     }
 
     pub fn clear(&mut self){
-        self.minimizer_positions.clear();
-        self.snpmer_positions.clear();
-        self.minimizer_positions.shrink_to_fit();
-        self.snpmer_positions.shrink_to_fit();
+        self.minimizer_positions_enc.clear();
+        self.snpmer_positions_enc.clear();
+        self.minimizer_positions_enc.shrink_to_fit();
+        self.snpmer_positions_enc.shrink_to_fit();
+    }
+
+    /// Decode minimizer positions from delta encoding
+    #[inline]
+    pub fn minimizer_positions(&self) -> Vec<u32> {
+        decode_positions_delta(&self.minimizer_positions_enc)
+    }
+
+    /// Decode snpmer positions from delta encoding
+    #[inline]
+    pub fn snpmer_positions(&self) -> Vec<u32> {
+        decode_positions_delta(&self.snpmer_positions_enc)
+    }
+
+    /// Get the count of minimizers (without full decoding)
+    pub fn minimizer_count(&self) -> usize {
+        if self.minimizer_positions_enc.is_empty() {
+            return 0;
+        }
+        // Count how many deltas are encoded
+        let mut count = 0;
+        for &byte in &self.minimizer_positions_enc {
+            if byte & 0x80 == 0 {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Get the count of snpmers (without full decoding)
+    pub fn snpmer_count(&self) -> usize {
+        if self.snpmer_positions_enc.is_empty() {
+            return 0;
+        }
+        // Count how many deltas are encoded
+        let mut count = 0;
+        for &byte in &self.snpmer_positions_enc {
+            if byte & 0x80 == 0 {
+                count += 1;
+            }
+        }
+        count
     }
 
     pub fn minimizer_kmers(&self) -> Vec<Kmer48> {
-        self.minimizer_positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
+        let positions = self.minimizer_positions();
+        positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
     }
 
     pub fn snpmer_kmers(&self) -> Vec<Kmer48> {
-        self.snpmer_positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
+        let positions = self.snpmer_positions();
+        positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
     }
-
-    // pub fn minimizers(&self) -> impl Iterator<Item = (u32, Kmer48)>+ '_ {
-    //     //self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y))
-    //     self.minimizer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize)))
-    // }
 
     pub fn minimizers_vec(&self) -> Vec<(u32, Kmer48)> {
-        //self.minimizer_positions.iter().zip(self.minimizer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
-        self.minimizer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
+        let positions = self.minimizer_positions();
+        positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
     }
 
-    // pub fn snpmers(&self) -> impl Iterator<Item = (u32, Kmer48)> + '_ {
-    //     //self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y))
-    //     self.snpmer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize)))
-    // }
-    
     pub fn snpmers_vec(&self) -> Vec<(u32, Kmer48)> {
-        //self.snpmer_positions.iter().zip(self.snpmer_kmers.iter()).map(|(x, y)| (*x, *y)).collect()
-        self.snpmer_positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
+        let positions = self.snpmer_positions();
+        positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
     }
 
     // Retain only the minimizers at the given INDICES, not positions
-    pub fn retain_mini_indices(&mut self, positions: FxHashSet<usize>) {
-        //retain_vec_indices(&mut self.minimizer_kmers, &positions);
-        retain_vec_indices(&mut self.minimizer_positions, &positions);
-        //self.minimizer_kmers.shrink_to_fit();
-        self.minimizer_positions.shrink_to_fit();
+    pub fn retain_mini_indices(&mut self, indices: FxHashSet<usize>) {
+        // Decode, filter by indices, re-encode
+        let positions = self.minimizer_positions();
+        let mut filtered_positions = Vec::new();
+
+        for (i, pos) in positions.iter().enumerate() {
+            if indices.contains(&i) {
+                filtered_positions.push(*pos);
+            }
+        }
+
+        filtered_positions.shrink_to_fit();
+        self.minimizer_positions_enc = encode_positions_delta(&filtered_positions);
     }
 
     // Retain only the snpmers at the given INDICES, not positions
-    pub fn retain_snpmer_indices(&mut self, positions: FxHashSet<usize>) {
-        //retain_vec_indices(&mut self.snpmer_kmers, &positions);
-        retain_vec_indices(&mut self.snpmer_positions, &positions);
-        //self.snpmer_kmers.shrink_to_fit();
-        self.snpmer_positions.shrink_to_fit();
+    pub fn retain_snpmer_indices(&mut self, indices: FxHashSet<usize>) {
+        // Decode, filter by indices, re-encode
+        let positions = self.snpmer_positions();
+        let mut filtered_positions = Vec::new();
+
+        for (i, pos) in positions.iter().enumerate() {
+            if indices.contains(&i) {
+                filtered_positions.push(*pos);
+            }
+        }
+
+        filtered_positions.shrink_to_fit();
+        self.snpmer_positions_enc = encode_positions_delta(&filtered_positions);
     }
 
-    
-    pub fn shift_and_retain(&mut self, other_read: &TwinRead, last_break: usize, bp_start: usize, k: usize){
 
-        // new_read.minimizers = twin_read.minimizers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-        // new_read.snpmers = twin_read.snpmers.iter().filter(|x| x.0 >= last_break && x.0 + k - 1 < bp_start).copied().map(|x| (x.0 - last_break, x.1)).collect();
-        // new_read.minimizers.shrink_to_fit();
-        // new_read.snpmers.shrink_to_fit();
+    pub fn shift_and_retain(&mut self, other_read: &TwinRead, last_break: usize, bp_start: usize, k: usize){
+        // Decode other_read's positions
+        let other_mini_positions = other_read.minimizer_positions();
+        let other_snp_positions = other_read.snpmer_positions();
 
         let mut mini_positions_filtered = Vec::new();
         let mut snp_positions_filtered = Vec::new();
 
-        for &pos in other_read.minimizer_positions.iter(){
+        for &pos in other_mini_positions.iter(){
             if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
                 mini_positions_filtered.push(pos - last_break as u32);
             }
         }
 
-        for &pos in other_read.snpmer_positions.iter(){
+        for &pos in other_snp_positions.iter(){
             if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
                 snp_positions_filtered.push(pos - last_break as u32);
             }
         }
 
-        //shirnk to fit
+        // Shrink to fit
         mini_positions_filtered.shrink_to_fit();
         snp_positions_filtered.shrink_to_fit();
 
-        self.minimizer_positions = mini_positions_filtered;
-        //self.minimizer_kmers = mini_kmers_filtered;
-        self.snpmer_positions = snp_positions_filtered;
-        //self.snpmer_kmers = snp_kmers_filtered;
+        // Re-encode
+        self.minimizer_positions_enc = encode_positions_delta(&mini_positions_filtered);
+        self.snpmer_positions_enc = encode_positions_delta(&snp_positions_filtered);
     }
 }
 
@@ -637,15 +792,14 @@ pub struct CountsAndBases{
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
 pub struct AnchorBuilder{
-    pub i: u32,
-    pub j: u32,
     pub pos1: u32,
+    pub pos2: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
 pub struct Anchor{
-    pub i: u32,
-    pub j: u32,
+    pub i: Option<u32>,
+    pub j: Option<u32>,
     pub pos1: u32,
     pub pos2: u32,
 }
@@ -755,6 +909,25 @@ pub struct Breakpoints {
     pub cov: usize,
     pub condition: i64,
 }
+
+/// Coverage statistics for a read segment
+#[derive(Debug, Clone)]
+pub struct CoverageStats {
+    pub start: usize,
+    pub end: usize,
+    pub min_depth_multi: MultiCov,
+    pub median_depth: f64,
+    pub snpmer_id_threshold: f64,
+}
+
+/// Compact plan for splitting a read - stores only breakpoints and coverage stats
+#[derive(Debug, Clone)]
+pub struct SplitReadPlan {
+    pub read_index: usize,
+    pub breakpoints: Vec<Breakpoints>,
+    pub coverage_stats: Vec<CoverageStats>,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct GetSequenceInfoConfig{
     pub blunted: bool,
@@ -977,5 +1150,69 @@ mod tests {
         let kmer_ours_rev_comp = reverse_bit_pairs(kmer_ours ^ (u64::MAX), 5);
 
         assert_eq!(kmer_ours_rev_comp, goal);
+    }
+
+    #[test]
+    fn test_delta_encoding_small_deltas() {
+        // Test with small deltas (< 128) - typical minimizer spacing of ~10 bases
+        let positions = vec![0, 10, 20, 35, 45, 55];
+        let encoded = encode_positions_delta(&positions);
+        let decoded = decode_positions_delta(&encoded);
+
+        assert_eq!(positions, decoded);
+        // Each delta should be 1 byte for small values
+        assert_eq!(encoded.len(), positions.len());
+    }
+
+    #[test]
+    fn test_delta_encoding_large_deltas() {
+        // Test with large deltas - typical SNPmer spacing of ~1000 bases
+        let positions = vec![0, 1000, 2100, 3050];
+        let encoded = encode_positions_delta(&positions);
+        let decoded = decode_positions_delta(&encoded);
+
+        assert_eq!(positions, decoded);
+        // 1000 needs 2 bytes, 1100 needs 2 bytes, 950 needs 2 bytes
+        assert!(encoded.len() < positions.len() * 4); // Still better than u32
+    }
+
+    #[test]
+    fn test_delta_encoding_mixed() {
+        // Test with mixed small and large deltas
+        let positions = vec![0, 5, 15, 1015, 1025, 3000];
+        let encoded = encode_positions_delta(&positions);
+        let decoded = decode_positions_delta(&encoded);
+
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_delta_encoding_very_large() {
+        // Test with very large deltas that need full u32 range
+        let positions = vec![0, 100_000_000, 200_000_000];
+        let encoded = encode_positions_delta(&positions);
+        let decoded = decode_positions_delta(&encoded);
+
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_delta_encoding_empty() {
+        let positions: Vec<u32> = vec![];
+        let encoded = encode_positions_delta(&positions);
+        let decoded = decode_positions_delta(&encoded);
+
+        assert_eq!(positions, decoded);
+        assert_eq!(encoded.len(), 0);
+    }
+
+    #[test]
+    fn test_delta_encoding_single() {
+        let positions = vec![42];
+        let encoded = encode_positions_delta(&positions);
+        let decoded = decode_positions_delta(&encoded);
+
+        assert_eq!(positions, decoded);
+        assert_eq!(encoded.len(), 1);
     }
 }

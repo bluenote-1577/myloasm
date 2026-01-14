@@ -1,6 +1,6 @@
 use fxhash::hash64;
 use crate::cli::Cli;
-use crate::constants::{LONG_OVERLAP_LENGTH, MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MAX_GAP_CHAINING, MINIMIZER_END_NTH_OVERLAP, OVERLAP_HANG_LENGTH};
+use crate::constants::{LONG_OVERLAP_LENGTH, MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MAX_GAP_CHAINING, OVERLAP_HANG_LENGTH};
 use fxhash::FxHashMap;
 use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
@@ -12,7 +12,6 @@ use fxhash::FxHashSet;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use crate::mapping::*;
-use crate::map_processing;
 use std::path::PathBuf;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -776,14 +775,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
     return ol;
 }
 
-pub fn overlap_hang_length(twin_read: &TwinRead, _args: &Cli) -> (usize, usize){
-    let kmer_error_est = 1./(twin_read.est_id.unwrap_or(100.0) / 100.).powf(twin_read.k as f64);
-    let nth_read = ((MINIMIZER_END_NTH_OVERLAP as f64 * kmer_error_est) as usize).min(100);
-    let (start_hang_cutoff, end_hang_cutoff) = map_processing::first_last_mini_in_range(0, twin_read.base_length, twin_read.k  as usize, nth_read,  &twin_read.minimizer_positions);
-    let return_start = (start_hang_cutoff).min(OVERLAP_HANG_LENGTH);
-    let return_end = (twin_read.base_length - end_hang_cutoff).min(OVERLAP_HANG_LENGTH);
-    return (return_start, return_end);
-}
+
 
 pub fn comparison_to_overlap<T>(twlaps: Vec<TwinOverlap>, twin_reads: &[TwinRead], args: &Cli, writer: &Mutex<T>) -> Vec<OverlapConfig>
 where T : Write + Send
@@ -869,8 +861,8 @@ where T: Write + Send
         return None;
     }
 
-    let (hang1_start, hang1_end) = overlap_hang_length(read1, args);
-    let (hang2_start, hang2_end) = overlap_hang_length(read2, args);
+    let (hang1_start, hang1_end) = read1.overlap_hang_length.unwrap();
+    let (hang2_start, hang2_end) = read2.overlap_hang_length.unwrap();
 
     let hang_start = hang1_start.max(hang2_start);
     let hang_end = hang1_end.max(hang2_end);

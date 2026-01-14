@@ -7,7 +7,6 @@ use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
 use crate::graph::GraphNode;
 use crate::map_processing::*;
-use crate::twin_graph;
 use crate::polishing::alignment;
 use crate::seeding;
 use crate::twin_graph::same_strain;
@@ -31,7 +30,8 @@ use std::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HitInfo {
-    pub index: u32,
+    //pub index: u32,
+    pub position: u32,
     pub contig_id: u32,
 }
 
@@ -154,13 +154,13 @@ fn _smith_waterman(
 pub fn find_exact_matches_with_full_index(
     seq1: &[(u32, Kmer48)],
     index: &FxHashMap<Kmer48, Vec<HitInfo>>,
-    reference_seqs_owned: Option<&FxHashMap<usize, TwinRead>>,
-    reference_seqs_ref: Option<&FxHashMap<usize, &TwinRead>>,
+    _reference_seqs_owned: Option<&FxHashMap<usize, TwinRead>>,
+    _reference_seqs_ref: Option<&FxHashMap<usize, &TwinRead>>,
 ) -> FxHashMap<u32, Anchors> {
     let mut max_mult = 0;
     let mut matches = FxHashMap::default();
 
-    for (i, (pos, s)) in seq1.iter().enumerate() {
+    for (pos, s) in seq1.iter() {
         if let Some(indices) = index.get(s) {
             if indices.len() > max_mult {
                 max_mult = indices.len();
@@ -168,9 +168,8 @@ pub fn find_exact_matches_with_full_index(
             for hit in indices {
                 let contig = hit.contig_id;
                 let anchor = AnchorBuilder {
-                    i: i as u32,
-                    j: hit.index as u32,
                     pos1: *pos as u32,
+                    pos2: hit.position,
                 };
 
                 matches.entry(contig).or_insert(vec![]).push(anchor);
@@ -181,23 +180,15 @@ pub fn find_exact_matches_with_full_index(
     matches
         .into_iter()
         .map(|(k, v)| {
-            let reference_kmer_positions; 
-            if let Some(reference_seqs_owned) = reference_seqs_owned {
-                reference_kmer_positions = &reference_seqs_owned[&(k as usize)].minimizer_positions;
-            } else if let Some(reference_seqs_ref) = reference_seqs_ref {
-                reference_kmer_positions = &reference_seqs_ref[&(k as usize)].minimizer_positions;
-            } else {
-                panic!("No reference sequences provided");
-            }
+            // Decode reference minimizer positions once for this contig
             let mut anchors = v
                 .into_iter()
                 .map(|anchor| {
-                    let pos2 = reference_kmer_positions[anchor.j as usize];
                     Anchor {
-                        i: anchor.i,
-                        j: anchor.j,
+                        i: None,
+                        j: None,
                         pos1: anchor.pos1,
-                        pos2: pos2 as u32,
+                        pos2: anchor.pos2,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -232,8 +223,8 @@ fn find_exact_matches_indexes_references(
             }
             for (j, pos2) in indices {
                 let anchor = Anchor {
-                    i: i as u32,
-                    j: *j as u32,
+                    i: Some(i as u32),
+                    j: Some(*j as u32),
                     pos1: *pos as u32,
                     pos2: **pos2 as u32,
                 };
@@ -265,8 +256,8 @@ where
             }
             for (j, pos2) in indices {
                 let anchor = Anchor {
-                    i: i as u32,
-                    j: *j as u32,
+                    i: Some(i as u32),
+                    j: Some(*j as u32),
                     pos1: pos as u32,
                     pos2: *pos2 as u32,
                 };
@@ -583,16 +574,17 @@ pub fn compare_twin_reads(
     if options.maximal_only{
         mini_chain_infos.retain(|mini_chain_info| {
             let mini_chain = &mini_chain_info.chain;
-            let l1 = seq1.minimizer_positions[mini_chain[0].i as usize];
-            let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize];
-            let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
-            let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
+            // Use positions from the Anchor struct directly
+            let l1 = mini_chain[0].pos1;
+            let r1 = mini_chain[mini_chain.len() - 1].pos1;
+            let l2 = mini_chain[0].pos2;
+            let r2 = mini_chain[mini_chain.len() - 1].pos2;
             let start1 = l1.min(r1);
             let end1 = l1.max(r1) + seq1.k as u32 - 1;
             let start2 = l2.min(r2);
             let end2 = l2.max(r2) + seq2.k as u32 - 1;
             let shared_minimizers = mini_chain.len();
-            let end_fuzz_pair = twin_graph::overlap_hang_length(&seq1, args);
+            let end_fuzz_pair = seq1.overlap_hang_length.unwrap(); 
             let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
             let max_mapping = check_maximal_overlap(start1 as usize, end1 as usize, start2 as usize, end2 as usize, seq1.base_length, seq2.base_length, mini_chain_info.reverse, end_fuzz);
             if !max_mapping{
@@ -647,10 +639,11 @@ pub fn compare_twin_reads(
             shared_snpmer = 0;
             diff_snpmer = 0;
 
-            let l1 = seq1.minimizer_positions[mini_chain[0].i as usize] as usize;
-            let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize] as usize;
-            let l2 = seq2.minimizer_positions[mini_chain[0].j as usize] as usize;
-            let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize] as usize;
+            // Use positions from the Anchor struct directly
+            let l1 = mini_chain[0].pos1 as usize;
+            let r1 = mini_chain[mini_chain.len() - 1].pos1 as usize;
+            let l2 = mini_chain[0].pos2 as usize;
+            let r2 = mini_chain[mini_chain.len() - 1].pos2 as usize;
             let start1 = l1.min(r1);
             let end1 = l1.max(r1) + k - 1;
             let start2 = l2.min(r2);
@@ -711,9 +704,9 @@ pub fn compare_twin_reads(
                     let snpmer_kmers_seq2 = &snpmer_vec_2;
                     for anchor in split_chain.chain.iter() {
                         let i = anchor.i;
-                        let i = ind_redirect1[i as usize];
+                        let i = ind_redirect1[i.unwrap() as usize];
                         let j = anchor.j;
-                        let j = ind_redirect2[j as usize];
+                        let j = ind_redirect2[j.unwrap() as usize];
 
                         //if seq1.snpmer_kmers[i as usize] == seq2.snpmer_kmers[j as usize] {
                         if snpmer_kmers_seq1[i as usize].1 == snpmer_kmers_seq2[j as usize].1 {
@@ -736,15 +729,17 @@ pub fn compare_twin_reads(
 
                     let snpmer_kmers_seq1 = seq1.snpmer_kmers();
                     let snpmer_kmers_seq2 = seq2.snpmer_kmers();
+                    let snpmer_positions_seq1 = seq1.snpmer_positions();
+                    let snpmer_positions_seq2 = seq2.snpmer_positions();
 
                     for anchor in split_chain_opt.unwrap().chain.iter() {
                         let i = anchor.i;
-                        let i = ind_redirect1[i as usize];
+                        let i = ind_redirect1[i.unwrap() as usize];
                         let j = anchor.j;
-                        let j = ind_redirect2[j as usize];
+                        let j = ind_redirect2[j.unwrap() as usize];
                         if snpmer_kmers_seq1[i as usize] != snpmer_kmers_seq2[j as usize] {
-                            positions_read1_snpmer_diff.push(seq1.snpmer_positions[i as usize]);
-                            positions_read2_snpmer_diff.push(seq2.snpmer_positions[j as usize]);
+                            positions_read1_snpmer_diff.push(snpmer_positions_seq1[i as usize]);
+                            positions_read2_snpmer_diff.push(snpmer_positions_seq2[j as usize]);
 
                             let kmer1 = decode_kmer48(snpmer_kmers_seq1[i as usize], seq1.k as u8);
                             let kmer2 = decode_kmer48(snpmer_kmers_seq2[j as usize], seq2.k as u8);
@@ -768,10 +763,11 @@ pub fn compare_twin_reads(
             }
         }
 
-        let l1 = seq1.minimizer_positions[mini_chain[0].i as usize];
-        let r1 = seq1.minimizer_positions[mini_chain[mini_chain.len() - 1].i as usize];
-        let l2 = seq2.minimizer_positions[mini_chain[0].j as usize];
-        let r2 = seq2.minimizer_positions[mini_chain[mini_chain.len() - 1].j as usize];
+        // Use positions from the Anchor struct directly
+        let l1 = mini_chain[0].pos1;
+        let r1 = mini_chain[mini_chain.len() - 1].pos1;
+        let l2 = mini_chain[0].pos2;
+        let r2 = mini_chain[mini_chain.len() - 1].pos2;
         let start1 = l1.min(r1);
         let end1 = l1.max(r1) + k as u32 - 1;
         let start2 = l2.min(r2);
@@ -791,7 +787,7 @@ pub fn compare_twin_reads(
             shared_minimizers,
             shared_snpmers: shared_snpmer,
             diff_snpmers: diff_snpmer,
-            snpmers_in_both: (seq1.snpmer_positions.len(), seq2.snpmer_positions.len()),
+            snpmers_in_both: (seq1.snpmer_count(), seq2.snpmer_count()),
             chain_reverse: mini_chain_info.reverse,
             chain_score: mini_chain_info.score,
             minimizer_chain: mini_chain_return,
@@ -881,10 +877,10 @@ pub fn get_minimizer_index(
         let mut sorted_keys = twinreads.keys().collect::<Vec<_>>();
         sorted_keys.sort();
         for (&id, tr) in sorted_keys.iter().map(|&x| (x, &twinreads[x])) {
-            for (i, (_, mini)) in tr.minimizers_vec().into_iter().enumerate() {
+            for (pos, mini) in tr.minimizers_vec().into_iter() {
                 let hit = HitInfo {
-                    index: i as u32,
                     contig_id: id as u32,
+                    position: pos,
                 };
                 mini_index.entry(mini).or_insert(vec![]).push(hit);
             }
@@ -894,10 +890,10 @@ pub fn get_minimizer_index(
         let mut sorted_keys = twinreads.keys().collect::<Vec<_>>();
         sorted_keys.sort();
         for (&id, tr) in sorted_keys.iter().map(|&x| (x, &twinreads[x])) {
-            for (i, (_, mini)) in tr.minimizers_vec().into_iter().enumerate() {
+            for (pos, mini) in tr.minimizers_vec().into_iter() {
                 let hit = HitInfo {
-                    index: i as u32,
                     contig_id: id as u32,
+                    position: pos,
                 };
                 mini_index.entry(mini).or_insert(vec![]).push(hit);
             }
@@ -930,6 +926,224 @@ pub fn get_minimizer_index(
     }
 
     return mini_index;
+}
+
+/// Memory-efficient version that processes batches immediately and returns compact split plans
+pub fn map_reads_to_outer_reads_efficient(
+    outer_read_indices: &[usize],
+    twin_reads: &[TwinRead],
+    args: &Cli,
+    break_chimeras: bool
+) -> Vec<SplitReadPlan> {
+    use crate::map_processing::{cov_mapping_breakpoints, compute_coverage_stats};
+
+    let split_plans = Mutex::new(vec![]);
+    let num_alignments = Mutex::new(0);
+    let num_maximal = Mutex::new(0);
+
+    let chunk_size = args.read_map_batch_size;
+
+    let outer_read_chunks = outer_read_indices
+        .chunks(chunk_size)
+        .collect::<Vec<_>>();
+
+    log::info!("Mapping {} reads to {} outer reads", twin_reads.len(), outer_read_indices.len());
+    log::debug!("ITERATIONS: Breaking {} reads into {} chunks of <= {}", outer_read_indices.len(), outer_read_chunks.len(), chunk_size);
+
+    for (batch_index, mapping_chunk_indices) in outer_read_chunks.iter().enumerate() {
+        let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
+        let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
+
+        let tr_outer = mapping_chunk_indices
+            .into_iter()
+            .map(|&i| (i, &twin_reads[i]))
+            .collect::<FxHashMap<usize, &TwinRead>>();
+
+        let mini_index = get_minimizer_index(None, Some(&tr_outer));
+        let counter = Mutex::new(0);
+
+        twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
+            let mut tr_options = CompareTwinReadOptions::default();
+            tr_options.double_gap = 1500;
+            tr_options.force_query_nonoverlap = true;
+            tr_options.read1_snpmers = Some(read.snpmers_vec());
+            let mini = read.minimizers_vec();
+            let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, Some(&tr_outer));
+            drop(mini);
+            let mut unitig_hits : Vec<TwinOverlap> = vec![];
+            *counter.lock().unwrap() += 1;
+            if *counter.lock().unwrap() % 100000 == 0 {
+                log::debug!(
+                    "Processed {} reads / {} ...",
+                    *counter.lock().unwrap(),
+                    twin_reads.len()
+                );
+                log_memory_usage(false, "100k reads mapped");
+            }
+
+            for (contig_id, anchors) in mini_anchors.into_iter() {
+                if anchors.anchors.len() < 15 {
+                    continue;
+                }
+                for twin_ol in compare_twin_reads(
+                    read,
+                    &tr_outer[&(contig_id as usize)],
+                    Some(&anchors),
+                    None,
+                    rid,
+                    contig_id as usize,
+                    &tr_options,
+                    args,
+                ) {
+                    if twin_ol.end2 - twin_ol.start2 < 500 {
+                        continue;
+                    }
+                    unitig_hits.push(twin_ol);
+                }
+                drop(anchors);
+            }
+
+            for hit in unitig_hits.into_iter() {
+                let max_overlap = check_maximal_overlap(
+                    hit.start1 as usize,
+                    hit.end1 as usize,
+                    hit.start2 as usize,
+                    hit.end2 as usize,
+                    read.base_length,
+                    tr_outer[&hit.i2].base_length,
+                    hit.chain_reverse,
+                    args.maximal_end_fuzz,
+                );
+
+                let identity = id_est(
+                    hit.shared_minimizers,
+                    hit.diff_snpmers,
+                    args.c as u64,
+                    hit.large_indel,
+                );
+
+                if max_overlap {
+                    if identity > IDENTITY_THRESHOLDS[0] - 0.05 / 100. {
+                        let small_twin_ol = BareMappingOverlap {
+                            snpmer_identity: identity as Fraction,
+                        };
+                        let mut map = mapping_maximal_boundaries_map.lock().unwrap();
+                        let vec = map.entry(hit.i2).or_insert(vec![]);
+                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
+                    }
+                }
+
+                let mut map = mapping_local_boundaries_map.lock().unwrap();
+                let vec = map.entry(hit.i2).or_insert(vec![]);
+                vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50));
+            }
+        });
+
+        log::debug!("Finished mapping batch {}/{} to outer reads. Splitting chimeras...", batch_index + 1, outer_read_chunks.len());
+
+        drop(mini_index);
+
+        let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
+        //let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
+
+        // Process each outer read immediately to compute split plan and free memory
+        mapping_local_boundaries_map.into_par_iter().for_each(|(outer_id, boundaries)| {
+            let outer_read = &twin_reads[outer_id];
+            let outer_read_length = outer_read.base_length;
+            *num_alignments.lock().unwrap() += boundaries.len();
+
+            let mut all_local_intervals = boundaries
+                .into_iter()
+                .map(|x : (u32,u32)| {
+                    let start = if x.0 < 200 { x.0 } else { x.0 + 50 };
+                    let stop = if x.1 > outer_read_length as u32 - 200 {
+                        x.1
+                    } else {
+                        x.1 - 50
+                    };
+
+                    BareInterval {
+                        start: start,
+                        stop: stop,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            all_local_intervals.sort_unstable();
+
+            let maximal_boundaries = std::mem::take(
+                mapping_maximal_boundaries_map.lock().unwrap()
+                    .get_mut(&outer_id)
+                    .unwrap_or(&mut vec![]),
+            );
+
+            let max_intervals = maximal_boundaries
+                .into_iter()
+                .map(|x : (u32, u32, BareMappingOverlap)| (BareInterval{
+                    start: x.0,
+                    stop: x.1,
+                }, x.2))
+                .collect::<Vec<_>>();
+
+            *num_maximal.lock().unwrap() += max_intervals.len();
+
+            // Immediately compute breakpoints
+            let breakpoints = cov_mapping_breakpoints(&all_local_intervals, outer_read_length as u32, &outer_read.id, args);
+
+            // Immediately compute coverage stats for each segment >= MIN_READ_LENGTH
+            let mut coverage_stats = vec![];
+
+            if breakpoints.is_empty() || !break_chimeras{
+                // No breakpoints - compute coverage for entire read if long enough
+                let cov_stats = compute_coverage_stats(
+                    outer_read,
+                    &max_intervals,
+                    0,
+                    outer_read_length,
+                );
+                coverage_stats.push(cov_stats);
+            } else {
+                // Compute coverage for each segment that's >= MIN_READ_LENGTH
+                let mut last_break = 0;
+                for breakpoint in &breakpoints {
+                    let bp_start = breakpoint.pos1;
+                    if bp_start - last_break >  MIN_READ_LENGTH {
+                        let cov_stats = compute_coverage_stats(
+                            outer_read,
+                            &max_intervals,
+                            last_break,
+                            bp_start,
+                        );
+                        coverage_stats.push(cov_stats);
+                    }
+                    last_break = breakpoint.pos2;
+                }
+            }
+
+            // Only create split plan if there are valid coverage stats
+            if !coverage_stats.is_empty() || !breakpoints.is_empty() {
+                let split_plan = SplitReadPlan {
+                    read_index: outer_id,
+                    breakpoints,
+                    coverage_stats,
+                };
+                split_plans.lock().unwrap().push(split_plan);
+            }
+
+            // max_intervals and all_local_intervals are dropped here, freeing memory
+        });
+    }
+
+    log::info!(
+        "Number of local alignments to outer reads: {}",
+        *num_alignments.lock().unwrap()
+    );
+    log::info!(
+        "Number of maximal alignments to outer reads: {}",
+        *num_maximal.lock().unwrap()
+    );
+
+    split_plans.into_inner().unwrap()
 }
 
 pub fn map_reads_to_outer_reads(
@@ -1025,7 +1239,7 @@ pub fn map_reads_to_outer_reads(
                         read.base_length,
                         tr_outer[&hit.i2].base_length,
                         hit.chain_reverse,
-                        args.maximal_end_fuzz,
+                        args.maximal_end_fuzz, // TODO we should change this to the overlap hang length for concordance
                     );
 
                     let identity = id_est(
@@ -1361,6 +1575,9 @@ pub fn map_reads_to_unitigs(
         tr_options.read1_snpmers = Some(read.snpmers_vec());
         tr_options.secondary_threshold = Some(0.15);
 
+        // This should've been added in v0.3; adding in v0.4 TESTING
+        tr_options.maximal_only = true;
+
         let mini = read.minimizers_vec();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
         let mut unitig_hits = vec![];
@@ -1425,7 +1642,7 @@ pub fn map_reads_to_unitigs(
                 x.large_indel,
             )).collect::<Vec<_>>();
 
-        let end_fuzz_pair = twin_graph::overlap_hang_length(&read, args);
+        let end_fuzz_pair = &read.overlap_hang_length.unwrap(); 
         let end_fuzz = end_fuzz_pair.0.max(end_fuzz_pair.1);
 
         ss_hits.retain(|x| check_maximal_overlap(

@@ -169,6 +169,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     kmer_info.high_freq_kmers = Arc::try_unwrap(arc_high_freq).unwrap();
     let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
     twin_reads.sort_by(|a,b| a.id.cmp(&b.id));
+    twin_reads.par_iter_mut().for_each(|x| x.compact());
 
     //This is for hefty debugging purposes only; too verbose.
     if log::log_enabled!(log::Level::Trace) && false{
@@ -181,7 +182,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     log::debug!("Number of reads filtered due to repetitiveness: {}", num_reads_removed_repetitive.lock().unwrap());
     let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
     log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
-    let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_positions.len() as f64 / x.base_length as f64).collect::<Vec<_>>();
+    let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_count() as f64 / x.base_length as f64).collect::<Vec<_>>();
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
     log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());

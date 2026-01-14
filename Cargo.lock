@@ -177,8 +177,7 @@ dependencies = [
 [[package]]
 name = "bio-seq"
 version = "0.14.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe5984579fcde033ecdb6202635ed215c7629e023e050d1bf6dd82e45c7a2cb3"
+source = "git+https://github.com/bluenote-1577/bio-seq.git#61abcc87c2f8a81de9cbfeef1ed5fede79375f43"
 dependencies = [
  "bio-seq-derive",
  "bitvec",
@@ -189,8 +188,7 @@ dependencies = [
 [[package]]
 name = "bio-seq-derive"
 version = "4.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8af133a5471f5333cc6b48c42d3e2d78e64bcceb80b1003cfdb19eb27d522841"
+source = "git+https://github.com/bluenote-1577/bio-seq.git#61abcc87c2f8a81de9cbfeef1ed5fede79375f43"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1050,8 +1048,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "myloasm"
-version = "0.3.0"
+name = "myloasmtest"
+version = "0.4.0-dev"
 dependencies = [
  "approx 0.4.0",
  "assert_cmd",

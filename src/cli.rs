@@ -103,8 +103,8 @@ pub struct Cli {
     #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
     pub no_snpmers: bool,
 
-    /// Batch size of indexing for read-to-read mapping and overlap stage
-    #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3], hide = true)]
+    /// Batch size of indexing for read-to-read mapping and overlap stage. Higher = faster, but more memory. 
+    #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3])]
     pub read_map_batch_size: usize,
     
     /// Snpmer identity threshold for containment and strict overlaps
