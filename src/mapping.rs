@@ -1156,7 +1156,7 @@ pub fn map_reads_to_outer_reads(
         .collect::<Vec<_>>();
 
     log::info!("Mapping {} reads to {} outer reads", twin_reads.len(), outer_read_indices.len());
-    log::debug!("ITERATIONS: Breaking {} reads into {} chunks of <= 1 million", outer_read_indices.len(), outer_read_chunks.len());
+    log::info!("Breaking {} reads into {} chunks of <= {} reads", outer_read_indices.len(), outer_read_chunks.len(), chunk_size);
 
     for mapping_chunk_indices in outer_read_chunks
     {

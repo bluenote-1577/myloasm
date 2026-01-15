@@ -1103,44 +1103,15 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
 pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf,  args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
-    let reads_to_index;
-    if let Some(ref_indices) = ref_indices{
-        reads_to_index = ref_indices.iter().map(|x| *x).collect::<FxHashSet<_>>();
-    }
-    else{
-        reads_to_index = (0..twin_reads.len()).collect::<FxHashSet<_>>();
-    }
-    let mut inverted_index_hashmap =
-        twin_reads
-            .iter()
-            .enumerate()
-            .filter(
-                |x| 
-                reads_to_index.contains(&x.0) &&
-                (x.1.est_id.is_none()
-                 || x.1.est_id.unwrap() > args.quality_value_cutoff)
-            )
-            .fold(FxHashMap::default(), |mut acc, (i, x)| {
-                for y in x.minimizer_kmers().iter(){
-                    if hash64(y) > u64::MAX / downsample_factor {
-                        continue;
-                    }
-                    acc.entry(*y).or_insert(FxHashSet::default()).insert(i as u32);
-                }
-                acc
-            });
-    
-    let mut kmer_to_count = inverted_index_hashmap.iter().map(|(_,v)| v.len()).collect::<Vec<_>>();
-    kmer_to_count.sort_by(|a,b| b.cmp(&a));
-    let threshold = kmer_to_count[kmer_to_count.len() / 100_000];
-    inverted_index_hashmap.retain(|_,v| v.len() < threshold);
-    log::debug!("Number of kmer indices in inverted index: {}. Threshold: {}", inverted_index_hashmap.len(), threshold);
-    log_memory_usage(true, "Built index for removing contained reads");
-    //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
+
+    let reads_to_index: Vec<usize> = if let Some(ref_indices) = ref_indices {
+        ref_indices
+    } else {
+        (0..twin_reads.len()).collect()
+    };
 
     //open file for writing
     let name = if query_indices.is_none() { "all-cont.txt.gz" } else { "subset-cont.txt.gz" };
-    //let output_path = Path::new(args.output_dir.as_str()).join(name);
     let output_path = temp_dir.join(name);
     let bufwriter_dbg;
     if first_iteration && !log::log_enabled!(log::Level::Trace) {
@@ -1154,19 +1125,83 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
     let contained_reads = Mutex::new(FxHashSet::default());
     let outer_reads = Mutex::new(vec![]);
 
-    let query_range = if let Some(special_indices) = query_indices{
+    let query_range: Vec<usize> = if let Some(special_indices) = query_indices {
         special_indices
     } else {
-        // ALl reads get queried
-        (0..twin_reads.len()).into_iter().collect::<Vec<_>>()
+        // All reads get queried
+        (0..twin_reads.len()).collect()
     };
 
-    parallel_remove_contained(query_range, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, downsample_factor, args);
-    let num_contained_reads = contained_reads.lock().unwrap().len();
-    log::info!("{} reads are contained; {} outer reads", num_contained_reads, outer_reads.lock().unwrap().len());
+    // Process ref reads in batches to reduce peak memory usage
+    let batch_size = args.read_map_batch_size * 8;
+    let num_batches = (reads_to_index.len() + batch_size - 1) / batch_size;
+    log::debug!("Processing {} ref reads in {} batches of size {}", reads_to_index.len(), num_batches, batch_size);
+
+    for (batch_idx, ref_batch) in reads_to_index.chunks(batch_size).enumerate() {
+        let batch_start = std::time::Instant::now();
+        let ref_batch_set: FxHashSet<usize> = ref_batch.iter().copied().collect();
+
+        // Build inverted index for this batch only
+        let mut inverted_index_hashmap =
+            twin_reads
+                .iter()
+                .enumerate()
+                .filter(
+                    |x|
+                    ref_batch_set.contains(&x.0) &&
+                    (x.1.est_id.is_none()
+                     || x.1.est_id.unwrap() > args.quality_value_cutoff)
+                )
+                .fold(FxHashMap::default(), |mut acc, (i, x)| {
+                    for y in x.minimizer_kmers().iter(){
+                        if hash64(y) > u64::MAX / downsample_factor {
+                            continue;
+                        }
+                        acc.entry(*y).or_insert(FxHashSet::default()).insert(i as u32);
+                    }
+                    acc
+                });
+
+        if inverted_index_hashmap.is_empty() {
+            continue;
+        }
+
+        let mut kmer_to_count = inverted_index_hashmap.iter().map(|(_,v)| v.len()).collect::<Vec<_>>();
+        kmer_to_count.sort_by(|a,b| b.cmp(&a));
+        let threshold = kmer_to_count[kmer_to_count.len() / 100_000.max(1)];
+        inverted_index_hashmap.retain(|_,v| v.len() < threshold);
+
+        log::debug!("Batch {}/{}: {} kmer indices, threshold {}. Index built in {:?}",
+            batch_idx + 1, num_batches, inverted_index_hashmap.len(), threshold, batch_start.elapsed());
+
+        // Filter query_range to exclude already-contained reads
+        let query_for_batch: Vec<usize> = {
+            let contained = contained_reads.lock().unwrap();
+            query_range.iter()
+                .filter(|i| !contained.contains(*i))
+                .copied()
+                .collect()
+        };
+
+        parallel_remove_contained(query_for_batch, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, downsample_factor, args);
+
+        log::info!("Batch {}/{} complete. {} contained so far", batch_idx + 1, num_batches, contained_reads.lock().unwrap().len());
+        log_memory_usage(false, &format!("Memory usage after contained read removal batch {}", batch_idx + 1));
+    }
+
+    // outer_reads was populated during parallel_remove_contained, but with batching
+    // we may have added reads that were later found to be contained. Filter them out.
+    let contained_set = contained_reads.lock().unwrap();
+    let mut final_outer_reads: Vec<usize> = outer_reads.into_inner().unwrap();
+    final_outer_reads.retain(|i| !contained_set.contains(i));
+    final_outer_reads.sort_unstable();
+    final_outer_reads.dedup();
+
+    let num_contained_reads = contained_set.len();
+    log::info!("{} reads are contained; {} outer reads", num_contained_reads, final_outer_reads.len());
 
     log::info!("Time elapsed for removing contained reads is: {:?}", start.elapsed());
-    return outer_reads.into_inner().unwrap();
+    return final_outer_reads;
 }
 
 fn parallel_remove_contained<T>(
