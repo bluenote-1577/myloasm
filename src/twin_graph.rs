@@ -1135,7 +1135,7 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
     // Process ref reads in batches to reduce peak memory usage
     let batch_size = args.read_map_batch_size * 8;
     let num_batches = (reads_to_index.len() + batch_size - 1) / batch_size;
-    log::debug!("Processing {} ref reads in {} batches of size {}", reads_to_index.len(), num_batches, batch_size);
+    log::info!("Processing {} reads in {} batches of size {} * 8", reads_to_index.len(), num_batches, args.read_map_batch_size);
 
     for (batch_idx, ref_batch) in reads_to_index.chunks(batch_size).enumerate() {
         let batch_start = std::time::Instant::now();
