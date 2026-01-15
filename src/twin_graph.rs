@@ -1,6 +1,7 @@
 use fxhash::hash64;
 use crate::cli::Cli;
 use crate::constants::{LONG_OVERLAP_LENGTH, MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER, MAX_ALLOWABLE_SNPMER_ERROR_MISC, MAX_GAP_CHAINING, OVERLAP_HANG_LENGTH};
+use crate::utils::log_memory_usage;
 use fxhash::FxHashMap;
 use crate::graph::*;
 use statrs::distribution::{Binomial, DiscreteCDF};
@@ -1134,6 +1135,7 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
     let threshold = kmer_to_count[kmer_to_count.len() / 100_000];
     inverted_index_hashmap.retain(|_,v| v.len() < threshold);
     log::debug!("Number of kmer indices in inverted index: {}. Threshold: {}", inverted_index_hashmap.len(), threshold);
+    log_memory_usage(true, "Built index for removing contained reads");
     //println!("Time to build inverted index hashmap: {:?}", start.elapsed());
 
     //open file for writing
