@@ -552,6 +552,45 @@ pub fn encode_varints(values: &[u32]) -> Vec<u8> {
     buf
 }
 
+/// Encode a boundary pair (start, end) as (start, gap) using variable-length encoding.
+/// Appends to the provided buffer.
+#[inline]
+pub fn encode_boundary_pair(start: u32, end: u32, buf: &mut Vec<u8>) {
+    let gap = end.saturating_sub(start);
+    encode_varint_u32(start, buf);
+    encode_varint_u32(gap, buf);
+}
+
+/// Iterator over decoded boundary pairs from varint-encoded bytes.
+pub struct BoundaryPairIter<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> BoundaryPairIter<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        BoundaryPairIter { buf, pos: 0 }
+    }
+}
+
+impl<'a> Iterator for BoundaryPairIter<'a> {
+    type Item = (u32, u32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.buf.len() {
+            return None;
+        }
+
+        let (start, consumed1) = decode_varint_u32(self.buf, self.pos);
+        self.pos += consumed1;
+
+        let (gap, consumed2) = decode_varint_u32(self.buf, self.pos);
+        self.pos += consumed2;
+
+        Some((start, start + gap))
+    }
+}
+
 impl TwinRead{
 
     pub fn compact(&mut self){

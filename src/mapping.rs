@@ -951,7 +951,8 @@ pub fn map_reads_to_outer_reads_efficient(
     log::debug!("ITERATIONS: Breaking {} reads into {} chunks of <= {}", outer_read_indices.len(), outer_read_chunks.len(), chunk_size);
 
     for (batch_index, mapping_chunk_indices) in outer_read_chunks.iter().enumerate() {
-        let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
+        // (encoded boundaries as varints, BareMappingOverlap vec)
+        let mapping_maximal_boundaries: Mutex<FxHashMap<usize, (Vec<u8>, Vec<BareMappingOverlap>)>> = Mutex::new(FxHashMap::default());
         let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
 
         let tr_outer = mapping_chunk_indices
@@ -1027,63 +1028,54 @@ pub fn map_reads_to_outer_reads_efficient(
                         let small_twin_ol = BareMappingOverlap {
                             snpmer_identity: identity as Fraction,
                         };
-                        let mut map = mapping_maximal_boundaries_map.lock().unwrap();
-                        let vec = map.entry(hit.i2).or_insert(vec![]);
-                        vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
+                        let mut map = mapping_maximal_boundaries.lock().unwrap();
+                        let (enc, ids) = map.entry(hit.i2).or_insert((vec![], vec![]));
+                        encode_boundary_pair(hit.start2 as u32 + 50, hit.end2 as u32 - 50, enc);
+                        ids.push(small_twin_ol);
                     }
                 }
 
                 let mut map = mapping_local_boundaries_map.lock().unwrap();
                 let vec = map.entry(hit.i2).or_insert(vec![]);
-                vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50));
+                encode_boundary_pair(hit.start2 as u32 + 50, hit.end2 as u32 - 50, vec);
             }
         });
 
-        log::debug!("Finished mapping batch {}/{} to outer reads. Splitting chimeras...", batch_index + 1, outer_read_chunks.len());
+        log::info!("Finished mapping batch {}/{} to outer reads. Splitting chimeras...", batch_index + 1, outer_read_chunks.len());
 
         drop(mini_index);
 
         let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
-        //let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
 
         // Process each outer read immediately to compute split plan and free memory
         mapping_local_boundaries_map.into_par_iter().for_each(|(outer_id, boundaries)| {
             let outer_read = &twin_reads[outer_id];
             let outer_read_length = outer_read.base_length;
-            *num_alignments.lock().unwrap() += boundaries.len();
 
-            let mut all_local_intervals = boundaries
-                .into_iter()
-                .map(|x : (u32,u32)| {
-                    let start = if x.0 < 200 { x.0 } else { x.0 + 50 };
-                    let stop = if x.1 > outer_read_length as u32 - 200 {
-                        x.1
-                    } else {
-                        x.1 - 50
-                    };
-
-                    BareInterval {
-                        start: start,
-                        stop: stop,
-                    }
-                })
-                .collect::<Vec<_>>();
+            let mut all_local_intervals: Vec<BareInterval> = Vec::new();
+            for (start, end) in BoundaryPairIter::new(&boundaries) {
+                let start = if start < 200 { start } else { start + 50 };
+                let stop = if end > outer_read_length as u32 - 200 {
+                    end
+                } else {
+                    end - 50
+                };
+                all_local_intervals.push(BareInterval { start, stop });
+            }
+            *num_alignments.lock().unwrap() += all_local_intervals.len();
 
             all_local_intervals.sort_unstable();
 
-            let maximal_boundaries = std::mem::take(
-                mapping_maximal_boundaries_map.lock().unwrap()
+            let (maximal_enc, maximal_ids) = std::mem::take(
+                mapping_maximal_boundaries.lock().unwrap()
                     .get_mut(&outer_id)
-                    .unwrap_or(&mut vec![]),
+                    .unwrap_or(&mut (vec![], vec![])),
             );
 
-            let max_intervals = maximal_boundaries
-                .into_iter()
-                .map(|x : (u32, u32, BareMappingOverlap)| (BareInterval{
-                    start: x.0,
-                    stop: x.1,
-                }, x.2))
-                .collect::<Vec<_>>();
+            let max_intervals: Vec<_> = BoundaryPairIter::new(&maximal_enc)
+                .zip(maximal_ids.into_iter())
+                .map(|((start, stop), overlap)| (BareInterval { start, stop }, overlap))
+                .collect();
 
             *num_maximal.lock().unwrap() += max_intervals.len();
 
@@ -1168,7 +1160,8 @@ pub fn map_reads_to_outer_reads(
 
     for mapping_chunk_indices in outer_read_chunks
     {
-        let mapping_maximal_boundaries_map = Mutex::new(FxHashMap::default());
+        // (encoded boundaries as varints, BareMappingOverlap vec)
+        let mapping_maximal_boundaries: Mutex<FxHashMap<usize, (Vec<u8>, Vec<BareMappingOverlap>)>> = Mutex::new(FxHashMap::default());
         let mapping_local_boundaries_map = Mutex::new(FxHashMap::default());
         // 0..outer_read_indices -- confusingly, I chose to renumber the indices in this step. Then
         // it's fixed in the index_of_outer_in_all.
@@ -1255,63 +1248,55 @@ pub fn map_reads_to_outer_reads(
                             let small_twin_ol = BareMappingOverlap {
                                 snpmer_identity: identity as Fraction,
                             };
-                            let mut map = mapping_maximal_boundaries_map.lock().unwrap();
-                            let vec = map.entry(hit.i2).or_insert(vec![]);
-                            vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50, small_twin_ol));
+                            let mut map = mapping_maximal_boundaries.lock().unwrap();
+                            let (enc, ids) = map.entry(hit.i2).or_insert((vec![], vec![]));
+                            encode_boundary_pair(hit.start2 as u32 + 50, hit.end2 as u32 - 50, enc);
+                            ids.push(small_twin_ol);
                         }
                     }
 
                     // TODO Require length conditio that scales with hit.i2 (the target read)
                     let mut map = mapping_local_boundaries_map.lock().unwrap();
                     let vec = map.entry(hit.i2).or_insert(vec![]);
-                    vec.push((hit.start2 as u32 + 50, hit.end2 as u32 - 50));
+                    encode_boundary_pair(hit.start2 as u32 + 50, hit.end2 as u32 - 50, vec);
                 }
             }
         });
 
         drop(mini_index);
-        
+
         let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
-        let mut mapping_maximal_boundaries_map = mapping_maximal_boundaries_map.into_inner().unwrap();
+        let mut mapping_maximal_boundaries = mapping_maximal_boundaries.into_inner().unwrap();
 
         for (outer_id, boundaries) in mapping_local_boundaries_map.into_iter() {
             //let index_of_outer_in_all = outer_read_indices[outer_id];
             let outer_read_length = twin_reads[outer_id].base_length;
-            num_alignments += boundaries.len();
 
-            let mut all_local_intervals = boundaries
-                .into_iter()
-                .map(|x : (u32,u32)| {
-                    let start = if x.0 < 200 { x.0 } else { x.0 + 50 };
-                    let stop = if x.1 > outer_read_length as u32 - 200 {
-                        x.1
-                    } else {
-                        x.1 - 50
-                    };
-
-                    BareInterval {
-                        start: start,
-                        stop: stop,
-                    }
-                })
-                .collect::<Vec<_>>();
+            let mut all_local_intervals: Vec<BareInterval> = Vec::new();
+            for (start, end) in BoundaryPairIter::new(&boundaries) {
+                let start = if start < 200 { start } else { start + 50 };
+                let stop = if end > outer_read_length as u32 - 200 {
+                    end
+                } else {
+                    end - 50
+                };
+                all_local_intervals.push(BareInterval { start, stop });
+            }
+            num_alignments += all_local_intervals.len();
 
             all_local_intervals.sort_unstable();
             all_local_intervals.shrink_to_fit();
 
-            let maximal_boundaries = std::mem::take(
-                mapping_maximal_boundaries_map
+            let (maximal_enc, maximal_ids) = std::mem::take(
+                mapping_maximal_boundaries
                     .get_mut(&outer_id)
-                    .unwrap_or(&mut vec![]),
+                    .unwrap_or(&mut (vec![], vec![])),
             );
 
-            let mut max_intervals = maximal_boundaries
-                .into_iter()
-                .map(|x : (u32, u32, BareMappingOverlap)| (BareInterval{
-                    start: x.0,
-                    stop: x.1,
-                }, x.2))
-                .collect::<Vec<_>>();
+            let mut max_intervals: Vec<_> = BoundaryPairIter::new(&maximal_enc)
+                .zip(maximal_ids.into_iter())
+                .map(|((start, stop), overlap)| (BareInterval { start, stop }, overlap))
+                .collect();
 
             num_maximal += max_intervals.len();
             max_intervals.shrink_to_fit();

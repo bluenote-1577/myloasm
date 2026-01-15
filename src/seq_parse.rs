@@ -66,7 +66,7 @@ fn estimate_bf_size(
             est_bases /= 2.;
         }
     }
-    let bf_size = (est_bases / 2.0).min(100.0).max(2.0);
+    let bf_size = (est_bases / 2.0).min(200.0).max(2.0);
     return bf_size;
 }
 
