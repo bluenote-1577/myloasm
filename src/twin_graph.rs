@@ -1132,10 +1132,10 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
         (0..twin_reads.len()).collect()
     };
 
-    // Process ref reads in batches to reduce peak memory usage
-    let batch_size = args.read_map_batch_size * 8;
+    // Process ref reads in batches to reduce peak memory usage. Also seems to help with chimera detection... for some reason
+    let batch_size = ((query_range.len() / 5 + 5).min(args.read_map_batch_size * 8)).max(50_000);
     let num_batches = (reads_to_index.len() + batch_size - 1) / batch_size;
-    log::info!("Processing {} reads in {} batches of size {} * 8", reads_to_index.len(), num_batches, args.read_map_batch_size);
+    log::info!("Processing {} reads in {} batches of size {}", reads_to_index.len(), num_batches, batch_size);
 
     for (batch_idx, ref_batch) in reads_to_index.chunks(batch_size).enumerate() {
         let batch_start = std::time::Instant::now();
@@ -1162,13 +1162,13 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
                     acc
                 });
 
-        if inverted_index_hashmap.is_empty() {
+        if inverted_index_hashmap.len() < 5 {
             continue;
         }
 
         let mut kmer_to_count = inverted_index_hashmap.iter().map(|(_,v)| v.len()).collect::<Vec<_>>();
         kmer_to_count.sort_by(|a,b| b.cmp(&a));
-        let threshold = kmer_to_count[kmer_to_count.len() / 100_000.max(1)];
+        let threshold = kmer_to_count[(kmer_to_count.len() / 100_000).max(1)];
         inverted_index_hashmap.retain(|_,v| v.len() < threshold);
 
         log::debug!("Batch {}/{}: {} kmer indices, threshold {}. Index built in {:?}",

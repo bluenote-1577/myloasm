@@ -1552,7 +1552,7 @@ pub fn map_reads_to_unitigs(
     let counter = Mutex::new(0);
     let num_reads = twin_reads.len();
 
-    log::info!("Index built; starting mapping");
+    log_memory_usage(true, "Built index for mapping to unitigs: starting final alignments");
 
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mut tr_options = CompareTwinReadOptions::default();
