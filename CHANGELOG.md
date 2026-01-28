@@ -2,7 +2,7 @@
 
 Major changes
 
-- Data structure changes (liberal usage of variable-length quantity encodings) **reduced memory by ~30-40% at baseline. **
+- Data structure changes (liberal usage of variable-length quantity encodings) **reduced memory by ~30-40% at baseline.**
 - Reworking of read mapping logic: temporary mappings do not have to be stored in memory temporarily. For large metagenomes, **this could reduce peak RAM by multiple folds.** 
 
 Minor changes
