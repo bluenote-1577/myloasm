@@ -1,3 +1,18 @@
+# v0.4.0 (1-28-2026) - At least 30% peak RAM than before at baseline, but possibly up to ~80% reduced (i.e., even 5-fold) for large metagenomes
+
+Major changes
+
+- Data structure changes (liberal usage of variable-length quantity encodings) **reduced memory by ~30-40% at baseline. **
+- Reworking of read mapping logic: temporary mappings do not have to be stored in memory temporarily. For large metagenomes, **this could reduce peak RAM by multiple folds.** 
+
+Minor changes
+
+- Reworked the logic for removing contained reads slightly; it now proceeds in batches. This gave slightly better results on preliminary data. 
+
+BREAKING:
+
+- The checkpoints from previous runs for v0.3.0 and below will no longer work. That is, if you want to resume a disrupted v0.3.0 run using `myloasm exist ...`,  you will have to use v0.3.0. 
+
 # v0.3.0 (12-19-2025) - Better polishing for multi-strain communities & runtime on complex metagenomes
 
 Major changes
