@@ -9,6 +9,7 @@ use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::SAMPLING_RATE_COV;
 use crate::graph::GraphNode;
+use crate::seeding::overlap_hang_length;
 use crate::utils;
 use std::io::Write;
 use flate2::write::GzEncoder;
@@ -384,7 +385,8 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
                 let start_qual = utils::div_rounded(last_break, QUALITY_SEQ_BIN);
                 let end_qual = utils::div_rounded(bp_start, QUALITY_SEQ_BIN).min(qual_seq.len());
-                new_read.qual_seq = Some(qual_seq[start_qual..end_qual].to_owned());
+                let new_qual_seq = qual_seq[start_qual..end_qual].to_owned();
+                new_read.qual_seq = Some(new_qual_seq);
             }
 
             new_read.base_length = new_read.dna_seq.len();
@@ -397,6 +399,7 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
                 populate_depth_from_map_info(&mut new_read, mapping_info, last_break, bp_start);
             }
 
+            overlap_hang_length(&mut new_read);
             new_reads.push(new_read);
         }
         last_break = bp_end;
@@ -405,8 +408,78 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
     return new_reads;
 }
 
+/// Compute coverage statistics for a read segment from mapping intervals
+/// Returns CoverageStats without modifying the read
+pub fn compute_coverage_stats(
+    twin_read: &TwinRead,
+    max_intervals: &[(BareInterval, BareMappingOverlap)],
+    start: usize,
+    end: usize
+) -> CoverageStats {
+    let minimizer_positions = twin_read.minimizer_positions();
+    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &minimizer_positions);
+
+    let intervals = max_intervals.iter().map(|x| Interval {
+        start: x.0.start,
+        stop: x.0.stop,
+        val: x.1.clone(),
+    }).collect::<Vec<_>>();
+    let lapper = Lapper::new(intervals);
+
+    let mut min_depths = [0.; ID_THRESHOLD_ITERS];
+    let mut median_depth = 0.;
+
+    for (i, id) in IDENTITY_THRESHOLDS.iter().enumerate() {
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+        median_depth = median_depth_t;
+        min_depths[i] = min_depth;
+    }
+
+    // Compute snpmer_id_threshold
+    let snpmer_id_threshold = if twin_read.snpmer_id_threshold.is_none() {
+        let step = 0.05 / 100.;
+        let sufficient_gap = min_depths[0] > 3.0 * min_depths[ID_THRESHOLD_ITERS - 1];
+        let sufficient_depth = min_depths[0] >= MIN_COV_READ as f64;
+        let strain_specific_not_enough = min_depths[ID_THRESHOLD_ITERS - 1] < MIN_COV_READ as f64;
+        let pass_cond_1 = sufficient_gap;
+        let pass_cond_2 = strain_specific_not_enough;
+
+        if (pass_cond_1 && pass_cond_2) && sufficient_depth {
+            let mut min_depth_prev = min_depths[ID_THRESHOLD_ITERS - 1];
+            let mut prev_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1];
+            let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - step;
+
+            loop {
+                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+
+                if min_depth_try <= min_depth_prev * 1.50 && min_depth_try >= MIN_COV_READ as f64 {
+                    log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, prev_id * 100., min_depth_try);
+                    break prev_id * 100.;
+                }
+
+                prev_id = try_id;
+                min_depth_prev = min_depth_try;
+                try_id -= step;
+            }
+        } else {
+            IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100.
+        }
+    } else {
+        twin_read.snpmer_id_threshold.unwrap()
+    };
+
+    CoverageStats {
+        start,
+        end,
+        min_depth_multi: min_depths,
+        median_depth,
+        snpmer_id_threshold,
+    }
+}
+
 pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, start: usize, end: usize){
-    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &twin_read.minimizer_positions);
+    let minimizer_positions = twin_read.minimizer_positions();
+    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &minimizer_positions);
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
     let max_intervals = mapping_info.mapping_info.max_mapping_boundaries.as_ref().unwrap();
@@ -468,6 +541,7 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     if twin_read.snpmer_id_threshold.is_some(){
         assert!(twin_read.snpmer_id_threshold.unwrap() > 1.1);
     }
+
 }
 
 pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[u32]) -> (usize, usize){
@@ -501,6 +575,126 @@ pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, 
     }
 
     return (first_mini, last_mini);
+}
+
+/// Apply split plans to create actual split reads with pre-computed coverage stats
+pub fn apply_split_plans(
+    twin_reads: Vec<TwinRead>,
+    split_plans: Vec<SplitReadPlan>,
+    temp_dir: &PathBuf,
+) -> (Vec<TwinRead>, Vec<usize>) {
+    let split_plans_dict = split_plans.iter()
+        .map(|x| (x.read_index, x))
+        .collect::<FxHashMap<usize, &SplitReadPlan>>();
+
+    let new_twin_reads_bools = Mutex::new(vec![]);
+    let cov_file = Path::new(temp_dir).join("read_coverages.txt.gz");
+    let buf = BufWriter::new(std::fs::File::create(cov_file).unwrap());
+    let writer = Mutex::new(GzEncoder::new(buf, Compression::default()));
+
+    twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
+        if let Some(plan) = split_plans_dict.get(&i) {
+            // Log breakpoints
+            if !plan.breakpoints.is_empty() {
+                let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
+                for breakpoint in plan.breakpoints.iter() {
+                    read_id_and_breakpoint_string.push_str(
+                        format!("{}-{}-COND:{},", breakpoint.pos1, breakpoint.pos2, breakpoint.condition).as_str()
+                    );
+                }
+                let writer = &mut writer.lock().unwrap();
+                writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
+            }
+
+            // Create split reads using pre-computed coverage stats
+            let splitted_reads = split_read_with_coverage_stats(twin_read, plan);
+            for new_read in splitted_reads {
+                new_twin_reads_bools.lock().unwrap().push((new_read, true));
+            }
+        } else {
+            if twin_read.min_depth_multi.is_some() {
+                new_twin_reads_bools.lock().unwrap().push((twin_read, true));
+            } else {
+                new_twin_reads_bools.lock().unwrap().push((twin_read, false));
+            }
+        }
+    });
+
+    let mut new_twin_reads_bools = new_twin_reads_bools.into_inner().unwrap();
+    new_twin_reads_bools.sort_by_key(|x| x.0.id.clone());
+
+    let good_reads_mask = new_twin_reads_bools.iter().map(|x| x.1).collect::<Vec<_>>();
+    let good_read_indexes = good_reads_mask.iter().enumerate()
+        .filter(|(_, &x)| x)
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+
+    let new_twin_reads = new_twin_reads_bools.into_iter()
+        .map(|x| x.0)
+        .collect::<Vec<_>>();
+
+    (new_twin_reads, good_read_indexes)
+}
+
+/// Create split reads using pre-computed coverage statistics
+fn split_read_with_coverage_stats(
+    mut twin_read: TwinRead,
+    plan: &SplitReadPlan,
+) -> Vec<TwinRead> {
+    let mut new_reads = vec![];
+    let mut break_points = plan.breakpoints.clone();
+    break_points.push(Breakpoints {
+        pos1: twin_read.base_length,
+        pos2: twin_read.base_length,
+        cov: 0,
+        condition: -5,
+    });
+
+    let mut last_break = 0;
+    let k = twin_read.k as usize;
+
+    for (i, break_point) in break_points.iter().enumerate() {
+        let bp_start = break_point.pos1;
+        let bp_end = break_point.pos2;
+
+        if bp_start - last_break > MIN_READ_LENGTH {
+            let mut new_read = TwinRead::default();
+            new_read.shift_and_retain(&twin_read, last_break, bp_start, k);
+            new_read.id = format!("{}+split{}", &twin_read.id, i);
+            new_read.split_start = last_break as u32;
+            log::trace!("Split read {} at {}-{}", &new_read.id, last_break, bp_start);
+            new_read.k = twin_read.k;
+            new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
+            new_read.est_id = twin_read.est_id;
+
+            if let Some(qual_seq) = twin_read.qual_seq.as_ref() {
+                let start_qual = utils::div_rounded(last_break, QUALITY_SEQ_BIN);
+                let end_qual = utils::div_rounded(bp_start, QUALITY_SEQ_BIN).min(qual_seq.len());
+                let new_qual_seq = qual_seq[start_qual..end_qual].to_owned();
+                new_read.qual_seq = Some(new_qual_seq);
+            }
+
+            new_read.base_length = new_read.dna_seq.len();
+            new_read.base_id = twin_read.base_id.clone();
+
+            if break_points.len() > 1 {
+                new_read.split_chimera = true;
+            } else if let Some(cov_stats) = plan.coverage_stats.get(i) {
+                // Use pre-computed coverage stats instead of recomputing
+                new_read.min_depth_multi = Some(cov_stats.min_depth_multi);
+                new_read.median_depth = Some(cov_stats.median_depth);
+                new_read.snpmer_id_threshold = Some(cov_stats.snpmer_id_threshold);
+
+                assert!(new_read.snpmer_id_threshold.unwrap() > 1.1);
+            }
+
+            overlap_hang_length(&mut new_read);
+            new_reads.push(new_read);
+        }
+        last_break = bp_end;
+    }
+    twin_read.clear();
+    new_reads
 }
 
 pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, temp_dir: &PathBuf, args: &Cli)
@@ -1638,8 +1832,8 @@ mod tests {
     /// Creates a basic TwinRead with evenly spaced minimizers
     fn make_test_read() -> TwinRead {
         TwinRead {
-            minimizer_positions: vec![10, 20, 30, 40, 50],
-            //minimizer_kmers: vec![0.into(), 0.into(), 0.into(), 0.into(), 0.into()],
+            minimizer_positions_enc: encode_positions_delta(&vec![10, 20, 30, 40, 50]),
+            snpmer_positions_enc: vec![],
             k: 21,
             ..Default::default()
         }

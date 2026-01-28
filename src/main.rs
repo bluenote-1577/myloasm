@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tikv_jemallocator::Jemalloc;
 use sysinfo::System;
+use rayon::prelude::*;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -59,6 +60,7 @@ fn main() {
     // Step 4: Construct raw unitig graph
     let (mut unitig_graph, overlap_adj_map) =
         unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, Some(&twin_read_container.outer_indices), &args);
+    log_memory_usage(true, "Obtained unitig graph from overlaps");
 
     let graph_dir = Path::new(&args.output_dir).join("assembly_graphs");
     std::fs::create_dir_all(&graph_dir).expect("Could not create temp directory for graphs");
@@ -369,17 +371,17 @@ fn get_twin_reads_from_kmer_info(
         let outer_read_indices_raw =
             twin_graph::remove_contained_reads_twin(None, None, &twin_reads_raw, true, cleaning_temp_dir, &args);
 
-        // (3): map all reads to the outer (non-contained) reads
+        // (3): map all reads to the outer (non-contained) reads and compute split plans
         log::info!("Mapping reads to non-contained (outer) reads - round 1...");
         let start = Instant::now();
-        let outer_mapping_info =
-            mapping::map_reads_to_outer_reads(&outer_read_indices_raw, &twin_reads_raw, &args);
+        let split_plans =
+            mapping::map_reads_to_outer_reads_efficient(&outer_read_indices_raw, &twin_reads_raw, &args, true);
         log_memory_usage(true, "STAGE 2: Finished mapping reads to outer reads");
 
-        // (4): split chimeric twin reads based on mappings to outer reads
+        // (4): split chimeric twin reads based on pre-computed split plans
         log::info!("Processing mappings to clean and split chimeric reads...");
         let (split_twin_reads, _split_outer_read_indices) =
-            map_processing::split_outer_reads(twin_reads_raw, outer_mapping_info, cleaning_temp_dir, &args);
+            map_processing::apply_split_plans(twin_reads_raw, split_plans, cleaning_temp_dir);
 
         let num_non_chimera = split_twin_reads.iter().filter(|x| !x.split_chimera).count();
         let num_chimera = split_twin_reads.len() - num_non_chimera;
@@ -421,16 +423,17 @@ fn get_twin_reads_from_kmer_info(
             "Round 2: Mapping reads to {} candidate outer reads...",
             remap_indices.len()
         );
-        let chimeric_mapping_info =
-            mapping::map_reads_to_outer_reads(&remap_indices, &split_twin_reads, &args);
+        let split_plans_round2 =
+            mapping::map_reads_to_outer_reads_efficient(&remap_indices, &split_twin_reads, &args, true);
 
-        // (7): split the remapped reads again -- some of them may still be chimeric... 
+        // (7): split the remapped reads again -- some of them may still be chimeric...
         let second_round_temp_dir = cleaning_temp_dir.join("remap_temp");
         std::fs::create_dir_all(&second_round_temp_dir).expect("Could not create temp directory for remapping");
         log::info!("Round 2: Processing mappings...");
         let num_reads_after_split = split_twin_reads.len();
         let (mut split_twin_reads_final, split_outer_read_indices_semifinal) =
-            map_processing::split_outer_reads(split_twin_reads, chimeric_mapping_info, &second_round_temp_dir, &args);
+            map_processing::apply_split_plans(split_twin_reads, split_plans_round2, &second_round_temp_dir);
+
         log::info!(
             "Round 2: Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
             split_twin_reads_final.len() as i64 - num_reads_after_split as i64,
@@ -458,27 +461,33 @@ fn get_twin_reads_from_kmer_info(
             .collect::<Vec<_>>();
         log::info!(
             "Final round: Mapping reads to {} candidate outer reads...",
-            remap_indices.len()
+            remap_indices_final.len()
         );
-        let chimeric_mapping_info_final =
-            mapping::map_reads_to_outer_reads(&remap_indices_final, &split_twin_reads_final, &args);
 
+        // Set break_chimeras to false to avoid over-splitting in the final round
+        let split_plans_final =
+            mapping::map_reads_to_outer_reads_efficient(&remap_indices_final, &split_twin_reads_final, &args, false);
 
-        // (10): fix the depths of the chimeric reads
-        for mapping_info in chimeric_mapping_info_final.iter() {
-            let chimeric_index = mapping_info.tr_index;
+        // (10): fix the depths of the chimeric reads using pre-computed coverage stats
+        for split_plan in split_plans_final.iter() {
+            let chimeric_index = split_plan.read_index;
             let split_chimeric_read = &mut split_twin_reads_final[chimeric_index];
-            map_processing::populate_depth_from_map_info(
-                split_chimeric_read,
-                mapping_info,
-                0,
-                split_chimeric_read.base_length,
-            );
+
+            // Apply the first (and only) coverage stats segment
+            if let Some(cov_stats) = split_plan.coverage_stats.first() {
+                split_chimeric_read.min_depth_multi = Some(cov_stats.min_depth_multi);
+                split_chimeric_read.median_depth = Some(cov_stats.median_depth);
+                split_chimeric_read.snpmer_id_threshold = Some(cov_stats.snpmer_id_threshold);
+
+                // Percentage, not fractional
+                assert!(split_chimeric_read.snpmer_id_threshold.unwrap() > 1.1);
+            }
         }
 
         split_twin_reads_final.sort_by(|a, b| a.id.cmp(&b.id));
 
-        split_twin_reads_final.iter_mut().for_each(|x| {
+        split_twin_reads_final.par_iter_mut().for_each(|x| {
+            x.compact();
             if x.min_depth_multi.is_some() {
                 x.outer = true;
             }
@@ -541,6 +550,7 @@ fn get_overlaps_from_twin_reads(
             "Time elapsed for getting overlaps is: {:?}",
             start.elapsed()
         );
+        log_memory_usage(true, &format!("Obtained {} overlaps between outer reads", overlaps.len()));
         if !args.clean_dir{
             bincode::serialize_into(
                 BufWriter::new(File::create(overlap_bin_path).unwrap()),

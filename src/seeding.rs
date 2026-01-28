@@ -2,7 +2,9 @@ use crate::constants::DEDUP_SNPMERS;
 use crate::constants::MID_BASE_THRESHOLD_READ;
 use crate::constants::MID_BASE_THRESHOLD_INITIAL;
 use crate::constants::QUALITY_SEQ_BIN;
+use crate::constants::*;
 use crate::types::*;
+use crate::map_processing;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use std::collections::VecDeque;
@@ -519,10 +521,12 @@ pub fn get_twin_read_syncmer(
         if counter != 0{
             binned_qualities.push(min_qual);
         }
-        qual_seq = Some(binned_qualities.try_into().unwrap());
+        let mut qual_seq_try: Seq<QualCompact3> = binned_qualities.try_into().unwrap();
+        qual_seq_try.shrink_to_fit();
+        qual_seq = Some(qual_seq_try);
     }
 
-    let dna_seq: Seq<Dna>;
+    let mut dna_seq: Seq<Dna>;
     let dna_seq_opt : Result<Seq<Dna>, _> = string.clone().try_into();
     if dna_seq_opt.is_err(){
         let fixed_string = string.iter().map(|b| {
@@ -544,12 +548,12 @@ pub fn get_twin_read_syncmer(
         dna_seq = dna_seq_opt.unwrap();
     }
 
-    Some(TwinRead{
-        //snpmer_kmers,
-        snpmer_positions: snpmer_positions_final,
-        //minimizer_kmers,
-        minimizer_positions,
-        //base_id: id.clone().split_ascii_whitespace().next().unwrap().to_string(),
+    dna_seq.shrink_to_fit();
+
+    let mut tr = TwinRead{
+        // Encode positions using variable-length delta encoding
+        minimizer_positions_enc: encode_positions_delta(&minimizer_positions),
+        snpmer_positions_enc: encode_positions_delta(&snpmer_positions_final),
         base_id: first_word(&id),
         id: first_word(&id),
         k: k as u8,
@@ -563,8 +567,23 @@ pub fn get_twin_read_syncmer(
         split_chimera: false,
         split_start: 0,
         snpmer_id_threshold: None,
-    })
+        overlap_hang_length: None
+    };
 
+    overlap_hang_length(&mut tr);
+
+    Some(tr)
+
+}
+
+pub fn overlap_hang_length(twin_read: &mut TwinRead){
+    let kmer_error_est = 1./(twin_read.est_id.unwrap_or(100.0) / 100.).powf(twin_read.k as f64);
+    let nth_read = ((MINIMIZER_END_NTH_OVERLAP as f64 * kmer_error_est) as usize).min(100);
+    let minimizer_positions = twin_read.minimizer_positions();
+    let (start_hang_cutoff, end_hang_cutoff) = map_processing::first_last_mini_in_range(0, twin_read.base_length, twin_read.k  as usize, nth_read,  &minimizer_positions);
+    let return_start = (start_hang_cutoff).min(OVERLAP_HANG_LENGTH);
+    let return_end = (twin_read.base_length - end_hang_cutoff).min(OVERLAP_HANG_LENGTH);
+    twin_read.overlap_hang_length = Some((return_start, return_end));
 }
 
 // pub fn get_twin_read(

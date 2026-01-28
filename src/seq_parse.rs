@@ -66,7 +66,7 @@ fn estimate_bf_size(
             est_bases /= 2.;
         }
     }
-    let bf_size = (est_bases / 2.0).min(100.0).max(2.0);
+    let bf_size = (est_bases / 2.0).min(200.0).max(2.0);
     return bf_size;
 }
 
@@ -162,6 +162,9 @@ fn first_iteration(
                                 if *counter % 100000 == 0{
                                     log::info!("Processed {} reads.", counter);
                                 }
+                                if *counter % 1_000_000 == 0{
+                                    log_memory_usage(false, &format!("Processed {} reads for bloom filter stage", *counter));
+                                }
                             }
                         }
                         Err(_) => {
@@ -177,7 +180,7 @@ fn first_iteration(
 
         //C: Update bloom filter
         let mut handles = Vec::new();
-        for rx in rxs.into_iter(){
+        for rx in rxs.into_iter() {
             handles.push(thread::spawn(move || {
                 let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
                 let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
@@ -226,6 +229,8 @@ fn first_iteration(
                         }
                     }
                 }
+                
+                
                 map.shrink_to_fit();
                 map
             }));

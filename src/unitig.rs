@@ -3337,7 +3337,7 @@ impl UnitigGraph {
 #[cfg(test)]
 mod tests {
 
-    use crate::cli;
+    use crate::{cli, constants::OVERLAP_HANG_LENGTH};
     use super::*;
 
     // Helper struct to make test graph construction easier
@@ -3396,8 +3396,8 @@ mod tests {
 
             for _ in 0..num_reads {
                 let generic_read = TwinRead {
-                    minimizer_positions: vec![],
-                    snpmer_positions: vec![],
+                    minimizer_positions_enc: vec![],
+                    snpmer_positions_enc: vec![],
                     dna_seq: Seq::new(),
                     qual_seq: None,
                     base_length: 2000,
@@ -3411,6 +3411,7 @@ mod tests {
                     median_depth: Some(2. * min_depth),
                     split_chimera: false,
                     snpmer_id_threshold: None,
+                    overlap_hang_length: Some((OVERLAP_HANG_LENGTH, OVERLAP_HANG_LENGTH))
                 };
 
                 self.corresponding_reads.push(generic_read);
