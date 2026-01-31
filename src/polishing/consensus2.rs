@@ -320,6 +320,37 @@ impl PoaConsensusBuilder {
             .collect();
     }
 
+    pub fn num_blocks(&self) -> usize {
+        self.breakpoints.len()
+    }
+
+    /// Returns (num_blocks_with_seqs, total_seqs, max_seqs_in_block, median_seqs_in_block, suspicious_blocks)
+    /// suspicious_blocks = blocks where max seq length > 1000
+    pub fn get_block_stats(&self) -> (usize, usize, usize, usize, usize, usize) {
+        let mut counts: Vec<usize> = Vec::new();
+        let mut suspicious_blocks = 0usize;
+        let mut max_length = 0usize;
+
+        for block in self.seq.iter() {
+            let seqs = block.lock().unwrap();
+            counts.push(seqs.len());
+            let max_len = seqs.iter().map(|s| s.len()).max().unwrap_or(0);
+            if max_len > 1000 {
+                suspicious_blocks += 1;
+            }
+            if max_len > max_length {
+                max_length = max_len;
+            }
+        }
+
+        let num_blocks_with_seqs = counts.iter().filter(|&&c| c > 0).count();
+        let total_seqs: usize = counts.iter().sum();
+        let max_seqs = *counts.iter().max().unwrap_or(&0);
+        counts.sort();
+        let median_seqs = if counts.is_empty() { 0 } else { counts[counts.len() / 2] };
+        (num_blocks_with_seqs, total_seqs, max_seqs, median_seqs, suspicious_blocks, max_length)
+    }
+
     fn populate_block(
         &self,
         seq: &[u8],
@@ -332,10 +363,12 @@ impl PoaConsensusBuilder {
     ) {
         current_block_string.push(0);
         current_block_qual.push(0);
-        let mut seq_lock = self.seq[bp_i].lock().unwrap();
-        let mut qual_lock = self.qual[bp_i].lock().unwrap();
-        seq_lock.push(std::mem::take(current_block_string));
-        qual_lock.push(std::mem::take(current_block_qual));
+        {
+            let mut seq_lock = self.seq[bp_i].lock().unwrap();
+            let mut qual_lock = self.qual[bp_i].lock().unwrap();
+            seq_lock.push(std::mem::take(current_block_string));
+            qual_lock.push(std::mem::take(current_block_qual));
+        }
         current_block_string.extend(&seq[breakpoint_q..current_position_q]);
         current_block_qual.extend(&qual[breakpoint_q..current_position_q]);
     }
