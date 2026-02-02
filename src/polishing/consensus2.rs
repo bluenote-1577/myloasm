@@ -39,7 +39,7 @@ pub struct PoaConsensusBuilder {
 
 impl PoaConsensusBuilder {
     pub fn spoa_blocks(self) -> Vec<Vec<u8>> {
-        let consensus_max_length = 1000;
+        let consensus_max_length = 1500;
         let alignment_type = 1; // 0 local, 1 global, 2, semiglobal
         let match_score = 5;
         let mismatch_score = -2;
@@ -161,6 +161,8 @@ impl PoaConsensusBuilder {
 
                 consensuses.lock().unwrap().push((i, cons));
             });
+        
+        log::debug!("[POLISH] Consensus building complete for {}", self.contig_name);
 
         log::trace!("Consensus building complete for {}", self.contig_name);
         let mut consensuses = consensuses.into_inner().unwrap();
@@ -179,6 +181,7 @@ impl PoaConsensusBuilder {
             }
             
         }
+
         let consensuses =
             PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, self.bp_len, &self.contig_name);
 
