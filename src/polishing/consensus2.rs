@@ -56,6 +56,8 @@ impl PoaConsensusBuilder {
                 let mut seqs = seq.lock().unwrap();
                 let mut quals = qual.lock().unwrap();
 
+                assert!(seqs.len() == quals.len());
+
                 let max_len = seqs.iter().map(|x| x.len()).max().unwrap_or(0).min(self.window_overlap_len + self.bp_len);
 
                 if seqs.len() <= 3 {
@@ -150,6 +152,10 @@ impl PoaConsensusBuilder {
                     if quals.len() > 15 && self.args.new_polish_trimming{
                         cons = trim_consensus_by_coverage(&cons, &seqs);
                     }
+                }
+
+                if i == 5 || i == 10 {
+                    log::debug!("[POLISH] Block {} finished for {}: num_seqs={}, cons_len={}", i, self.contig_name, seqs.len(), cons.len());
                 }
 
                 if cons.len() as i32 - seventy_five_length as i32 > 300 && quals.len() >= 5 && (cons.len() as i32 - (self.bp_len + self.window_overlap_len) as i32) > 150{
