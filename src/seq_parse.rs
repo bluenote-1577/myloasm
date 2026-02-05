@@ -1,4 +1,7 @@
 use crate::cli::Cli;
+use crate::kmc_reader::kmc::KmcReader;
+use crate::types::BYTE_TO_SEQ;
+use crate::types::Kmer48;
 use fastbloom::BloomFilter;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -403,4 +406,180 @@ pub fn quality_pool(qualities: Vec<u8>) -> Vec<u8>{
         }
     }
     return pool;
+}
+
+/// Read k-mers from a precomputed KMC database and convert to our internal format.
+///
+/// KMC stores canonical k-mers (lexicographically smallest between k-mer and its RC).
+/// We convert these to our format which uses a different canonicalization based on
+/// comparing split k-mers (k-mer with middle base masked out).
+///
+/// Since KMC doesn't provide strand information per occurrence, we split the count
+/// between both strand slots to satisfy downstream filtering requirements.
+pub fn read_kmers_from_kmc_db(
+    k: usize,
+    _threads: usize,
+    kmc_db_path: &str,
+    _args: &Cli,
+) -> Vec<(u64, [u32; 2])> {
+    log::info!("Reading k-mers from KMC database: {}", kmc_db_path);
+
+    let reader = KmcReader::open(kmc_db_path).expect("Failed to open KMC database. Ensure the path is correct and the KMC database is valid.");
+    let kmc_info = reader.info();
+
+    if kmc_info.kmer_length as usize != k {
+        log::error!(
+            "KMC database k-mer length ({}) does not match expected k ({})",
+            kmc_info.kmer_length, k
+        );
+        std::process::exit(1);
+    }
+
+    log::info!(
+        "KMC database info: k={}, total_kmers={}, both_strands={}",
+        kmc_info.kmer_length,
+        kmc_info.total_kmers,
+        kmc_info.both_strands
+    );
+
+
+    // Mask to remove middle base for split comparison
+    let split_mask: u64 = !(3u64 << (k - 1));
+    // Mask to keep only the k-mer bits
+    let marker_mask: u64 = u64::MAX >> (64 - 2 * k);
+
+    let mut kmer_maps: Vec<FxHashMap<Kmer48, [u16; 2]>> = vec![FxHashMap::default(); 50];
+    let mut processed_count = 0u64;
+    let mut skipped_low_count = 0u64;
+    let mut skipped_palindrome = 0u64;
+
+
+    for bloom in [true, false]{
+        processed_count = 0;
+        let mut bloom_filter;
+        if bloom{
+            bloom_filter = BloomFilter::with_num_bits(kmc_info.total_kmers as usize * 8).seed(&42).expected_items(kmc_info.total_kmers as usize);
+        }
+        else{
+            bloom_filter = BloomFilter::with_num_bits(1).seed(&42).expected_items(1); //dummy
+        }
+        
+        if bloom{
+            log::info!("Starting bloom filter pass...");
+        }
+        else{
+            log::info!("Starting k-mer counting pass...");
+        }
+        let mut reader = KmcReader::open(kmc_db_path).expect("Failed to open KMC database");
+        while let Some(record) = reader.next_kmer().expect("Error reading k-mer") {
+            let kmer_bytes = record.kmer;
+            let kmc_count = record.count as u32;
+
+            // Skip if count is too low (will be filtered anyway)
+            if kmc_count < 1 {
+                skipped_low_count += 1;
+                continue;
+            }
+
+            // Encode forward k-mer from the KMC canonical form
+            let mut forward_kmer: u64 = 0;
+            for &byte in kmer_bytes {
+                let nuc = BYTE_TO_SEQ[byte as usize] as u64;
+                forward_kmer <<= 2;
+                forward_kmer |= nuc;
+            }
+            forward_kmer &= marker_mask;
+
+            // Compute reverse complement
+            let mut reverse_kmer: u64 = 0;
+            for &byte in kmer_bytes.iter().rev() {
+                let nuc = 3 - BYTE_TO_SEQ[byte as usize] as u64;
+                reverse_kmer <<= 2;
+                reverse_kmer |= nuc;
+            }
+            reverse_kmer &= marker_mask;
+
+            // Compute split forms (mask out middle base)
+            let split_f = forward_kmer & split_mask;
+            let split_r = reverse_kmer & split_mask;
+
+            // Skip palindromes (same split form in both directions)
+            if split_f == split_r {
+                skipped_palindrome += 1;
+                continue;
+            }
+
+            // Determine our canonical form based on split comparison
+            // canonical_marker = true means forward is canonical (bit 63 = 1)
+            let canonical = split_f < split_r;
+            let canonical_kmer = if canonical {
+                forward_kmer
+            } else {
+                reverse_kmer
+            };
+
+            if bloom{
+                let already_present = bloom_filter.insert(&canonical_kmer);
+                if !already_present{
+                    continue;
+                }
+                else{
+                    kmer_maps[canonical_kmer as usize % 50].insert(Kmer48::from_u64(canonical_kmer), [0,0]);
+                }
+            }
+
+            else{
+                if let Some(entry) = kmer_maps[canonical_kmer as usize % 50].get_mut(&Kmer48::from_u64(canonical_kmer)) {
+                    let count;
+                    if kmc_count > u16::MAX as u32 {
+                        count = u16::MAX;
+                    }
+                    else{
+                        count = kmc_count as u16;
+                    }
+                    if canonical {
+                        entry[0] = count;
+                    }
+                    else{
+                        entry[1] = count;
+                    }
+                }
+                else{
+                    // This k-mer was not seen in bloom filter pass, skip
+                    continue;
+                }
+            }
+
+            processed_count += 1;
+            if processed_count % 10_000_000 == 0 {
+                log::info!("Processed {} k-mers from KMC database", processed_count);
+            }
+        }
+        log_memory_usage(true, if bloom{"Memory usage after KMC bloom filter pass"} else{"Memory usage after KMC k-mer counting pass"});
+    }
+
+    log::info!(
+        "Finished reading KMC database: {} k-mers processed, {} skipped (low count), {} skipped (palindrome)",
+        processed_count / 2,
+        skipped_low_count / 2,
+        skipped_palindrome / 2,
+    );
+
+    // Convert to the expected Vec format with filtering
+    let mut vectorized_map = vec![];
+    for kmer_map in kmer_maps.into_iter() {
+        for (kmer, counts) in kmer_map.into_iter() {
+            if counts[0] > 0 && counts[1] > 0 && counts[0] + counts[1] > 2 {
+                vectorized_map.push((kmer.to_u64(), counts.map(|c| c as u32)));
+            }
+        }
+    }
+
+    log::info!(
+        "Retained {} k-mers after filtering (both strands > 0, total > 2)",
+        vectorized_map.len()
+    );
+    log_memory_usage(true, "Memory usage after reading KMC database");
+
+    vectorized_map
 }

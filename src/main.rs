@@ -318,7 +318,19 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
         log::info!("Loaded snpmer info from file.");
     } else {
         let start = Instant::now();
-        let big_kmer_map = seq_parse::read_to_split_kmers(args.kmer_size, args.threads, &args);
+        let big_kmer_map;
+        if args.kmc_db.is_some() {
+            log::info!("Using precomputed KMC database at {}", args.kmc_db.as_ref().unwrap());
+            big_kmer_map = seq_parse::read_kmers_from_kmc_db(
+                args.kmer_size,
+                args.threads,
+                args.kmc_db.as_ref().unwrap(),
+                &args,
+            );
+        }
+        else{
+            big_kmer_map = seq_parse::read_to_split_kmers(args.kmer_size, args.threads, &args);
+        }
         log::info!(
             "Time elapsed in for counting k-mers is: {:?}",
             start.elapsed()
