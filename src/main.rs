@@ -51,6 +51,7 @@ fn main() {
     let cleaning_unitig_temp = Path::new(&args.output_dir).join("0-cleaning_and_unitigs");
     std::fs::create_dir_all(&cleaning_unitig_temp).expect("Could not create temp directory for cleaning and unitigs");
     let twin_read_container = get_twin_reads_from_kmer_info(&mut kmer_info, &args, &output_dir, &cleaning_unitig_temp);
+
     let twin_reads = &twin_read_container.twin_reads;
     log_memory_usage(true, "STAGE 3: Obtained clean twin reads");
 
@@ -364,8 +365,13 @@ fn get_twin_reads_from_kmer_info(
     let saved_input = args.input_files == [MAGIC_EXIST_STRING];
     let twin_read_container;
     let twin_read_bin_path = output_dir.join("binary_temp").join("twin_reads.bin");
+    let huffman_bin_path = output_dir.join("binary_temp").join("huffman_tables.bin");
 
     if saved_input && twin_read_bin_path.exists() {
+        // Load Huffman tables first so deserialized reads can be decoded
+        if let Err(e) = types::load_huffman_tables(&huffman_bin_path) {
+            log::warn!("Could not load Huffman tables: {}", e);
+        }
         twin_read_container = bincode::deserialize_from(BufReader::new(
             File::open(twin_read_bin_path).unwrap(),
         ))
@@ -524,6 +530,13 @@ fn get_twin_reads_from_kmer_info(
                 &twin_read_container,
             )
             .unwrap();
+
+            // Save Huffman tables alongside twin reads for reload
+            if types::huffman_initialized() {
+                if let Err(e) = types::save_huffman_tables(&huffman_bin_path) {
+                    log::warn!("Could not save Huffman tables: {}", e);
+                }
+            }
         }
     }
     return twin_read_container;

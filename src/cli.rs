@@ -71,6 +71,10 @@ pub struct Cli {
     /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub new_polish_trimming: bool,
+
+    /// Remove highest frequency k-mers (1 / this).
+    #[arg(long, default_value_t=100000, help_heading = CLI_HEADINGS[1])]
+    pub high_freq_kmer_threshold: usize,
     
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]

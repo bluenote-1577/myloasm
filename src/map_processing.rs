@@ -689,6 +689,7 @@ fn split_read_with_coverage_stats(
             }
 
             overlap_hang_length(&mut new_read);
+            new_read.compact();
             new_reads.push(new_read);
         }
         last_break = bp_end;

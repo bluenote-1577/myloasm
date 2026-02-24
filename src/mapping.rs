@@ -1356,7 +1356,7 @@ pub fn map_to_dereplicate(
 
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
-        let k = snpmer_i.k as usize;
+        let k = args.kmer_size as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
         let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k - 1));
         snpmer_set.insert(snpmer1);
@@ -1537,7 +1537,7 @@ pub fn map_reads_to_unitigs(
     
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
-        let k = snpmer_i.k as usize;
+        let k = args.kmer_size as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
         let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k - 1));
         snpmer_set.insert(snpmer1);
@@ -1546,6 +1546,7 @@ pub fn map_reads_to_unitigs(
 
     //Convert unitigs to twinreads
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
+    drop(snpmer_set);
     let circular_unitigs = unitig_graph.nodes.iter().filter(|(_, u)| u.has_circular_walk()).map(|(id, _)| *id).collect::<FxHashSet<_>>();
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());

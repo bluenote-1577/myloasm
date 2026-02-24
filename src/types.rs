@@ -40,6 +40,9 @@ use block_aligner::cigar::OpLen;
 use std::cmp::Ordering;
 use nibble_vec::*;
 use std::collections::BTreeMap;
+use minimum_redundancy::{Coding, Code, DecodingResult, BitsPerFragment};
+use std::sync::OnceLock;
+
 
 use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MAX_GAP_CHAINING;
@@ -254,9 +257,11 @@ pub type Fraction = f32;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct TwinRead {
-    // Delta-encoded positions using variable-length encoding
+    // Delta-encoded positions (varint or Huffman-coded varint)
     pub minimizer_positions_enc: Vec<u8>,
     pub snpmer_positions_enc: Vec<u8>,
+    // True if position vecs are Huffman-encoded, false if raw varint
+    pub huffman_encoded: bool,
     // Full record id
     pub id: String,
     // First word of record id
@@ -552,6 +557,251 @@ pub fn encode_varints(values: &[u32]) -> Vec<u8> {
     buf
 }
 
+// ---- Huffman coding for position delta bytes ----
+
+#[derive(Clone, Copy)]
+pub enum PositionKind { Minimizer, Snpmer }
+
+static HUFFMAN_CODING_MINI: OnceLock<Coding<u8, BitsPerFragment>> = OnceLock::new();
+static HUFFMAN_CODES_MINI: OnceLock<[Code; 256]> = OnceLock::new();
+static HUFFMAN_CODING_SNP: OnceLock<Coding<u8, BitsPerFragment>> = OnceLock::new();
+static HUFFMAN_CODES_SNP: OnceLock<[Code; 256]> = OnceLock::new();
+
+fn huffman_coding_for(kind: PositionKind) -> Option<&'static Coding<u8, BitsPerFragment>> {
+    match kind {
+        PositionKind::Minimizer => HUFFMAN_CODING_MINI.get(),
+        PositionKind::Snpmer => HUFFMAN_CODING_SNP.get(),
+    }
+}
+
+fn huffman_codes_for(kind: PositionKind) -> Option<&'static [Code; 256]> {
+    match kind {
+        PositionKind::Minimizer => HUFFMAN_CODES_MINI.get(),
+        PositionKind::Snpmer => HUFFMAN_CODES_SNP.get(),
+    }
+}
+
+/// Build separate Huffman codings for minimizer and snpmer delta bytes,
+/// sampling from the first `max_reads` reads. Stores them globally.
+///
+/// All 256 byte values are given a minimum frequency of 1 so that
+/// unseen bytes still get valid (long) codewords instead of zero-length codes.
+pub fn build_and_set_huffman_coding(reads: &[TwinRead], max_reads: usize) {
+    use std::collections::HashMap;
+    use minimum_redundancy::Frequencies;
+
+    let sample = &reads[..max_reads.min(reads.len())];
+
+    // Build minimizer Huffman coding
+    let mut mini_freq = HashMap::<u8, usize>::new();
+    for b in 0..=255u8 { mini_freq.insert(b, 1); }
+    mini_freq.add_occurences_of(sample.iter()
+        .flat_map(|r| r.minimizer_positions_enc.iter().copied()));
+    let coding_mini = Coding::from_frequencies(BitsPerFragment(1), mini_freq);
+    HUFFMAN_CODES_MINI.set(coding_mini.codes_for_values_array()).ok();
+    HUFFMAN_CODING_MINI.set(coding_mini).ok();
+
+    // Build snpmer Huffman coding
+    let mut snp_freq = HashMap::<u8, usize>::new();
+    for b in 0..=255u8 { snp_freq.insert(b, 1); }
+    snp_freq.add_occurences_of(sample.iter()
+        .flat_map(|r| r.snpmer_positions_enc.iter().copied()));
+    let coding_snp = Coding::from_frequencies(BitsPerFragment(1), snp_freq);
+    HUFFMAN_CODES_SNP.set(coding_snp.codes_for_values_array()).ok();
+    HUFFMAN_CODING_SNP.set(coding_snp).ok();
+}
+
+/// Returns true if Huffman coding has been initialized.
+pub fn huffman_initialized() -> bool {
+    HUFFMAN_CODING_MINI.get().is_some() && HUFFMAN_CODING_SNP.get().is_some()
+}
+
+/// Encode positions: uses Huffman if initialized, otherwise varint delta.
+#[inline]
+pub fn encode_positions(positions: &[u32], kind: PositionKind) -> Vec<u8> {
+    if let Some(codes) = huffman_codes_for(kind) {
+        encode_positions_huffman(positions, codes)
+    } else {
+        encode_positions_delta(positions)
+    }
+}
+
+/// Decode positions: dispatches based on per-read huffman flag.
+#[inline]
+pub fn decode_positions(encoded: &[u8], kind: PositionKind, huffman_encoded: bool) -> Vec<u32> {
+    if huffman_encoded {
+        let coding = huffman_coding_for(kind)
+            .expect("huffman_encoded flag set but Huffman coding not initialized");
+        decode_positions_huffman(encoded, coding)
+    } else {
+        decode_positions_delta(encoded)
+    }
+}
+
+/// Count positions without full decode: dispatches based on per-read huffman flag.
+#[inline]
+pub fn count_positions(encoded: &[u8], huffman_encoded: bool) -> usize {
+    if huffman_encoded {
+        count_positions_huffman(encoded)
+    } else {
+        encoded.iter().filter(|&&b| b & 0x80 == 0).count()
+    }
+}
+
+/// Encode positions as Huffman-coded varint bytes.
+/// Format: [num_positions as varint] [packed Huffman bits of varint byte stream]
+pub fn encode_positions_huffman(positions: &[u32], codes: &[Code; 256]) -> Vec<u8> {
+    if positions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut result = Vec::new();
+    encode_varint_u32(positions.len() as u32, &mut result);
+
+    let varint_bytes = encode_positions_delta(positions);
+
+    let mut current_byte: u8 = 0;
+    let mut bits_filled: u32 = 0;
+
+    for &vbyte in &varint_bytes {
+        let code = codes[vbyte as usize];
+        for bit_idx in (0..code.len).rev() {
+            let bit = ((code.content >> bit_idx) & 1) as u8;
+            current_byte = (current_byte << 1) | bit;
+            bits_filled += 1;
+            if bits_filled == 8 {
+                result.push(current_byte);
+                current_byte = 0;
+                bits_filled = 0;
+            }
+        }
+    }
+
+    if bits_filled > 0 {
+        current_byte <<= 8 - bits_filled;
+        result.push(current_byte);
+    }
+
+    result
+}
+
+/// Decode Huffman-encoded positions back to absolute positions.
+pub fn decode_positions_huffman(encoded: &[u8], coding: &Coding<u8, BitsPerFragment>) -> Vec<u32> {
+    if encoded.is_empty() {
+        return Vec::new();
+    }
+
+    let (num_positions, prefix_len) = decode_varint_u32(encoded, 0);
+    let num_positions = num_positions as usize;
+
+    if num_positions == 0 {
+        return Vec::new();
+    }
+
+    let huffman_bytes = &encoded[prefix_len..];
+    let mut bit_iter = huffman_bytes.iter()
+        .flat_map(|&byte| (0..8u32).rev().map(move |i| ((byte >> i) & 1) as u32));
+
+    let mut decoder = coding.decoder();
+    let mut positions = Vec::with_capacity(num_positions);
+    let mut current_pos = 0u32;
+    let mut delta = 0u32;
+    let mut shift = 0u32;
+
+    while positions.len() < num_positions {
+        match decoder.decode_next(&mut bit_iter) {
+            DecodingResult::Value(&vbyte) => {
+                delta |= ((vbyte & 0x7F) as u32) << shift;
+                if vbyte & 0x80 == 0 {
+                    current_pos += delta;
+                    positions.push(current_pos);
+                    delta = 0;
+                    shift = 0;
+                } else {
+                    shift += 7;
+                }
+            }
+            _ => break,
+        }
+    }
+
+    positions
+}
+
+/// Count positions from Huffman-encoded data by reading the varint prefix.
+#[inline]
+pub fn count_positions_huffman(encoded: &[u8]) -> usize {
+    if encoded.is_empty() {
+        return 0;
+    }
+    let (count, _) = decode_varint_u32(encoded, 0);
+    count as usize
+}
+
+/// Re-encode reads from varint to Huffman encoding and set the flag.
+/// Must be called after build_and_set_huffman_coding.
+pub fn reencode_reads_huffman(reads: &mut [TwinRead]) {
+    let codes_mini = HUFFMAN_CODES_MINI.get().expect("Huffman coding not initialized");
+    let codes_snp = HUFFMAN_CODES_SNP.get().expect("Huffman coding not initialized");
+
+    for read in reads.iter_mut() {
+        if read.huffman_encoded {
+            continue;
+        }
+        if !read.minimizer_positions_enc.is_empty() {
+            let positions = decode_positions_delta(&read.minimizer_positions_enc);
+            let mut enc = encode_positions_huffman(&positions, codes_mini);
+            enc.shrink_to_fit();
+            read.minimizer_positions_enc = enc;
+        }
+        if !read.snpmer_positions_enc.is_empty() {
+            let positions = decode_positions_delta(&read.snpmer_positions_enc);
+            let mut enc = encode_positions_huffman(&positions, codes_snp);
+            enc.shrink_to_fit();
+            read.snpmer_positions_enc = enc;
+        }
+        read.huffman_encoded = true;
+    }
+}
+
+/// Save Huffman coding tables to a file. Call after build_and_set_huffman_coding.
+pub fn save_huffman_tables(path: &std::path::Path) -> std::io::Result<()> {
+    let coding_mini = HUFFMAN_CODING_MINI.get()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized"))?;
+    let coding_snp = HUFFMAN_CODING_SNP.get()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized"))?;
+
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    coding_mini.write(&mut file, |w, v| { w.write_all(&[*v]) })?;
+    coding_snp.write(&mut file, |w, v| { w.write_all(&[*v]) })?;
+    Ok(())
+}
+
+/// Load Huffman coding tables from a file and set the global state.
+/// Returns true if successfully loaded, false if file doesn't exist.
+pub fn load_huffman_tables(path: &std::path::Path) -> std::io::Result<bool> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+
+    let coding_mini: Coding<u8, BitsPerFragment> =
+        Coding::read(&mut file, |r| { let mut b = [0u8; 1]; r.read_exact(&mut b)?; Ok(b[0]) })?;
+    let coding_snp: Coding<u8, BitsPerFragment> =
+        Coding::read(&mut file, |r| { let mut b = [0u8; 1]; r.read_exact(&mut b)?; Ok(b[0]) })?;
+
+    HUFFMAN_CODES_MINI.set(coding_mini.codes_for_values_array()).ok();
+    HUFFMAN_CODING_MINI.set(coding_mini).ok();
+    HUFFMAN_CODES_SNP.set(coding_snp.codes_for_values_array()).ok();
+    HUFFMAN_CODING_SNP.set(coding_snp).ok();
+
+    log::info!("Loaded Huffman coding tables from {:?}", path);
+    Ok(true)
+}
+
+// ---- End Huffman coding section ----
+
 /// Encode a boundary pair (start, end) as (start, gap) using variable-length encoding.
 /// Appends to the provided buffer.
 #[inline]
@@ -596,10 +846,10 @@ impl TwinRead{
     pub fn compact(&mut self){
 
         // debug capacities vs lengths
-        // log::info!("BEFORE Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
-        // log::info!("BEFORE Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
-        // log::info!("BEFORE DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
-        // log::info!("BEFORE Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
+         log::info!("BEFORE Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
+         log::info!("BEFORE Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
+         log::info!("BEFORE DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
+         log::info!("BEFORE Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
 
         let mut minimizer_positions_enc = Vec::with_capacity(self.minimizer_positions_enc.len());
         minimizer_positions_enc.extend(self.minimizer_positions_enc.iter().cloned());
@@ -617,10 +867,10 @@ impl TwinRead{
         }
 
         // debug capacities vs lengths
-        // log::info!("Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
-        // log::info!("Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
-        // log::info!("DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
-        // log::info!("Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
+         log::info!("Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
+         log::info!("Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
+         log::info!("DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
+         log::info!("Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
     }
 
     pub fn shrink_to_fit(&mut self){
@@ -635,6 +885,12 @@ impl TwinRead{
     #[inline]
     pub fn kmer_from_position(&self, pos:u32, k: usize) -> Kmer48{
         let pos = pos as usize;
+        if pos + k > self.dna_seq.len() {
+            dbg!(&self.id, pos, k, self.dna_seq.len(), "Position out of bounds for k-mer extraction");
+            dbg!(self.minimizer_positions_enc.len(), self.snpmer_positions_enc.len());
+            dbg!(self.huffman_encoded);
+            panic!("Position out of bounds for k-mer extraction");
+        }
 
         //match various values of k from 17 - 23, odd
         //bio-seq stores CA = 0001.
@@ -676,46 +932,26 @@ impl TwinRead{
         self.snpmer_positions_enc.shrink_to_fit();
     }
 
-    /// Decode minimizer positions from delta encoding
+    /// Decode minimizer positions (dispatches based on per-read flag)
     #[inline]
     pub fn minimizer_positions(&self) -> Vec<u32> {
-        decode_positions_delta(&self.minimizer_positions_enc)
+        decode_positions(&self.minimizer_positions_enc, PositionKind::Minimizer, self.huffman_encoded)
     }
 
-    /// Decode snpmer positions from delta encoding
+    /// Decode snpmer positions (dispatches based on per-read flag)
     #[inline]
     pub fn snpmer_positions(&self) -> Vec<u32> {
-        decode_positions_delta(&self.snpmer_positions_enc)
+        decode_positions(&self.snpmer_positions_enc, PositionKind::Snpmer, self.huffman_encoded)
     }
 
     /// Get the count of minimizers (without full decoding)
     pub fn minimizer_count(&self) -> usize {
-        if self.minimizer_positions_enc.is_empty() {
-            return 0;
-        }
-        // Count how many deltas are encoded
-        let mut count = 0;
-        for &byte in &self.minimizer_positions_enc {
-            if byte & 0x80 == 0 {
-                count += 1;
-            }
-        }
-        count
+        count_positions(&self.minimizer_positions_enc, self.huffman_encoded)
     }
 
     /// Get the count of snpmers (without full decoding)
     pub fn snpmer_count(&self) -> usize {
-        if self.snpmer_positions_enc.is_empty() {
-            return 0;
-        }
-        // Count how many deltas are encoded
-        let mut count = 0;
-        for &byte in &self.snpmer_positions_enc {
-            if byte & 0x80 == 0 {
-                count += 1;
-            }
-        }
-        count
+        count_positions(&self.snpmer_positions_enc, self.huffman_encoded)
     }
 
     pub fn minimizer_kmers(&self) -> Vec<Kmer48> {
@@ -738,9 +974,9 @@ impl TwinRead{
         positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
     }
 
-    // Retain only the minimizers at the given INDICES, not positions
+    // Retain only the minimizers at the given INDICES, not positions.
+    // Re-encodes using the SAME encoding format (huffman or varint) as the read currently has.
     pub fn retain_mini_indices(&mut self, indices: FxHashSet<usize>) {
-        // Decode, filter by indices, re-encode
         let positions = self.minimizer_positions();
         let mut filtered_positions = Vec::new();
 
@@ -751,12 +987,18 @@ impl TwinRead{
         }
 
         filtered_positions.shrink_to_fit();
-        self.minimizer_positions_enc = encode_positions_delta(&filtered_positions);
+        if self.huffman_encoded {
+            let codes = HUFFMAN_CODES_MINI.get().expect("huffman_encoded but coding not initialized");
+            self.minimizer_positions_enc = encode_positions_huffman(&filtered_positions, codes);
+        } else {
+            self.minimizer_positions_enc = encode_positions_delta(&filtered_positions);
+        }
+        // Do NOT change self.huffman_encoded -- both fields must stay in sync
     }
 
-    // Retain only the snpmers at the given INDICES, not positions
+    // Retain only the snpmers at the given INDICES, not positions.
+    // Re-encodes using the SAME encoding format (huffman or varint) as the read currently has.
     pub fn retain_snpmer_indices(&mut self, indices: FxHashSet<usize>) {
-        // Decode, filter by indices, re-encode
         let positions = self.snpmer_positions();
         let mut filtered_positions = Vec::new();
 
@@ -767,12 +1009,19 @@ impl TwinRead{
         }
 
         filtered_positions.shrink_to_fit();
-        self.snpmer_positions_enc = encode_positions_delta(&filtered_positions);
+        if self.huffman_encoded {
+            let codes = HUFFMAN_CODES_SNP.get().expect("huffman_encoded but coding not initialized");
+            self.snpmer_positions_enc = encode_positions_huffman(&filtered_positions, codes);
+        } else {
+            self.snpmer_positions_enc = encode_positions_delta(&filtered_positions);
+        }
+        // Do NOT change self.huffman_encoded -- both fields must stay in sync
     }
 
 
+    // Re-encodes both position fields from another read, shifted and filtered.
+    // Uses current global encoding state and sets huffman_encoded accordingly.
     pub fn shift_and_retain(&mut self, other_read: &TwinRead, last_break: usize, bp_start: usize, k: usize){
-        // Decode other_read's positions
         let other_mini_positions = other_read.minimizer_positions();
         let other_snp_positions = other_read.snpmer_positions();
 
@@ -791,13 +1040,14 @@ impl TwinRead{
             }
         }
 
-        // Shrink to fit
         mini_positions_filtered.shrink_to_fit();
         snp_positions_filtered.shrink_to_fit();
 
-        // Re-encode
-        self.minimizer_positions_enc = encode_positions_delta(&mini_positions_filtered);
-        self.snpmer_positions_enc = encode_positions_delta(&snp_positions_filtered);
+        // shift_and_retain creates a new encoding from scratch for both fields
+        // simultaneously, so it's safe to use auto-dispatch here
+        self.minimizer_positions_enc = encode_positions(&mini_positions_filtered, PositionKind::Minimizer);
+        self.snpmer_positions_enc = encode_positions(&snp_positions_filtered, PositionKind::Snpmer);
+        self.huffman_encoded = huffman_initialized();
     }
 }
 
@@ -832,9 +1082,8 @@ pub struct TwinReadContainer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Ord, PartialOrd, Hash)]
 pub struct SnpmerInfo {
     pub split_kmer: u64,
-    pub mid_bases: SmallVec<[u8;2]>,
-    pub counts: SmallVec<[u32;2]>,
-    pub k: u8,
+    pub mid_bases: [u8;2],
+    pub counts: [u32;2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -1363,5 +1612,149 @@ mod tests {
 
         assert_eq!(positions, decoded);
         assert_eq!(encoded.len(), 1);
+    }
+
+    // ---- Huffman round-trip tests ----
+    // These build local Coding instances to avoid polluting global OnceLock state.
+
+    use minimum_redundancy::{Coding, Code, BitsPerFragment, Frequencies};
+    use std::collections::HashMap;
+
+    /// Build a Huffman coding from sample positions, seeding all 256 byte values.
+    fn build_test_coding(sample_positions: &[Vec<u32>]) -> (Coding<u8, BitsPerFragment>, [Code; 256]) {
+        let mut freq = HashMap::<u8, usize>::new();
+        for b in 0..=255u8 { freq.insert(b, 1); }
+        for positions in sample_positions {
+            let varint_bytes = encode_positions_delta(positions);
+            freq.add_occurences_of(varint_bytes.into_iter());
+        }
+        let coding = Coding::from_frequencies(BitsPerFragment(1), freq);
+        let codes = coding.codes_for_values_array();
+        (coding, codes)
+    }
+
+    #[test]
+    fn test_huffman_roundtrip_small_deltas() {
+        let positions = vec![0, 10, 20, 35, 45, 55];
+        let (coding, codes) = build_test_coding(&[positions.clone()]);
+
+        let encoded = encode_positions_huffman(&positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_huffman_roundtrip_large_deltas() {
+        let positions = vec![0, 1000, 2100, 3050, 10000];
+        let (coding, codes) = build_test_coding(&[positions.clone()]);
+
+        let encoded = encode_positions_huffman(&positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_huffman_roundtrip_very_large_deltas() {
+        // Deltas that produce rare varint bytes (multi-byte varints)
+        let positions = vec![0, 100_000, 200_000, 300_000_000];
+        let (coding, codes) = build_test_coding(&[positions.clone()]);
+
+        let encoded = encode_positions_huffman(&positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_huffman_roundtrip_empty() {
+        let positions: Vec<u32> = vec![];
+        let (coding, codes) = build_test_coding(&[positions.clone()]);
+
+        let encoded = encode_positions_huffman(&positions, &codes);
+        assert!(encoded.is_empty());
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_huffman_roundtrip_single() {
+        let positions = vec![42];
+        let (coding, codes) = build_test_coding(&[positions.clone()]);
+
+        let encoded = encode_positions_huffman(&positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(positions, decoded);
+    }
+
+    #[test]
+    fn test_huffman_count() {
+        let positions = vec![0, 10, 20, 35, 45, 55, 100, 200];
+        let (_, codes) = build_test_coding(&[positions.clone()]);
+
+        let encoded = encode_positions_huffman(&positions, &codes);
+        let count = count_positions_huffman(&encoded);
+        assert_eq!(count, positions.len());
+    }
+
+    #[test]
+    fn test_huffman_unseen_bytes() {
+        // Build coding from only small deltas (bytes 0-127 only),
+        // then encode positions with large deltas producing bytes 128+ (continuation bytes).
+        // This is the exact scenario that caused Bug 1.
+        let small_positions = vec![0, 5, 10, 15, 20, 25, 30];
+        let (coding, codes) = build_test_coding(&[small_positions]);
+
+        // Now encode positions with large deltas that produce continuation bytes (0x80+)
+        let large_positions = vec![0, 1000, 5000, 50000];
+        let encoded = encode_positions_huffman(&large_positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(large_positions, decoded, "Unseen byte values should still round-trip correctly");
+    }
+
+    #[test]
+    fn test_huffman_all_256_codes_valid() {
+        // Verify every byte value gets a non-zero-length code
+        let positions = vec![0, 10, 20];
+        let (_, codes) = build_test_coding(&[positions]);
+        for b in 0..=255u8 {
+            assert!(codes[b as usize].len > 0,
+                "Byte {} has zero-length code -- would corrupt bitstream", b);
+        }
+    }
+
+    #[test]
+    fn test_huffman_roundtrip_many_positions() {
+        // Stress test with many positions covering a wide range of delta sizes
+        let mut positions = Vec::new();
+        let mut pos = 0u32;
+        for i in 0..500 {
+            positions.push(pos);
+            // Mix of small and large deltas
+            pos += match i % 5 {
+                0 => 3,
+                1 => 15,
+                2 => 200,
+                3 => 5000,
+                _ => 1,
+            };
+        }
+        let (coding, codes) = build_test_coding(&[positions.clone()]);
+        let encoded = encode_positions_huffman(&positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(positions, decoded);
+        assert_eq!(count_positions_huffman(&encoded), positions.len());
+    }
+
+    #[test]
+    fn test_huffman_coding_trained_on_different_data() {
+        // Build coding from one distribution, use it to encode a very different distribution.
+        // This tests that all byte values work even when the coding was trained on different data.
+        let training = vec![vec![0, 1, 2, 3, 4, 5]]; // tiny deltas only
+        let (coding, codes) = build_test_coding(&training);
+
+        // Encode with huge deltas (multi-byte varints with continuation bits)
+        let test_positions = vec![0, 100_000_000, 200_000_000, 300_000_000];
+        let encoded = encode_positions_huffman(&test_positions, &codes);
+        let decoded = decode_positions_huffman(&encoded, &coding);
+        assert_eq!(test_positions, decoded);
     }
 }

@@ -3398,6 +3398,7 @@ mod tests {
                 let generic_read = TwinRead {
                     minimizer_positions_enc: vec![],
                     snpmer_positions_enc: vec![],
+                    huffman_encoded: false,
                     dna_seq: Seq::new(),
                     qual_seq: None,
                     base_length: 2000,
