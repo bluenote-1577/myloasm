@@ -4,6 +4,7 @@ use crate::cli::Cli;
 use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
+use crate::constants::HUFFMAN_SAMPLE_MAX;
 use crate::twin_graph;
 use crate::utils;
 use rayon::prelude::*;
@@ -107,7 +108,8 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             {
                                 let mut nsr = num_seen_reads.lock().unwrap();
                                 *nsr += 1;
-                                if *nsr == 500_000 {
+                                if *nsr == HUFFMAN_SAMPLE_MAX {
+                                    log::info!("Reached {} reads, building Huffman coding...", HUFFMAN_SAMPLE_MAX);
                                     if huffman_initialized() == false {
                                         let mut vec = twrv.lock().unwrap();
                                         log::info!("Building Huffman coding from first {} reads...", vec.len());
@@ -115,9 +117,6 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                                         reencode_reads_huffman(&mut vec);
                                         log::info!("Huffman coding built and {} reads re-encoded.", vec.len());
                                     }
-                                }
-                                if *nsr % 500_000 == 0{
-                                    log::info!("Seen {} reads so far...", *nsr);
                                 }
                             }
                             let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
@@ -188,12 +187,10 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     // Fallback: if fewer than 100k reads total, build Huffman now from what we have
     if !huffman_initialized() {
         let mut reads = twin_read_vec.lock().unwrap();
-        if reads.len() >= 1000 {
-            log::info!("Building Huffman coding from {} reads...", reads.len().min(100_000));
-            build_and_set_huffman_coding(&reads, 100_000);
-            reencode_reads_huffman(&mut reads);
-            log::info!("Huffman coding built and {} reads re-encoded.", reads.len());
-        }
+        log::info!("Building Huffman coding from {} reads...", reads.len());
+        build_and_set_huffman_coding(&reads, reads.len());
+        reencode_reads_huffman(&mut reads);
+        log::info!("Huffman coding built and {} reads re-encoded.", reads.len());
     }
 
     kmer_info.solid_kmers = Arc::try_unwrap(arc_solid).unwrap();

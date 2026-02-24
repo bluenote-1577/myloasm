@@ -75,3 +75,7 @@ approx = "0.4"
 [profile.dev]
 #opt-level = 1
 opt-level = 3
+
+[[bin]]
+name = "myloasm-large" # The desired binary name
+path = "src/main.rs"

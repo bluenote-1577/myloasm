@@ -64,6 +64,8 @@ pub const MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER: usize = 200;
 
 pub const DEDUP_SNPMERS: bool = false;
 
+pub const HUFFMAN_SAMPLE_MAX: usize = 500_000;
+
 
 pub const CLI_HEADINGS: [&str; 5] = [
     "Technology Presets",
