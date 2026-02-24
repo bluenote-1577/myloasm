@@ -1049,7 +1049,7 @@ dependencies = [
 
 [[package]]
 name = "myloasm"
-version = "0.4.0"
+version = "0.4.0-stalltest"
 dependencies = [
  "approx 0.4.0",
  "assert_cmd",

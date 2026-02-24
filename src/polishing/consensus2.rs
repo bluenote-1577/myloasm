@@ -47,6 +47,16 @@ impl PoaConsensusBuilder {
         let gap_extend = -1;
 
         let consensuses = Mutex::new(vec![]);
+
+        // TODO DEBUG
+        // Open bufwriter for writing for this contig
+        let file = File::create("consensus_latest.txt").unwrap();
+        let writer = Mutex::new(BufWriter::new(file));
+
+        let file = File::create("complete_consensus.txt").unwrap();
+        let complete_writer = Mutex::new(BufWriter::new(file));
+
+
         //parallel iter over seq and qual
         self.seq
             .into_par_iter()
@@ -119,6 +129,18 @@ impl PoaConsensusBuilder {
                 seqs.truncate(MAX_OL_POLISHING);
                 quals.truncate(MAX_OL_POLISHING);
 
+                //Write seqs and quals to consensus_latest.txt for debugging
+                {
+                    let writer = &mut writer.lock().unwrap();
+                    writeln!(writer, ">Block {} of contig {} with {} seqs", i, self.contig_name, seqs.len()).unwrap();
+                    for seq in seqs.iter() {
+                        writeln!(writer, "{}", std::str::from_utf8(seq).unwrap()).unwrap();
+                    }
+                    for qual in quals.iter() {
+                        writeln!(writer, "{}", std::str::from_utf8(qual).unwrap()).unwrap();
+                    }
+                }
+
                 //TODO let's break contigs when we get no coverage -- the read itself doesn't even map well.
                 let mut cons;
                 if seqs.len() == 0{
@@ -154,10 +176,6 @@ impl PoaConsensusBuilder {
                     }
                 }
 
-                if i == 5 || i == 10 {
-                    log::debug!("[POLISH] Block {} finished for {}: num_seqs={}, cons_len={}", i, self.contig_name, seqs.len(), cons.len());
-                }
-
                 if cons.len() as i32 - seventy_five_length as i32 > 300 && quals.len() >= 5 && (cons.len() as i32 - (self.bp_len + self.window_overlap_len) as i32) > 150{
                     log::debug!("Warning: Consensus for block at approximately {} of {} is much longer than expected ({} vs {}). This may indicate low coverage or poor consensus.", 
                     i * (self.bp_len), self.contig_name, cons.len(), seventy_five_length);
@@ -166,6 +184,8 @@ impl PoaConsensusBuilder {
                 //log::trace!("Consensus for block {} complete", i);
 
                 consensuses.lock().unwrap().push((i, cons));
+
+                writeln!(complete_writer.lock().unwrap(), "Block {} completed for {} with {} seqs", i, self.contig_name, seqs.len()).unwrap();
             });
         
         log::debug!("[POLISH] Consensus building complete for {}", self.contig_name);
