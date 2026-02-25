@@ -41,6 +41,11 @@ pub struct Cli {
      /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
     #[arg(long)]
     pub clean_dir: bool,
+
+    /// Try to make things more deterministic (still some non-determinism possible)
+    #[arg(long)]
+    pub deterministic: bool,
+
    
     /// Compression ratio (1/c k-mers selected). Must be <= 15  
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]

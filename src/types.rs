@@ -846,10 +846,10 @@ impl TwinRead{
     pub fn compact(&mut self){
 
         // debug capacities vs lengths
-         log::info!("BEFORE Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
-         log::info!("BEFORE Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
-         log::info!("BEFORE DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
-         log::info!("BEFORE Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
+        //  log::info!("BEFORE Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
+        //  log::info!("BEFORE Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
+        //  log::info!("BEFORE DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
+        //  log::info!("BEFORE Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
 
         let mut minimizer_positions_enc = Vec::with_capacity(self.minimizer_positions_enc.len());
         minimizer_positions_enc.extend(self.minimizer_positions_enc.iter().cloned());
@@ -867,10 +867,10 @@ impl TwinRead{
         }
 
         // debug capacities vs lengths
-         log::info!("Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
-         log::info!("Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
-         log::info!("DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
-         log::info!("Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
+        //  log::info!("Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
+        //  log::info!("Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
+        //  log::info!("DNA seq: capacity = {}, length = {}", self.dna_seq.capacity(), self.dna_seq.len());
+        //  log::info!("Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
     }
 
     pub fn shrink_to_fit(&mut self){

@@ -365,13 +365,15 @@ fn get_twin_reads_from_kmer_info(
     let saved_input = args.input_files == [MAGIC_EXIST_STRING];
     let twin_read_container;
     let twin_read_bin_path = output_dir.join("binary_temp").join("twin_reads.bin");
+    let twin_read_raw_path = output_dir.join("binary_temp").join("twin_reads_raw.bin");
     let huffman_bin_path = output_dir.join("binary_temp").join("huffman_tables.bin");
 
+    if saved_input && huffman_bin_path.exists() {
+        types::load_huffman_tables(&huffman_bin_path).unwrap();
+        log::info!("Loaded Huffman tables from file.");
+    }
+
     if saved_input && twin_read_bin_path.exists() {
-        // Load Huffman tables first so deserialized reads can be decoded
-        if let Err(e) = types::load_huffman_tables(&huffman_bin_path) {
-            log::warn!("Could not load Huffman tables: {}", e);
-        }
         twin_read_container = bincode::deserialize_from(BufReader::new(
             File::open(twin_read_bin_path).unwrap(),
         ))
@@ -380,7 +382,32 @@ fn get_twin_reads_from_kmer_info(
     } else {
         // (1) read file, get twin reads
         log::info!("Getting twin reads from snpmers...");
-        let twin_reads_raw = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
+
+        if !twin_read_raw_path.exists() || !saved_input {
+            let twin_reads_raw_temp = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
+            // Dump the raw twin reads to disk before cleaning for possible reruns
+
+            if !args.clean_dir{
+                bincode::serialize_into(
+                    BufWriter::new(File::create(&twin_read_raw_path).unwrap()),
+                    &twin_reads_raw_temp,
+                )
+                .unwrap();
+                if let Err(e) = types::save_huffman_tables(&huffman_bin_path) {
+                    log::warn!("Could not save Huffman tables: {}", e);
+                }
+            }
+
+            drop(twin_reads_raw_temp); // free memory
+            //sleep for a bit to ensure file is written before we try to read it again
+            log::warn!("Wrote reads to file. Exiting now. Please restart using `-exist` flag to continue!");
+            std::process::exit(0);
+        }
+
+        let twin_reads_raw: Vec<types::TwinRead> = bincode::deserialize_from(BufReader::new(
+                File::open(&twin_read_raw_path).unwrap(),
+            )).unwrap();
+
         let num_reads = twin_reads_raw.len();
         log_memory_usage(true, "STAGE 1.5: Initially obtained dirty twin reads");
 
@@ -530,6 +557,11 @@ fn get_twin_reads_from_kmer_info(
                 &twin_read_container,
             )
             .unwrap();
+
+            // Remove twin_read_raw_path TODO
+            if twin_read_raw_path.exists() {
+                std::fs::remove_file(&twin_read_raw_path).expect("Could not remove raw twin reads file");
+            }
 
             // Save Huffman tables alongside twin reads for reload
             if types::huffman_initialized() {
