@@ -326,6 +326,10 @@ pub fn get_twin_read_syncmer(
     snpmer_set: &FxHashSet<Kmer64>,
     id: String,
 ) -> Option<TwinRead> {
+    if string.len() > (u32::MAX >> 1) as usize {
+        log::error!("Sequence {} is longer than 2^31-1 (length {}); myloasm can not handle this.", id, string.len());
+        std::process::exit(1);
+    }
     let mut snpmer_positions = vec![];
     let mut minimizer_positions = vec![];
     let mut snpmer_kmers = vec![];
@@ -745,7 +749,7 @@ pub fn estimate_sequence_identity_vec(qualities: Option<&Vec<u8>>) -> Option<f64
     Some(100. - (sum / count as f64 * 100.))
 }
 
-pub fn estimate_sequence_identity(qualities: Option<&[u8]>) -> Option<f64> {
+pub fn estimate_sequence_identity(qualities: Option<&[u8]>) -> Option<Percentage> {
     if qualities.is_none() {
         return None;
     }

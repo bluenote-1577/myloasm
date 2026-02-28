@@ -59,22 +59,11 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             .iter()
             .collect::<Vec<&Interval<u32, SmallTwinOl>>>();
 
-        log::debug!("[POLISH] u{}: len={}, mappings={}, blocks={} -- starting process_mapping_boundaries",
-            contig.node_id, contig.base_seq().len(), mapping_boundaries.len(), poa_cons_builder.num_blocks());
-
         poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
-
-        let (blocks_filled, total_seqs, max_seqs, median_seqs, suspicious_blocks, max_length_seq) = poa_cons_builder.get_block_stats();
-        log::debug!("[POLISH] u{}: process_mapping_boundaries done -- blocks_filled={}, total_seqs={}, max_seqs={}, median_seqs={}, suspicious_blocks(maxlen>1000)={}, max_length_seq={}",
-            contig.node_id, blocks_filled, total_seqs, max_seqs, median_seqs, suspicious_blocks, max_length_seq);
-
+        let (_blocks_filled, _total_seqs, _max_seqs, _median_seqs, _suspicious_blocks, _max_length_seq) = poa_cons_builder.get_block_stats();
         log::trace!("Starting POA consensus for u{} ...", contig.node_id);
 
         let cons = poa_cons_builder.spoa_blocks();
-
-        let cons_total_len: usize = cons.iter().map(|c| c.len()).sum();
-        log::debug!("[POLISH] u{}: spoa_blocks done -- num_consensus_blocks={}, total_consensus_len={}",
-            contig.node_id, cons.len(), cons_total_len);
 
         let mut final_seq = Vec::new();
 

@@ -664,7 +664,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
         let inverted_index = get_minimizer_index(None, Some(&outer_twin_reads_batch));
         outer_read_indices.into_par_iter().for_each(|&i| { 
             let read = &twin_reads[i];
-            let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec(), &inverted_index, None, Some(&outer_twin_reads_batch));
+            let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec_strand(), &inverted_index, None, Some(&outer_twin_reads_batch));
 
             let comparison_options = CompareTwinReadOptions{
                 compare_snpmers: true,
@@ -676,10 +676,12 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
                 supplementary_threshold_ratio: Some(0.25),
                 secondary_threshold: None,
                 read1_mininimizers: None, // indexed anchors
-                read1_snpmers: Some(read.snpmers_vec()),
+                read1_snpmers: Some(read.snpmers_vec_strand()),
                 max_gap: MAX_GAP_CHAINING * 3/2,
                 double_gap: 25_00,
+                max_skip: 10,
                 maximal_only: false, // Already use "dovetail possibility" as a similar filter
+                debug: false
             };
 
             for (outer_ref_id, anchors) in mini_anchors.into_iter(){
@@ -1223,8 +1225,8 @@ fn parallel_remove_contained<T>(
         }
 
         let mut comparison_options = CompareTwinReadOptions::default();
-        comparison_options.read1_mininimizers = Some(read1.minimizers_vec());
-        comparison_options.read1_snpmers = Some(read1.snpmers_vec());
+        comparison_options.read1_mininimizers = Some(read1.minimizers_vec_strand());
+        comparison_options.read1_snpmers = Some(read1.snpmers_vec_strand());
 
         let start = std::time::Instant::now();
         let mut index_count_map = FxHashMap::default();
@@ -1232,10 +1234,10 @@ fn parallel_remove_contained<T>(
 
         for y in comparison_options.read1_mininimizers.as_ref().unwrap().iter() {
             //Downsample to 100 compression factor
-            if hash64(&y.1) > u64::MAX / downsample_factor{
+            if hash64(&y.1.kmer()) > u64::MAX / downsample_factor{
                 continue;
             }
-            if let Some(indices) = inverted_index_hashmap.get(&y.1) {
+            if let Some(indices) = inverted_index_hashmap.get(&y.1.kmer()) {
                 for &index in indices {
                     if index == i as u32 {
                         continue;

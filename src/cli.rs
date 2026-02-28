@@ -50,6 +50,8 @@ pub struct Cli {
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
     pub quality_value_cutoff: f64,
 
+    
+
     /// Minimum overlap length for graph construction
     #[arg(long, default_value_t=500, help_heading = CLI_HEADINGS[1])]
     pub min_ol: usize,
@@ -66,6 +68,11 @@ pub struct Cli {
     /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub new_polish_trimming: bool,
+    
+    /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall) 
+    #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1])]
+    pub min_qual_polishing: f64,
+
     
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]

@@ -97,6 +97,40 @@ impl From<u64> for Kmer48 {
     }
 }
 
+/// A [`Kmer48`] with the canonical-strand flag embedded in bit 47.
+///
+/// `bit 47 = 0` → the canonical k-mer is the forward strand.
+/// `bit 47 = 1` → the canonical k-mer is the reverse complement.
+///
+/// **Do not use as a hash-map key directly**; call `.kmer()` first to strip the flag.
+/// For k ≤ 23 the kmer occupies bits 0-45, leaving bits 46-47 free.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+pub struct FlagKmer48(Kmer48);
+
+impl FlagKmer48 {
+    const STRAND_BIT: u64 = 1u64 << 47;
+
+    #[inline]
+    pub fn new(kmer: Kmer48, is_rc: bool) -> Self {
+        // Bit 47 is within the 6-byte storage (bits 0-47).
+        // from_u64's debug_assert only checks bytes[6..8] (bits 48-63), so this is safe.
+        let bits = kmer.to_u64() | if is_rc { Self::STRAND_BIT } else { 0 };
+        Self(Kmer48::from_u64(bits))
+    }
+
+    /// `true` if the canonical k-mer at this position is the reverse complement.
+    #[inline]
+    pub fn strand(self) -> bool {
+        (self.0.to_u64() & Self::STRAND_BIT) != 0
+    }
+
+    /// Strip the strand flag, returning the underlying k-mer bits as a plain `Kmer48`.
+    #[inline]
+    pub fn kmer(self) -> Kmer48 {
+        Kmer48::from_u64(self.0.to_u64() & !Self::STRAND_BIT)
+    }
+}
+
 #[inline]
 pub fn mm_hash_64(key: u64) -> usize {
     let mut key = key;
@@ -738,6 +772,41 @@ impl TwinRead{
         positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
     }
 
+    /// Like `kmer_from_position` but also encodes the canonical-strand flag in bit 47
+    /// of the returned `FlagKmer48`.
+    #[inline]
+    pub fn kmer_from_position_strand(&self, pos: u32, k: usize) -> FlagKmer48 {
+        let pos = pos as usize;
+        let kmer = match k {
+            17 => reverse_bit_pairs(Kmer::<Dna, 17, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
+            19 => reverse_bit_pairs(Kmer::<Dna, 19, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
+            21 => reverse_bit_pairs(Kmer::<Dna, 21, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
+            23 => reverse_bit_pairs(Kmer::<Dna, 23, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
+            _ => panic!("Invalid kmer size"),
+        };
+        let reverse_kmer = reverse_bit_pairs(kmer ^ u64::MAX, k);
+        let mid_mask = !(3 << (k - 1));
+        if reverse_kmer & mid_mask < kmer & mid_mask {
+            FlagKmer48::new(Kmer48::from_u64(reverse_kmer), true)
+        } else {
+            FlagKmer48::new(Kmer48::from_u64(kmer), false)
+        }
+    }
+
+    /// Returns `(position, FlagKmer48)` pairs for all minimizer positions.
+    /// The strand flag in bit 47 of each `FlagKmer48` indicates whether the canonical
+    /// k-mer is the reverse complement; use `.kmer()` to get a plain `Kmer48` for
+    /// hash-map lookups.
+    pub fn minimizers_vec_strand(&self) -> Vec<(u32, FlagKmer48)> {
+        let positions = self.minimizer_positions();
+        positions.iter().map(|&x| (x, self.kmer_from_position_strand(x, self.k as usize))).collect()
+    }
+
+    pub fn snpmers_vec_strand(&self) -> Vec<(u32, FlagKmer48)> {
+        let positions = self.snpmer_positions();
+        positions.iter().map(|&x| (x, self.kmer_from_position_strand(x, self.k as usize))).collect()
+    }
+
     // Retain only the minimizers at the given INDICES, not positions
     pub fn retain_mini_indices(&mut self, indices: FxHashSet<usize>) {
         // Decode, filter by indices, re-encode
@@ -1220,11 +1289,13 @@ pub struct CompareTwinReadOptions{
     // When not forcing 1-to-1 alignments, allow query overlaps only if secondary threshold is below a certain amount
     pub secondary_threshold: Option<f64>,
     //Preload
-    pub read1_mininimizers: Option<Vec<(u32,Kmer48)>>,
-    pub read1_snpmers: Option<Vec<(u32,Kmer48)>>,
+    pub read1_mininimizers: Option<Vec<(u32, FlagKmer48)>>,
+    pub read1_snpmers: Option<Vec<(u32, FlagKmer48)>>,
     pub max_gap: usize,
+    pub max_skip: usize,
     pub double_gap: usize,
     pub maximal_only: bool,
+    pub debug: bool,
 }
 
 impl Default for CompareTwinReadOptions{
@@ -1240,8 +1311,10 @@ impl Default for CompareTwinReadOptions{
             read1_mininimizers: None,
             read1_snpmers: None,
             max_gap: MAX_GAP_CHAINING,
+            max_skip: 10,
             double_gap: 10_000,
             maximal_only: false,
+            debug: false,
         }
     }
 }
