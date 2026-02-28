@@ -39,7 +39,7 @@ pub struct PoaConsensusBuilder {
 
 impl PoaConsensusBuilder {
     pub fn spoa_blocks(self) -> Vec<Vec<u8>> {
-        let consensus_max_length = 1000;
+        let consensus_max_length = 1500;
         let alignment_type = 1; // 0 local, 1 global, 2, semiglobal
         let match_score = 5;
         let mismatch_score = -2;
@@ -47,6 +47,16 @@ impl PoaConsensusBuilder {
         let gap_extend = -1;
 
         let consensuses = Mutex::new(vec![]);
+
+        // TODO DEBUG
+        // Open bufwriter for writing for this contig
+        // let file = File::create("consensus_latest.txt").unwrap();
+        // let writer = Mutex::new(BufWriter::new(file));
+
+        // let file = File::create("complete_consensus.txt").unwrap();
+        // let complete_writer = Mutex::new(BufWriter::new(file));
+
+
         //parallel iter over seq and qual
         self.seq
             .into_par_iter()
@@ -55,6 +65,8 @@ impl PoaConsensusBuilder {
             .for_each(|((i, seq), qual)| {
                 let mut seqs = seq.lock().unwrap();
                 let mut quals = qual.lock().unwrap();
+
+                assert!(seqs.len() == quals.len());
 
                 let max_len = seqs.iter().map(|x| x.len()).max().unwrap_or(0).min(self.window_overlap_len + self.bp_len);
 
@@ -69,6 +81,17 @@ impl PoaConsensusBuilder {
                 let mut length_dist = vec![];
                 for (i, qual) in quals.iter().enumerate() {
                     let mean_qual = estimate_sequence_identity(Some(&qual[0..qual.len()-1])).unwrap_or(0.0);
+
+                    if mean_qual < self.args.min_qual_polishing {
+                        continue;
+                    }
+
+                    // IMPORTANT!!!!
+                    // If the entire string is qual 0, it STALLS the polishing step (spoa does not finish)
+                    if qual[0..qual.len()-1].iter().all(|&q| q == 33) {
+                        continue;
+                    }
+
                     //let mean_qual = qual.iter().map(|x| (*x - 33)as f64).sum::<f64>() / qual.len() as f64;
                     length_dist.push(qual.len());
                     //qual_map.insert(i, -(qual.len() as i32) * mean_qual);
@@ -78,7 +101,7 @@ impl PoaConsensusBuilder {
                 let median_length_dist;
                 let twenty_five_length;
                 let seventy_five_length;
-                if quals.len() == 0{
+                if qual_map.len() == 0{
                     median_length_dist = self.window_overlap_len + self.bp_len;
                     twenty_five_length = self.window_overlap_len + self.bp_len;
                     seventy_five_length = self.window_overlap_len + self.bp_len;
@@ -88,7 +111,7 @@ impl PoaConsensusBuilder {
                     twenty_five_length = length_dist[length_dist.len() / 4];
                     seventy_five_length = length_dist[length_dist.len() * 3 / 4];
                 }
-                log::trace!("Median length distribution: {} ({}-{}) with {} seqs at block {}", median_length_dist, twenty_five_length, seventy_five_length, quals.len(), i);
+                log::trace!("Median length distribution: {} ({}-{}) with {} seqs at block {}", median_length_dist, twenty_five_length, seventy_five_length, qual_map.len(), i);
 
                 for (i, mean_qual) in qual_map.iter_mut() {
                     //De-prioritize reads that are very different in length from the median
@@ -116,6 +139,16 @@ impl PoaConsensusBuilder {
                 
                 seqs.truncate(MAX_OL_POLISHING);
                 quals.truncate(MAX_OL_POLISHING);
+
+                //Write seqs and quals to consensus_latest.txt for debugging
+                // let writer = &mut writer.lock().unwrap();
+                // writeln!(writer, ">Block {} of contig {} with {} seqs", i, self.contig_name, seqs.len()).unwrap();
+                // for seq in seqs.iter() {
+                //     writeln!(writer, "{}", std::str::from_utf8(seq).unwrap()).unwrap();
+                // }
+                // for qual in quals.iter() {
+                //     writeln!(writer, "{}", std::str::from_utf8(qual).unwrap()).unwrap();
+                // }
 
                 //TODO let's break contigs when we get no coverage -- the read itself doesn't even map well.
                 let mut cons;
@@ -160,7 +193,10 @@ impl PoaConsensusBuilder {
                 //log::trace!("Consensus for block {} complete", i);
 
                 consensuses.lock().unwrap().push((i, cons));
+
+                //writeln!(complete_writer.lock().unwrap(), "Block {} completed for {} with {} seqs", i, self.contig_name, seqs.len()).unwrap();
             });
+        
 
         log::trace!("Consensus building complete for {}", self.contig_name);
         let mut consensuses = consensuses.into_inner().unwrap();
@@ -179,6 +215,7 @@ impl PoaConsensusBuilder {
             }
             
         }
+
         let consensuses =
             PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, self.bp_len, &self.contig_name);
 
@@ -320,6 +357,37 @@ impl PoaConsensusBuilder {
             .collect();
     }
 
+    pub fn num_blocks(&self) -> usize {
+        self.breakpoints.len()
+    }
+
+    /// Returns (num_blocks_with_seqs, total_seqs, max_seqs_in_block, median_seqs_in_block, suspicious_blocks)
+    /// suspicious_blocks = blocks where max seq length > 1000
+    pub fn get_block_stats(&self) -> (usize, usize, usize, usize, usize, usize) {
+        let mut counts: Vec<usize> = Vec::new();
+        let mut suspicious_blocks = 0usize;
+        let mut max_length = 0usize;
+
+        for block in self.seq.iter() {
+            let seqs = block.lock().unwrap();
+            counts.push(seqs.len());
+            let max_len = seqs.iter().map(|s| s.len()).max().unwrap_or(0);
+            if max_len > 1000 {
+                suspicious_blocks += 1;
+            }
+            if max_len > max_length {
+                max_length = max_len;
+            }
+        }
+
+        let num_blocks_with_seqs = counts.iter().filter(|&&c| c > 0).count();
+        let total_seqs: usize = counts.iter().sum();
+        let max_seqs = *counts.iter().max().unwrap_or(&0);
+        counts.sort();
+        let median_seqs = if counts.is_empty() { 0 } else { counts[counts.len() / 2] };
+        (num_blocks_with_seqs, total_seqs, max_seqs, median_seqs, suspicious_blocks, max_length)
+    }
+
     fn populate_block(
         &self,
         seq: &[u8],
@@ -332,10 +400,12 @@ impl PoaConsensusBuilder {
     ) {
         current_block_string.push(0);
         current_block_qual.push(0);
-        let mut seq_lock = self.seq[bp_i].lock().unwrap();
-        let mut qual_lock = self.qual[bp_i].lock().unwrap();
-        seq_lock.push(std::mem::take(current_block_string));
-        qual_lock.push(std::mem::take(current_block_qual));
+        {
+            let mut seq_lock = self.seq[bp_i].lock().unwrap();
+            let mut qual_lock = self.qual[bp_i].lock().unwrap();
+            seq_lock.push(std::mem::take(current_block_string));
+            qual_lock.push(std::mem::take(current_block_qual));
+        }
         current_block_string.extend(&seq[breakpoint_q..current_position_q]);
         current_block_qual.extend(&qual[breakpoint_q..current_position_q]);
     }
@@ -1268,5 +1338,35 @@ mod tests {
 
             assert_eq!(seq.len(), 1000 + random_string.len());
         }
+    }
+
+    #[test]
+    fn test_poa_cons_stall() {
+        let mut builder = PoaConsensusBuilder::new_test(10000);
+
+        builder.generate_breakpoints(700, 50);
+
+        let seqs: Vec<Vec<u8>> = vec![b"GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec(),
+        b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT".to_vec(),];
+        let quals = seqs.iter().map(|x| vec![33; x.len()]).collect::<Vec<_>>();
+        //quals[0][5] = 50;
+
+
+        let cigars = seqs
+            .iter()
+            .map(|x| {
+                vec![OpLen {
+                    op: Operation::M,
+                    len: x.len(),
+                }]
+            })
+            .collect::<Vec<_>>();
+
+        for i in 0..seqs.len() {
+            builder.add_seq(seqs[i].clone(), quals[i].clone(), &OpLenVec::new(cigars[i].clone()), 0, 0);
+        }
+
+        let consensuses = builder.spoa_blocks();
+        println!("Consensuses: {:?}", consensuses[0]);
     }
 }

@@ -41,11 +41,11 @@ pub struct Cli {
      /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
     #[arg(long)]
     pub clean_dir: bool,
-   
+
     /// Compression ratio (1/c k-mers selected). Must be <= 15  
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
-        
+
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
     pub quality_value_cutoff: f64,
@@ -66,6 +66,10 @@ pub struct Cli {
     /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub new_polish_trimming: bool,
+
+    /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall) 
+    #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1])]
+    pub min_qual_polishing: f64,
     
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]
