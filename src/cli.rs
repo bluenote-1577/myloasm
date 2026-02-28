@@ -42,11 +42,6 @@ pub struct Cli {
     #[arg(long)]
     pub clean_dir: bool,
 
-    /// Try to make things more deterministic (still some non-determinism possible)
-    #[arg(long)]
-    pub deterministic: bool,
-
-   
     /// Compression ratio (1/c k-mers selected). Must be <= 15  
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
@@ -59,8 +54,6 @@ pub struct Cli {
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
     pub quality_value_cutoff: f64,
-
-    
 
     /// Minimum overlap length for graph construction
     #[arg(long, default_value_t=500, help_heading = CLI_HEADINGS[1])]
@@ -79,14 +72,18 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub new_polish_trimming: bool,
 
+    /// Allow for parallel graph resolution of bridged repeats. This may make the assembly slightly worse, but may resolve a bottleneck for massive complex metagenomes. 
+    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    pub parallel_graph_bridging: bool,
+
+
     /// Remove highest frequency k-mers (1 / this).
     #[arg(long, default_value_t=100000, help_heading = CLI_HEADINGS[1])]
     pub high_freq_kmer_threshold: usize,
-    
+        
     /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall) 
     #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1])]
     pub min_qual_polishing: f64,
-
     
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]

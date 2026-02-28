@@ -217,7 +217,6 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
         std::process::exit(0);
     }
 
-
     for file in &args.input_files {
         if !Path::new(file).exists() && file != MAGIC_EXIST_STRING{
             eprintln!(
@@ -383,6 +382,7 @@ fn get_twin_reads_from_kmer_info(
         // (1) read file, get twin reads
         log::info!("Getting twin reads from snpmers...");
 
+        let twin_reads_raw;
         if !twin_read_raw_path.exists() || !saved_input {
             let twin_reads_raw_temp = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
             // Dump the raw twin reads to disk before cleaning for possible reruns
@@ -397,16 +397,14 @@ fn get_twin_reads_from_kmer_info(
                     log::warn!("Could not save Huffman tables: {}", e);
                 }
             }
-
-            drop(twin_reads_raw_temp); // free memory
-            //sleep for a bit to ensure file is written before we try to read it again
-            log::warn!("Wrote reads to file. Exiting now. Please restart using `-exist` flag to continue!");
-            std::process::exit(0);
+            twin_reads_raw = twin_reads_raw_temp;
+            log::info!("Finished getting twin reads from snpmers and saved temporarily to disk.");
         }
-
-        let twin_reads_raw: Vec<types::TwinRead> = bincode::deserialize_from(BufReader::new(
+        else{
+            twin_reads_raw = bincode::deserialize_from(BufReader::new(
                 File::open(&twin_read_raw_path).unwrap(),
             )).unwrap();
+        }
 
         let num_reads = twin_reads_raw.len();
         log_memory_usage(true, "STAGE 1.5: Initially obtained dirty twin reads");

@@ -2116,7 +2116,7 @@ impl UnitigGraph {
         let all_edges_sorted = all_edges_sorted.iter().map(|x| x.0).collect::<Vec<_>>();
 
         let removed_edges: FxHashSet<EdgeIndex>;
-        if args.deterministic && all_edges_sorted.len() > 1_000_000 {
+        if !args.parallel_graph_bridging {
             // Sequential: RefCell gives zero-overhead interior mutability.
             let re = RefCell::new(FxHashSet::<EdgeIndex>::default());
             let mut ef = unitig_edge_file;
