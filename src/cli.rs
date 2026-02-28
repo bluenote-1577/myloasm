@@ -41,10 +41,20 @@ pub struct Cli {
      /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
     #[arg(long)]
     pub clean_dir: bool,
+
+    /// Try to make things more deterministic (still some non-determinism possible)
+    #[arg(long)]
+    pub deterministic: bool,
+
    
     /// Compression ratio (1/c k-mers selected). Must be <= 15  
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
+
+    /// Use precomputed KMC database at this path for kmer counting. Must use -b and -k21 for KMC db creation with version v3. 
+    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    pub kmc_db: Option<String>, 
+
         
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
@@ -68,6 +78,10 @@ pub struct Cli {
     /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub new_polish_trimming: bool,
+
+    /// Remove highest frequency k-mers (1 / this).
+    #[arg(long, default_value_t=100000, help_heading = CLI_HEADINGS[1])]
+    pub high_freq_kmer_threshold: usize,
     
     /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall) 
     #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1])]

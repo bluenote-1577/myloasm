@@ -525,13 +525,13 @@ pub fn get_twin_read_syncmer(
         if counter != 0{
             binned_qualities.push(min_qual);
         }
-        let mut qual_seq_try: Seq<QualCompact3> = binned_qualities.try_into().unwrap();
+        let mut qual_seq_try: Seq<QualCompact3> = Seq::capacity_capture_u8(&binned_qualities).unwrap();
         qual_seq_try.shrink_to_fit();
         qual_seq = Some(qual_seq_try);
     }
 
     let mut dna_seq: Seq<Dna>;
-    let dna_seq_opt : Result<Seq<Dna>, _> = string.clone().try_into();
+    let dna_seq_opt : Result<Seq<Dna>, _> = Seq::capacity_capture_u8(&string);
     if dna_seq_opt.is_err(){
         let fixed_string = string.iter().map(|b| {
             let upper = b.to_ascii_uppercase();
@@ -546,7 +546,7 @@ pub fn get_twin_read_syncmer(
                 upper
             }
         }).collect::<Vec<u8>>();
-        dna_seq = fixed_string.try_into().expect("Failed to convert a read to ACGT sequence. Exiting.");
+        dna_seq = Seq::capacity_capture_u8(&fixed_string).unwrap()
     }
     else{
         dna_seq = dna_seq_opt.unwrap();
@@ -554,10 +554,11 @@ pub fn get_twin_read_syncmer(
 
     dna_seq.shrink_to_fit();
 
+    let use_huffman = huffman_initialized();
     let mut tr = TwinRead{
-        // Encode positions using variable-length delta encoding
-        minimizer_positions_enc: encode_positions_delta(&minimizer_positions),
-        snpmer_positions_enc: encode_positions_delta(&snpmer_positions_final),
+        minimizer_positions_enc: encode_positions(&minimizer_positions, PositionKind::Minimizer),
+        snpmer_positions_enc: encode_positions(&snpmer_positions_final, PositionKind::Snpmer),
+        huffman_encoded: use_huffman,
         base_id: first_word(&id),
         id: first_word(&id),
         k: k as u8,

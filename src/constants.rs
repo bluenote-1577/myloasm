@@ -15,7 +15,7 @@ pub const TS_DASHES_BLANK_COLONS_DOT_BLANK: &str = "%Y-%m-%d %H:%M:%S%.3f";
 pub const MIN_CHAIN_SCORE_COMPARE: i32 = 150;
 pub const MIN_READ_LENGTH: usize = 1000;
 pub const ENDPOINT_MAPPING_FUZZ : u32 = 200;
-pub const LONG_OVERLAP_LENGTH: usize = 10_000;
+pub const LONG_OVERLAP_LENGTH: usize = 20_000;
 // seed with 42 and 31 0s
 pub const RNG_SEED: [u8; 32] = [42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 pub const PSEUDOCOUNT: f64 = 3.;
@@ -47,7 +47,7 @@ pub const USE_SOLID_KMERS: bool = false;
 
 pub const MAX_KMER_COUNT_IN_READ: usize = 500;
 pub const MAX_MULTIPLICITY_KMER: usize = MAX_KMER_COUNT_IN_READ;
-pub const QUALITY_SEQ_BIN: usize = 4;
+pub const QUALITY_SEQ_BIN: usize = 6;
 
 pub const MINIMUM_MINIMIZER_FRACTION: f64 = 0.10;
 
@@ -63,6 +63,8 @@ pub const MAX_ALLOWABLE_SNPMER_ERROR_MISC: usize = 2;
 pub const MAX_ALLOWABLE_SNPMER_ERROR_DIVIDER: usize = 200;
 
 pub const DEDUP_SNPMERS: bool = false;
+
+pub const HUFFMAN_SAMPLE_MAX: usize = 500_000;
 
 
 pub const CLI_HEADINGS: [&str; 5] = [

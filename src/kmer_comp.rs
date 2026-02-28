@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 use smallvec::SmallVec;
-use smallvec::smallvec;
 use crate::cli::Cli;
 use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
+use crate::constants::HUFFMAN_SAMPLE_MAX;
 use crate::twin_graph;
 use crate::utils;
 use rayon::prelude::*;
@@ -43,7 +43,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let fastq_files = &kmer_info.read_files;
     let mut snpmer_set = HashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter(){
-        let k = snpmer_i.k as usize;
+        let k = args.kmer_size as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k-1) );
         let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k-1) );
         snpmer_set.insert(snpmer1);
@@ -58,6 +58,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let high_freq_kmers_take = std::mem::take(&mut kmer_info.high_freq_kmers);
     let arc_solid = Arc::new(solid_kmers_take);
     let arc_high_freq = Arc::new(high_freq_kmers_take);
+    let arc_number_seen_reads = Arc::new(Mutex::new(0usize));
     let num_reads_removed_repetitive = Arc::new(Mutex::new(0));
 
     for fastq_file in files_owned{
@@ -91,6 +92,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
             let highfreq = Arc::clone(&arc_high_freq);
             let twrv = Arc::clone(&twin_read_vec);
             let num_repetitive = Arc::clone(&num_reads_removed_repetitive);
+            let num_seen_reads = Arc::clone(&arc_number_seen_reads);
             handles.push(thread::spawn(move || {
                 loop{
                     match rx.recv() {
@@ -99,9 +101,26 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             let seqlen = seq.len();
                             let qualities = msg.1;
                             let id = msg.2;
+
+                            // This branch is done before any operations on twin read is done. 
+                            // This is crucial because building huffman changes global state, which
+                            // invalidates intermediate twin reads.
+                            {
+                                let mut nsr = num_seen_reads.lock().unwrap();
+                                *nsr += 1;
+                                if *nsr == HUFFMAN_SAMPLE_MAX {
+                                    log::info!("Reached {} reads, building Huffman coding...", HUFFMAN_SAMPLE_MAX);
+                                    if huffman_initialized() == false {
+                                        let mut vec = twrv.lock().unwrap();
+                                        log::info!("Building Huffman coding from first {} reads...", vec.len());
+                                        build_and_set_huffman_coding(&vec, vec.len());
+                                        reencode_reads_huffman(&mut vec);
+                                        log::info!("Huffman coding built and {} reads re-encoded.", vec.len());
+                                    }
+                                }
+                            }
                             let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
                             if twin_read.is_some(){
-
                                 let mut kmer_counter_map = FxHashMap::default();
                                 for mini in twin_read.as_ref().unwrap().minimizer_kmers().iter(){
                                     *kmer_counter_map.entry(*mini).or_insert(0) += 1;
@@ -165,6 +184,15 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
         }
     }
 
+    // Fallback: if fewer than 100k reads total, build Huffman now from what we have
+    if !huffman_initialized() {
+        let mut reads = twin_read_vec.lock().unwrap();
+        log::info!("Building Huffman coding from {} reads...", reads.len());
+        build_and_set_huffman_coding(&reads, reads.len());
+        reencode_reads_huffman(&mut reads);
+        log::info!("Huffman coding built and {} reads re-encoded.", reads.len());
+    }
+
     kmer_info.solid_kmers = Arc::try_unwrap(arc_solid).unwrap();
     kmer_info.high_freq_kmers = Arc::try_unwrap(arc_high_freq).unwrap();
     let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
@@ -224,7 +252,7 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
         std::process::exit(1);
     }
 
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
+    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / args.high_freq_kmer_threshold) - 1].max(100);
     log::debug!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
@@ -342,9 +370,8 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
                             let mid_bases = pairsvec.iter().map(|x| split_kmer(x.0, k).1).collect::<Vec<_>>();
                             let snpmer = SnpmerInfo{
                                 split_kmer: splitmer,
-                                mid_bases: smallvec![mid_bases[0] as u8, mid_bases[1] as u8],
-                                counts: smallvec![pairsvec[0].1[0] + pairsvec[0].1[1], pairsvec[1].1[0] + pairsvec[1].1[1]],
-                                k: k as u8,
+                                mid_bases: [mid_bases[0] as u8, mid_bases[1] as u8],
+                                counts: [pairsvec[0].1[0] + pairsvec[0].1[1], pairsvec[1].1[0] + pairsvec[1].1[1]],
                             };
                             snpmers.lock().unwrap().push(snpmer);
 
@@ -494,9 +521,8 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
                 let mid_bases = bases;
                 let snpmer = SnpmerInfo{
                     split_kmer: split_kmer,
-                    mid_bases: smallvec![mid_bases[0], mid_bases[1]],
-                    counts: smallvec![counts[0][0] + counts[0][1], counts[1][0] + counts[1][1]],
-                    k: k as u8,
+                    mid_bases: [mid_bases[0], mid_bases[1]],
+                    counts: [counts[0][0] + counts[0][1], counts[1][0] + counts[1][1]],
                 };
                 snpmers.lock().unwrap().push(snpmer);
 
