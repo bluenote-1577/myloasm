@@ -76,5 +76,5 @@ approx = "0.4"
 opt-level = 3
 
 [[bin]]
-name = "myloasm-stall" # The desired binary name
+name = "myloasm" # The desired binary name
 path = "src/main.rs"
