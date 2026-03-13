@@ -1542,6 +1542,7 @@ pub struct CompareTwinReadOptions{
     pub max_skip: usize,
     pub double_gap: usize,
     pub maximal_only: bool,
+    pub min_chain_length: usize,
     pub debug: bool,
 }
 
@@ -1562,6 +1563,7 @@ impl Default for CompareTwinReadOptions{
             double_gap: 10_000,
             maximal_only: false,
             debug: false,
+            min_chain_length: 3,
         }
     }
 }

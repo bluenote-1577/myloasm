@@ -201,7 +201,7 @@ pub fn find_exact_matches_with_full_index(
         .collect()
 }
 
-fn find_exact_matches_indexes_references(
+fn _find_exact_matches_indexes_references(
     seq1: &[(u32, u64)],
     seq2: &[(u32, u64)],
 ) -> (Vec<Anchor>, usize) {
@@ -303,7 +303,7 @@ pub fn dp_anchors(
     band: usize,
     max_gap: usize,
     double_gap: usize,
-    debug: bool,
+    _debug: bool,
 ) -> Vec<(i32, Vec<Anchor>, bool)> {
     if matches.is_empty() {
         return vec![(0, vec![], false)];
@@ -454,6 +454,7 @@ pub fn dp_anchors_v2(
     max_gap: usize,
     double_gap: usize,
     debug: bool,
+    min_chain_length: usize,
 ) -> Vec<(i32, Vec<Anchor>, bool)> {
     if matches.is_empty() {
         return vec![];
@@ -522,7 +523,7 @@ pub fn dp_anchors_v2(
     let mut chains = Vec::new();
 
     let mut best_indices_ordered = (0..n as i32)
-        .filter(|&i| f[i as usize] > 2 * match_score)
+        .filter(|&i| f[i as usize] > min_chain_length as i32 * match_score / 2) // heuristic threshold to skip very short chains
         .map(|i| (f[i as usize], i))
         .collect::<Vec<_>>();
     best_indices_ordered.sort_by_key(|&(score, _)| -score);
@@ -560,7 +561,7 @@ pub fn dp_anchors_v2(
             idx = p[u];
         }
 
-        if chain.len() < 2 {
+        if chain.len() < min_chain_length {
             break;
         }
 
@@ -602,7 +603,7 @@ fn dp_inner<const REV: bool>(
         let i_i32 = i as i32; // hoisted; used in t[] comparisons and writes
 
         // Advance pos1 window left boundary (O(n) total across all i).
-        while *st < i && (s1 - pos1s[*st]) > double_gap_i32 {
+        while *st < i && s1 > double_gap_i32 + pos1s[*st] {
             *st += 1;
         }
         let lo = if i >= max_iter { (i - max_iter).max(*st) } else { *st };
@@ -654,7 +655,7 @@ fn dp_inner<const REV: bool>(
 
         // --- max_ii fallback ---
         // Rescan if max_ii has left the pos1 window.
-        let rescan = *max_ii < 0 || (s1 - pos1s[*max_ii as usize]) > double_gap_i32;
+        let rescan = *max_ii < 0 || s1  > double_gap_i32 + pos1s[*max_ii as usize];
         if rescan {
             let mut best = i32::MIN;
             *max_ii = -1;
@@ -711,7 +712,7 @@ fn find_optimal_chain(
     // Single strand-aware DP pass — both forward and reverse chains in one call.
     let mut all_chains = dp_anchors_v2(
         matches, gap_cost, match_score, band,
-        tr_options.max_skip, max_gap, double_gap, tr_options.debug,
+        tr_options.max_skip, max_gap, double_gap, tr_options.debug, tr_options.min_chain_length
     );
 
     if all_chains.is_empty() {
@@ -940,6 +941,7 @@ pub fn compare_twin_reads(
 
             let split_chain_opt;
             let mut split_options = options.clone();
+            split_options.min_chain_length = 2;
             split_options.double_gap = 2_000_000;
             if let Some(anchors) = snpmer_anchors {
                 split_chain_opt = find_optimal_chain(
@@ -2262,6 +2264,23 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Test min_chain parameter
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_simple_chain() {
+        let anchors: Vec<Anchor> = (0..1).map(|i: u32| anc(i * 20, i * 20)).collect();
+
+        let t0 = std::time::Instant::now();
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 1);
+        let e2 = t0.elapsed();
+
+        let r2 = sorted(r2);
+        eprintln!("  v2 chains: {:?}", r2.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());
+
+        assert_eq!(r2[0].0, MATCH_SCORE, "expected score {}, got {}", MATCH_SCORE, r2[0].0);
+    }
+
+    // -----------------------------------------------------------------------
     // Test 1: five anchors on a perfect diagonal (no gap, no noise).
     // Both algorithms must produce one chain of length 5 with the same score.
     // -----------------------------------------------------------------------
@@ -2277,7 +2296,7 @@ mod tests {
         let e1 = t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true);
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
         let e2 = t0.elapsed();
 
         eprintln!("[simple_linear] v1={e1:?}  v2={e2:?}");
@@ -2309,7 +2328,7 @@ mod tests {
         let e1 = t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true);
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
         let e2 = t0.elapsed();
 
         eprintln!("[two_chains] v1={e1:?}  v2={e2:?}");
@@ -2342,7 +2361,7 @@ mod tests {
         let e1 = t0.elapsed();
 
         let t0 = std::time::Instant::now();
-        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true);
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
         let e2 = t0.elapsed();
 
         eprintln!("[large_diagonal n={n}] v1={e1:?}  v2={e2:?}");
@@ -2368,7 +2387,7 @@ mod tests {
         let anchors: Vec<Anchor> = (0..5u32).map(|i| anc_rev(i * 20, 80 - i * 20)).collect();
 
         let t0 = std::time::Instant::now();
-        let r = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true);
+        let r = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
         eprintln!("[simple_reverse] took {:?}", t0.elapsed());
         eprintln!("  chains: {:?}", r.iter().map(|(s, c, rev)| (s, c.len(), rev)).collect::<Vec<_>>());
 
@@ -2399,7 +2418,7 @@ mod tests {
         anchors.extend((0..5u32).map(|i| anc_rev(200 + i * 20, 380 - i * 20)));
 
         let t0 = std::time::Instant::now();
-        let r = sorted(dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true));
+        let r = sorted(dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2));
         eprintln!("[fwd+rev] took {:?}", t0.elapsed());
         eprintln!("  chains: {:?}", r.iter().map(|(s, c, rev)| (s, c.len(), rev)).collect::<Vec<_>>());
 
@@ -2430,7 +2449,7 @@ mod tests {
         let rev: Vec<Anchor> = (0..3u32).map(|i| anc_rev(i * 20 + 10, 140 - i * 20)).collect();
         let anchors: Vec<Anchor> = [fwd, rev].concat();
 
-        let r = sorted(dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true));
+        let r = sorted(dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2));
         eprintln!("[cross_strand] chains: {:?}", r.iter().map(|(s, c, rev)| (s, c.len(), rev)).collect::<Vec<_>>());
 
         assert_eq!(r.len(), 2, "expected 2 chains (one per strand), got {}", r.len());

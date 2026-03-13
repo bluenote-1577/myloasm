@@ -101,6 +101,7 @@ fn first_iteration(
     if bf_size > 0.{
         let num_b = threads/10 + 1;
         let counter = Arc::new(Mutex::new(0));
+        let read_lengths = Arc::new(Mutex::new(vec![]));
         let mut rxs = vec![];
         let mut txs_vecs = vec![vec![]; num_b];
         for _ in 0..threads {
@@ -143,10 +144,16 @@ fn first_iteration(
         //B: Process kmers and send to hash maps
         for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()){
             let clone_counter = Arc::clone(&counter);
+            let clone_read_lengths = Arc::clone(&read_lengths);
             thread::spawn(move || {
                 loop{
                     match rx_head.recv() {
                         Ok((seq, qualities)) => {
+
+                            {
+                                let mut read_lengths = clone_read_lengths.lock().unwrap();
+                                read_lengths.push(seq.len());
+                            }
                             let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
                             let mut vec_and_canon = vec![vec![]; hm_size];
                             for kmer_i_and_canon in split_kmer_info.into_iter() {
@@ -243,6 +250,10 @@ fn first_iteration(
             bf_vec_maps[map_ind] = handle.join().unwrap();
             bf_vec_maps[map_ind].shrink_to_fit();
         };
+
+        let read_lengths = Arc::try_unwrap(read_lengths).unwrap().into_inner().unwrap();
+        log::info!("Read lengths - {}", get_nx_from_vec(&read_lengths, &[10,50,90]));
+        log::info!("Total bases - {} million bp", (read_lengths.iter().map(|x| *x as usize).sum::<usize>() as f64 / 1_000_000.).round());
     
     }  
     

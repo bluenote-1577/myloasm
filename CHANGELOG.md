@@ -1,3 +1,16 @@
+# v0.5.0 (3-12-2026) - RAM usage + read-mapping optimizations
+
+Major changes
+
+- Using huffman coding to reduce RAM further. Should optimize by ~10-20%. 
+- Read-to-read mapping is accelerated by 3-4x in certain cases. This should reduce stalling behavior on certain datasets with high-depth, recombinant populations. Results will change slightly.  
+- Fixed a major bug where myloasm would stall during the polishing step. This was caused by base quality runs of PHRED score 33. 
+
+Minor changes
+
+- Logging improved slightly
+- (ALPHA) There's a way to optimize memory for the k-mer counting step slightly using kmc as a pre-assembly step. Will improve this; message me if your assembly is dying early. 
+
 # v0.4.0 (1-28-2026) - At least 30% peak RAM than before at baseline, but possibly up to ~80% reduced (i.e., even 5-fold) for large metagenomes
 
 Major changes

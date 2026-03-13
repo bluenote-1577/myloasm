@@ -47,9 +47,8 @@ pub struct Cli {
     pub c: usize,
 
     /// Use precomputed KMC database at this path for kmer counting. Must use -b and -k21 for KMC db creation with version v3. 
-    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub kmc_db: Option<String>, 
-
         
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
@@ -67,22 +66,20 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub aggressive_bloom: bool,
 
-
     /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
-    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[1], hide = true)]
     pub new_polish_trimming: bool,
 
-    /// Allow for parallel graph resolution of bridged repeats. This may make the assembly slightly worse, but may resolve a bottleneck for massive complex metagenomes. 
+    /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex metagenomes. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub parallel_graph_bridging: bool,
-
 
     /// Remove highest frequency k-mers (1 / this).
     #[arg(long, default_value_t=100000, help_heading = CLI_HEADINGS[1])]
     pub high_freq_kmer_threshold: usize,
         
     /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall) 
-    #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1])]
+    #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1], hide = true)]
     pub min_qual_polishing: f64,
     
     /// Verbosity level. Warning: trace is very verbose

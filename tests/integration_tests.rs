@@ -78,7 +78,7 @@ fn test_nanopore_basic_run_48kb_plasmid() -> Result<(), Box<dyn std::error::Erro
 }
 
 #[test]
-fn test_nanopore_basic_run_48kb_plasmid_FASTA() -> Result<(), Box<dyn std::error::Error>> {
+fn test_nanopore_basic_run_48kb_plasmid_fasta() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let output_dir = temp_dir.path().join("output");
     

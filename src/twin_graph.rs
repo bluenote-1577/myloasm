@@ -680,6 +680,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
                 max_gap: MAX_GAP_CHAINING * 3/2,
                 double_gap: 25_00,
                 max_skip: 10,
+                min_chain_length: 3,
                 maximal_only: false, // Already use "dovetail possibility" as a similar filter
                 debug: false
             };
