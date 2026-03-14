@@ -32,7 +32,10 @@ use std::sync::Mutex;
 pub struct HitInfo {
     //pub index: u32,
     pub position: u32,
-    pub contig_id: u32,
+    /// Bit 31 = canonical-strand flag of the reference minimizer (same encoding as
+    /// `anchor.pos1`): 1 = canonical form is the reverse complement.
+    /// Bits 30-0 = actual contig id.
+    pub contig_id_strand: u32,
 }
 
 pub struct Anchors {
@@ -152,7 +155,7 @@ fn _smith_waterman(
 
 // I learned about Borrow trait recently... lol
 pub fn find_exact_matches_with_full_index(
-    seq1: &[(u32, Kmer48)],
+    seq1: &[(u32, FlagKmer48)],
     index: &FxHashMap<Kmer48, Vec<HitInfo>>,
     _reference_seqs_owned: Option<&FxHashMap<usize, TwinRead>>,
     _reference_seqs_ref: Option<&FxHashMap<usize, &TwinRead>>,
@@ -160,18 +163,20 @@ pub fn find_exact_matches_with_full_index(
     let mut max_mult = 0;
     let mut matches = FxHashMap::default();
 
-    for (pos, s) in seq1.iter() {
-        if let Some(indices) = index.get(s) {
+    for (pos, flag_kmer) in seq1.iter() {
+        let s1 = flag_kmer.strand() as u32;
+        if let Some(indices) = index.get(&flag_kmer.kmer()) {
             if indices.len() > max_mult {
                 max_mult = indices.len();
             }
             for hit in indices {
-                let contig = hit.contig_id;
+                let s2     = hit.contig_id_strand >> 31;
+                let contig = hit.contig_id_strand & 0x7FFF_FFFF;
+                let rel_strand = s1 ^ s2;
                 let anchor = AnchorBuilder {
-                    pos1: *pos as u32,
+                    pos1: (rel_strand << 31) | *pos,
                     pos2: hit.position,
                 };
-
                 matches.entry(contig).or_insert(vec![]).push(anchor);
             }
         }
@@ -180,29 +185,23 @@ pub fn find_exact_matches_with_full_index(
     matches
         .into_iter()
         .map(|(k, v)| {
-            // Decode reference minimizer positions once for this contig
             let mut anchors = v
                 .into_iter()
-                .map(|anchor| {
-                    Anchor {
-                        i: None,
-                        j: None,
-                        pos1: anchor.pos1,
-                        pos2: anchor.pos2,
-                    }
+                .map(|anchor| Anchor {
+                    i: None,
+                    j: None,
+                    pos1: anchor.pos1,
+                    pos2: anchor.pos2,
                 })
                 .collect::<Vec<_>>();
-            anchors.sort_by(|a, b| (a.pos1, a.pos2).cmp(&(b.pos1, b.pos2)));
-            return (k,
-            Anchors {
-                anchors,
-                max_mult,
-            });
+            // Sort by (encoded pos1 as u32, pos2) so forward anchors precede reverse.
+            anchors.sort_by_key(|a| (a.pos1, a.pos2));
+            (k, Anchors { anchors, max_mult })
         })
         .collect()
 }
 
-fn find_exact_matches_indexes_references(
+fn _find_exact_matches_indexes_references(
     seq1: &[(u32, u64)],
     seq2: &[(u32, u64)],
 ) -> (Vec<Anchor>, usize) {
@@ -236,30 +235,42 @@ fn find_exact_matches_indexes_references(
     (matches, max_mult)
 }
 
-fn find_exact_matches_indexes(seq1: &Vec<(u32,Kmer48)> , seq2: &Vec<(u32, Kmer48)>) -> (Vec<Anchor>, usize)
-where
-{
+/// Matches canonical minimizers from `seq1` against `seq2` and encodes the relative
+/// strand into bit 31 of `Anchor.pos1`:
+///   bit 31 = 0 → forward alignment (pos2 increases in a valid chain)
+///   bit 31 = 1 → reverse alignment (pos2 decreases in a valid chain)
+/// `Anchor.pos2` always holds the raw reference position.
+fn find_exact_matches_indexes(
+    seq1: &[(u32, FlagKmer48)],
+    seq2: &[(u32, FlagKmer48)],
+) -> (Vec<Anchor>, usize) {
     let mut max_mult = 0;
     let mut matches = Vec::new();
-    let mut index_map = FxHashMap::default();
 
-    //Sorted
-    for (j, &(pos, x)) in seq2.iter().enumerate() {
-        index_map.entry(x).or_insert(vec![]).push((j, pos));
+    // Index seq2: key = plain Kmer48 (no strand flag), value = (index, pos, is_rc).
+    let mut index_map: FxHashMap<Kmer48, Vec<(usize, u32, bool)>> = FxHashMap::default();
+    for (j, &(pos, kmer)) in seq2.iter().enumerate() {
+        index_map
+            .entry(kmer.kmer())
+            .or_insert_with(Vec::new)
+            .push((j, pos, kmer.strand()));
     }
 
-    //Sorted
-    for (i, &(pos, s)) in seq1.iter().enumerate() {
-        if let Some(indices) = index_map.get(&s) {
+    for (i, &(pos1, kmer)) in seq1.iter().enumerate() {
+        let s1 = kmer.strand() as u32;
+        if let Some(indices) = index_map.get(&kmer.kmer()) {
             if indices.len() > max_mult {
                 max_mult = indices.len();
             }
-            for (j, pos2) in indices {
+            for &(j, pos2, s2) in indices {
+                // rel_strand = 0 → same strand → forward chain (pos2 increases)
+                // rel_strand = 1 → opposite strands → reverse chain (pos2 decreases)
+                let rel_strand = s1 ^ (s2 as u32);
                 let anchor = Anchor {
                     i: Some(i as u32),
-                    j: Some(*j as u32),
-                    pos1: pos as u32,
-                    pos2: *pos2 as u32,
+                    j: Some(j as u32),
+                    pos1: (rel_strand << 31) | pos1,
+                    pos2,
                 };
                 matches.push(anchor);
             }
@@ -292,6 +303,7 @@ pub fn dp_anchors(
     band: usize,
     max_gap: usize,
     double_gap: usize,
+    _debug: bool,
 ) -> Vec<(i32, Vec<Anchor>, bool)> {
     if matches.is_empty() {
         return vec![(0, vec![], false)];
@@ -373,6 +385,7 @@ pub fn dp_anchors(
     best_indices_ordered.sort_by_key(|&(score, _)| -score);
     assert!(dp[max_index] == best_indices_ordered[0].0);
 
+
     for (score, best_index) in best_indices_ordered {
         if used_anchors.contains(&best_index) {
             continue;
@@ -406,6 +419,275 @@ pub fn dp_anchors(
     return chains;
 }
 
+/// Anchor chaining DP following the minimap2/minigraph `mg_lchain_dp` algorithm.
+///
+/// Key differences from `dp_anchors`:
+/// - `st` sliding window replaces fixed `band`: left boundary advances when pos1 distance
+///   exceeds `double_gap`, so the inner loop is O(n) total rather than O(n * band).
+/// - Skip logic uses minimap2's `t[]` marker scheme instead of a broken `unimproved` counter:
+///   `t[p[j]] = i` marks the predecessor of each valid candidate; `n_skip` counts how many
+///   such already-seen predecessors fail to improve dp[i]. Decrements on improvement.
+/// - `max_ii` fallback: after an early-stop, explicitly checks the highest-scoring predecessor
+///   in the window, ensuring the global best predecessor is never missed.
+/// - Invalid transitions (ordering violations, gap > max_gap, dist > double_gap) do NOT
+///   participate in the skip-counter logic at all, matching minimap2 semantics.
+/// Strand-aware anchor chaining.
+///
+/// Anchors must have `pos1` encoded by `find_exact_matches_indexes`:
+///   bit 31 of pos1 = 0 → forward alignment anchor
+///   bit 31 of pos1 = 1 → reverse alignment anchor  (pos2 should decrease in chain)
+///
+/// All anchors (both strands) are processed in a **single DP pass**.
+/// Strand separation is achieved by the MSB encoding:
+///   - sorted by (pos1 as u32, encoded_pos2 as u32): forward anchors precede reverse
+///   - cross-strand transitions naturally fail dist1 ≤ 0 or dist2 ≤ 0 in dp_inner
+///
+/// Returns `(score, chain, is_reverse)` tuples; `is_reverse` replaces the old
+/// `large_indel` placeholder (which was always false).
+/// Chain anchors have the strand bit stripped from pos1; use `ChainInfo.reverse`.
+pub fn dp_anchors_v2(
+    matches: &[Anchor],
+    gap_cost: i32,
+    match_score: i32,
+    max_iter: usize,
+    max_skip: usize,
+    max_gap: usize,
+    double_gap: usize,
+    debug: bool,
+    min_chain_length: usize,
+) -> Vec<(i32, Vec<Anchor>, bool)> {
+    if matches.is_empty() {
+        return vec![];
+    }
+    let n = matches.len();
+
+    // --- Sort by (pos1 as u32, encoded_pos2 as u32) ---
+    // Forward anchors (bit31=0) sort before reverse anchors (bit31=1) because their
+    // pos1 u32 values are smaller.  Within each strand group, anchors are sorted by
+    // increasing encoded_pos2.  For reverse anchors encoded_pos2 = !pos2_raw, so the
+    // sort puts large-pos2 anchors first (which are valid predecessors in a reverse chain).
+    let mut sorted_indices: Vec<usize> = (0..n).collect();
+    sorted_indices.sort_unstable_by_key(|&i| {
+        let pos1_u32  = matches[i].pos1 as i32;
+        let pos2_raw  = matches[i].pos2 as i32;
+        let enc_pos2  = if pos1_u32 >> 31 == 1 { !pos2_raw } else { pos2_raw };
+        (pos1_u32, enc_pos2)
+    });
+
+    // --- SoA extraction in sorted order ---
+    // For forward anchors: pos1_i32 = pos1_raw (positive), pos2_i32 = pos2_raw (positive).
+    // For reverse anchors: pos1_i32 = (1<<31|pos1_raw) as i32 (negative, sign bit set),
+    //                      pos2_i32 = (!pos2_raw) as i32 (negative).
+    // dp_inner::<false> uses dist1 = s1-e1 and dist2 = s2-e2 for both strands:
+    //   • same-strand forward: dists are naturally positive ✓
+    //   • same-strand reverse: i32::MIN terms cancel, dists equal raw differences ✓
+    //   • cross-strand: dist1 or dist2 < 0 → rejected by the ≤ 0 guard ✓
+    let pos1s: Vec<i32> = sorted_indices.iter().map(|&i| matches[i].pos1 as i32).collect();
+    let pos2s: Vec<i32> = sorted_indices.iter().map(|&i| {
+        let pos2_raw = matches[i].pos2;
+        if matches[i].pos1 >> 31 == 1 { (!pos2_raw) as i32 } else { pos2_raw as i32 }
+    }).collect();
+
+    let mut f: Vec<i32> = vec![match_score; n];
+    let mut p: Vec<i32> = vec![-1i32; n];
+    let mut t: Vec<i32> = vec![-1i32; n];
+
+    let double_gap_i32 = double_gap as i32;
+    let max_gap_i32    = max_gap    as i32;
+    let mut st: usize  = 0;
+    let mut max_ii: i32 = -1;
+
+    let time = std::time::Instant::now();
+
+    // Single pass — REV const generic no longer needed; encoding handles both strands.
+    dp_inner::<false>(
+        &pos1s, &pos2s, &mut f, &mut p, &mut t,
+        gap_cost, match_score, max_iter, max_skip,
+        double_gap_i32, max_gap_i32,
+        &mut st, &mut max_ii, n,
+    );
+
+    if debug {
+        log::debug!(
+            "DP chaining (v2, single-pass) of {} anchors took {:?}",
+            matches.len(),
+            time.elapsed()
+        );
+    }
+
+    // --- Chain reconstruction ---
+    // Repurpose t[] as the claimed-anchor marker (0 = unclaimed, 1 = claimed).
+    t.fill(0);
+
+    let time = std::time::Instant::now();
+    let mut chains = Vec::new();
+
+    let mut best_indices_ordered = (0..n as i32)
+        .filter(|&i| f[i as usize] > min_chain_length as i32 * match_score / 2) // heuristic threshold to skip very short chains
+        .map(|i| (f[i as usize], i))
+        .collect::<Vec<_>>();
+    best_indices_ordered.sort_by_key(|&(score, _)| -score);
+
+    if debug {
+        log::debug!("Sorting candidates for chain reconstruction took {:?}", time.elapsed());
+    }
+
+    let time = std::time::Instant::now();
+    for (score, best_index) in best_indices_ordered {
+        let bi = best_index as usize;
+        if t[bi] != 0 {
+            continue;
+        }
+
+        // Detect strand from the top anchor (all anchors in a chain share the same strand).
+        let chain_is_reverse = matches[sorted_indices[bi]].pos1 >> 31 == 1;
+
+        let mut chain = Vec::new();
+        let mut idx = best_index;
+        let mut good_chain = true;
+        while idx >= 0 {
+            let u = idx as usize;
+            if t[u] != 0 {
+                good_chain = false;
+                break;
+            }
+            t[u] = 1;
+            // Strip the strand bit from pos1 — strand is in chain_is_reverse.
+            let orig = &matches[sorted_indices[u]];
+            chain.push(Anchor {
+                pos1: orig.pos1 & 0x7FFF_FFFF,
+                ..*orig
+            });
+            idx = p[u];
+        }
+
+        if chain.len() < min_chain_length {
+            break;
+        }
+
+        if good_chain {
+            chain.reverse();
+            chains.push((score, chain, chain_is_reverse));
+        }
+    }
+
+    if debug {
+        log::debug!("Extracting chains from DP (v2) took {:?}", time.elapsed());
+    }
+
+    chains
+}
+
+/// Monomorphised DP kernel. `REV` is true for reverse-strand chaining.
+/// All runtime branching on strand direction is eliminated by the const generic.
+#[inline(never)]
+fn dp_inner<const REV: bool>(
+    pos1s: &[i32],
+    pos2s: &[i32],
+    f: &mut [i32],
+    p: &mut [i32],
+    t: &mut [i32],
+    gap_cost: i32,
+    match_score: i32,
+    max_iter: usize,
+    max_skip: usize,
+    double_gap_i32: i32,
+    max_gap_i32: i32,
+    st: &mut usize,
+    max_ii: &mut i32,
+    n: usize,
+) {
+    for i in 0..n {
+        let s1 = pos1s[i];
+        let s2 = pos2s[i];
+        let i_i32 = i as i32; // hoisted; used in t[] comparisons and writes
+
+        // Advance pos1 window left boundary (O(n) total across all i).
+        while *st < i && s1 > double_gap_i32 + pos1s[*st] {
+            *st += 1;
+        }
+        let lo = if i >= max_iter { (i - max_iter).max(*st) } else { *st };
+
+        let mut max_f  = match_score;
+        let mut max_j  = -1i32;
+        let mut n_skip = 0usize;
+        let mut end_j  = lo; // last j visited; used by the max_ii fallback
+        let strand_i = s1 >> 31;
+
+        'inner: for j in (lo..i).rev() {
+            end_j = j;
+            let e1 = pos1s[j];
+            let e2 = pos2s[j];
+
+            // Combined ordering + pos2-distance filter.
+            // Invalid transitions do NOT count toward n_skip or t[] marking.
+            // For REV=false: need e1 < s1 (dist1 > 0) and e2 < s2 (dist2 > 0).
+            // For REV=true:  need e1 < s1 (dist1 > 0) and e2 > s2 (dist2 > 0).
+            let dist1 = s1 - e1;
+            let dist2 = if REV { e2 - s2 } else { s2 - e2 };
+            let same_strand = strand_i == (e1 >> 31);
+            if dist1 <= 0 || dist2 <= 0 || dist2 > double_gap_i32 || !same_strand {
+                continue;
+            }
+
+            // Gap-imbalance filter
+            let gap_penalty = (dist1 - dist2).abs();
+            if gap_penalty > max_gap_i32 {
+                continue;
+            }
+
+            let kmer_overlap_score = dist1.min(dist2).min(match_score);
+            let sc = f[j] + kmer_overlap_score - gap_cost * gap_penalty;
+
+            if sc > max_f {
+                max_f = sc;
+                max_j = j as i32;
+                if n_skip > 0 { n_skip -= 1; }
+            } else if t[j] == i_i32 {
+                n_skip += 1;
+                if n_skip > max_skip { break 'inner; }
+            }
+
+            // Mark predecessor of j as a skip candidate for anchor i.
+            let pj = p[j];
+            if pj >= 0 { t[pj as usize] = i_i32; }
+        }
+
+        // --- max_ii fallback ---
+        // Rescan if max_ii has left the pos1 window.
+        let rescan = *max_ii < 0 || s1  > double_gap_i32 + pos1s[*max_ii as usize];
+        if rescan {
+            let mut best = i32::MIN;
+            *max_ii = -1;
+            for j in (lo..i).rev() {
+                if f[j] > best { best = f[j]; *max_ii = j as i32; }
+            }
+        }
+        // If the global best predecessor was in the unvisited region, check it.
+        let mii = *max_ii;
+        if mii >= 0 && (mii as usize) < end_j {
+            let m = mii as usize;
+            let e1 = pos1s[m];
+            let e2 = pos2s[m];
+            let dist1 = s1 - e1;
+            let dist2 = if REV { e2 - s2 } else { s2 - e2 };
+            if dist1 > 0 && dist2 > 0 && dist2 <= double_gap_i32 {
+                let gap_penalty = (dist1 - dist2).abs();
+                if gap_penalty <= max_gap_i32 {
+                    let kmer_overlap_score = dist1.min(dist2).min(match_score);
+                    let sc = f[m] + kmer_overlap_score - gap_cost * gap_penalty;
+                    if sc > max_f { max_f = sc; max_j = mii; }
+                }
+            }
+        }
+
+        f[i] = max_f;
+        p[i] = max_j;
+
+        if *max_ii < 0 || f[*max_ii as usize] < f[i] { *max_ii = i_i32; }
+    }
+}
+
 fn find_optimal_chain(
     anchors: &Vec<Anchor>,
     match_score: i32,
@@ -427,52 +709,24 @@ fn find_optimal_chain(
         return vec![];
     }
 
-    let mut scores_and_chains_f = vec![];
+    // Single strand-aware DP pass — both forward and reverse chains in one call.
+    let mut all_chains = dp_anchors_v2(
+        matches, gap_cost, match_score, band,
+        tr_options.max_skip, max_gap, double_gap, tr_options.debug, tr_options.min_chain_length
+    );
 
-    #[cfg(any(target_arch = "x86_64"))]
-    {
-        let vals = dp_anchors(matches, false, gap_cost, match_score, band, max_gap, double_gap);
-        scores_and_chains_f.extend(vals);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let vals = dp_anchors(matches, false, gap_cost, match_score, band, max_gap, double_gap);
-        scores_and_chains_f.extend(vals);
-    }
-
-    let mut scores_and_chains_r = vec![];
-    #[cfg(any(target_arch = "x86_64"))]
-    {
-        let vals = dp_anchors(matches, true, gap_cost, match_score, band, max_gap, double_gap);
-        scores_and_chains_r.extend(vals);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        let vals = dp_anchors(matches, true, gap_cost, match_score, band, max_gap, double_gap);
-        scores_and_chains_r.extend(vals);
-    }
-
-    if scores_and_chains_f.is_empty() && scores_and_chains_r.is_empty() {
+    if all_chains.is_empty() {
         return vec![];
     }
 
-    let max_score = scores_and_chains_f
-        .iter()
-        .chain(scores_and_chains_r.iter())
-        .map(|x| x.0)
-        .max()
-        .unwrap();
+    let max_score = all_chains.iter().map(|x| x.0).max().unwrap();
     let mut chains = vec![];
     let mut reference_intervals: Vec<Interval<u32, bool>> = vec![];
     let mut query_intervals: Vec<Interval<u32, bool>> = vec![];
-    let mut both_chains = scores_and_chains_f
-        .into_iter()
-        .map(|x| (x, false))
-        .chain(scores_and_chains_r.into_iter().map(|x| (x, true)))
-        .collect::<Vec<_>>();
-    both_chains.sort_by(|a, b| b.0 .0.cmp(&a.0 .0));
+    all_chains.sort_unstable_by(|a, b| b.0.cmp(&a.0));
 
-    for ((score, chain, large_indel), reverse) in both_chains {
+    for (score, chain, reverse) in all_chains {
+        let large_indel = false;
         let cond1 = score as f64 > tr_options.supplementary_threshold_ratio.unwrap_or(0.25) * max_score as f64;
         let cond2 = score as f64 > tr_options.supplementary_threshold_score.unwrap_or(f64::MAX);
         if cond1 || cond2{
@@ -546,6 +800,7 @@ pub fn compare_twin_reads(
     args: &Cli,
 ) -> Vec<TwinOverlap> {
     let mut mini_chain_infos;
+    let time = std::time::Instant::now();
     if let Some(anchors) = mini_anchors {
         mini_chain_infos = find_optimal_chain(
             &anchors.anchors,
@@ -554,13 +809,16 @@ pub fn compare_twin_reads(
             Some(anchors.max_mult * 20),
             options,
         );
+        if options.debug{
+            log::debug!("Compared read {} to read {} in {:?} with {} anchors, found {} mini chains", seq1.id, seq2.id, time.elapsed(), anchors.anchors.len(), mini_chain_infos.len());
+        }
     } else {
         let anchors;
         if let Some(seq1_minimizers) = options.read1_mininimizers.as_ref(){
-            anchors = find_exact_matches_indexes(seq1_minimizers, &seq2.minimizers_vec());
+            anchors = find_exact_matches_indexes(seq1_minimizers, &seq2.minimizers_vec_strand());
         }
         else{
-            anchors = find_exact_matches_indexes(&seq1.minimizers_vec(), &seq2.minimizers_vec());
+            anchors = find_exact_matches_indexes(&seq1.minimizers_vec_strand(), &seq2.minimizers_vec_strand());
         }
         mini_chain_infos = find_optimal_chain(
             &anchors.0,
@@ -570,6 +828,7 @@ pub fn compare_twin_reads(
             options,
         );
     }
+
 
     if options.maximal_only{
         mini_chain_infos.retain(|mini_chain_info| {
@@ -621,13 +880,14 @@ pub fn compare_twin_reads(
         if let Some(snpmers_vec_1) = options.read1_snpmers.as_ref() {
             snpmer_vec = snpmers_vec_1;
         } else {
-            temp_vec = seq1.snpmers_vec();
+            temp_vec = seq1.snpmers_vec_strand();
             snpmer_vec = &temp_vec;
         }
 
-        temp_vec2 = seq2.snpmers_vec();
+        temp_vec2 = seq2.snpmers_vec_strand();
         snpmer_vec_2 = &temp_vec2;
     }
+    
 
     for mini_chain_info in mini_chain_infos {
         let mini_chain = &mini_chain_info.chain;
@@ -651,28 +911,37 @@ pub fn compare_twin_reads(
 
             let mask = !(3 << (k - 1));
 
-            let mut splitmers1 = vec![];
+            let mut splitmers1: Vec<(u32, FlagKmer48)> = vec![];
             let mut ind_redirect1 = vec![];
 
             for (i, &(pos, snpmer)) in snpmer_vec.iter().enumerate() {
                 if pos as usize >= start1 && pos as usize <= end1 {
                     ind_redirect1.push(i);
-                    splitmers1.push((pos, snpmer.to_u64() & mask));
+                    let masked = FlagKmer48::new(
+                        Kmer48::from_u64(snpmer.kmer().to_u64() & mask),
+                        snpmer.strand(),
+                    );
+                    splitmers1.push((pos, masked));
                 }
             }
 
-            let mut splitmers2 = vec![];
+            let mut splitmers2: Vec<(u32, FlagKmer48)> = vec![];
             let mut ind_redirect2 = vec![];
 
             for (i, &(pos, snpmer)) in snpmer_vec_2.iter().enumerate() {
                 if pos as usize >= start2 && pos as usize <= end2 {
                     ind_redirect2.push(i);
-                    splitmers2.push((pos, snpmer.to_u64() & mask));
+                    let masked = FlagKmer48::new(
+                        Kmer48::from_u64(snpmer.kmer().to_u64() & mask),
+                        snpmer.strand(),
+                    );
+                    splitmers2.push((pos, masked));
                 }
             }
 
             let split_chain_opt;
             let mut split_options = options.clone();
+            split_options.min_chain_length = 2;
             split_options.double_gap = 2_000_000;
             if let Some(anchors) = snpmer_anchors {
                 split_chain_opt = find_optimal_chain(
@@ -685,7 +954,7 @@ pub fn compare_twin_reads(
                 .into_iter()
                 .max_by_key(|x| x.score);
             } else {
-                let anchors = find_exact_matches_indexes_references(&splitmers1, &splitmers2);
+                let anchors = find_exact_matches_indexes(&splitmers1, &splitmers2);
                 let chains = find_optimal_chain(
                     &anchors.0,
                     50,
@@ -695,6 +964,7 @@ pub fn compare_twin_reads(
                 );
                 split_chain_opt = chains.into_iter().max_by_key(|x| x.score);
             }
+            
 
             //If mini chain goes opposite from split chain, probably split chain
             //is not reliable, so set shared and diff = 0.
@@ -709,7 +979,7 @@ pub fn compare_twin_reads(
                         let j = ind_redirect2[j.unwrap() as usize];
 
                         //if seq1.snpmer_kmers[i as usize] == seq2.snpmer_kmers[j as usize] {
-                        if snpmer_kmers_seq1[i as usize].1 == snpmer_kmers_seq2[j as usize].1 {
+                        if snpmer_kmers_seq1[i as usize].1.kmer() == snpmer_kmers_seq2[j as usize].1.kmer() {
                             shared_snpmer += 1;
                         } else {
                             diff_snpmer += 1;
@@ -877,12 +1147,12 @@ pub fn get_minimizer_index(
         let mut sorted_keys = twinreads.keys().collect::<Vec<_>>();
         sorted_keys.sort();
         for (&id, tr) in sorted_keys.iter().map(|&x| (x, &twinreads[x])) {
-            for (pos, mini) in tr.minimizers_vec().into_iter() {
+            for (pos, mini) in tr.minimizers_vec_strand().into_iter() {
                 let hit = HitInfo {
-                    contig_id: id as u32,
+                    contig_id_strand: (mini.strand() as u32) << 31 | id as u32,
                     position: pos,
                 };
-                mini_index.entry(mini).or_insert(vec![]).push(hit);
+                mini_index.entry(mini.kmer()).or_insert(vec![]).push(hit);
             }
         }
     }
@@ -890,12 +1160,12 @@ pub fn get_minimizer_index(
         let mut sorted_keys = twinreads.keys().collect::<Vec<_>>();
         sorted_keys.sort();
         for (&id, tr) in sorted_keys.iter().map(|&x| (x, &twinreads[x])) {
-            for (pos, mini) in tr.minimizers_vec().into_iter() {
+            for (pos, mini) in tr.minimizers_vec_strand().into_iter() {
                 let hit = HitInfo {
-                    contig_id: id as u32,
+                    contig_id_strand: (mini.strand() as u32) << 31 | id as u32,
                     position: pos,
                 };
-                mini_index.entry(mini).or_insert(vec![]).push(hit);
+                mini_index.entry(mini.kmer()).or_insert(vec![]).push(hit);
             }
         }
     }
@@ -947,7 +1217,7 @@ pub fn map_reads_to_outer_reads_efficient(
         .chunks(chunk_size)
         .collect::<Vec<_>>();
 
-    log::info!("Mapping {} reads to {} outer reads", twin_reads.len(), outer_read_indices.len());
+    log::info!("Mapping {} reads to {} outer reads. Building hash table... ", twin_reads.len(), outer_read_indices.len());
     log::debug!("ITERATIONS: Breaking {} reads into {} chunks of <= {}", outer_read_indices.len(), outer_read_chunks.len(), chunk_size);
 
     for (batch_index, mapping_chunk_indices) in outer_read_chunks.iter().enumerate() {
@@ -961,14 +1231,22 @@ pub fn map_reads_to_outer_reads_efficient(
             .collect::<FxHashMap<usize, &TwinRead>>();
 
         let mini_index = get_minimizer_index(None, Some(&tr_outer));
+        log::info!("Built minimizer index for batch {}/{}. Mapping reads...", batch_index + 1, outer_read_chunks.len());
         let counter = Mutex::new(0);
 
         twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
             let mut tr_options = CompareTwinReadOptions::default();
             tr_options.double_gap = 1500;
             tr_options.force_query_nonoverlap = true;
-            tr_options.read1_snpmers = Some(read.snpmers_vec());
-            let mini = read.minimizers_vec();
+            tr_options.read1_snpmers = Some(read.snpmers_vec_strand());
+
+            // if rid % 100 == 0{
+            //     tr_options.debug = true;
+            // }
+
+            //log::debug!("Processing read {} with id {}...", rid, read.id);
+
+            let mini = read.minimizers_vec_strand();
             let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, Some(&tr_outer));
             drop(mini);
             let mut unitig_hits : Vec<TwinOverlap> = vec![];
@@ -980,6 +1258,21 @@ pub fn map_reads_to_outer_reads_efficient(
                     twin_reads.len()
                 );
                 log_memory_usage(false, "100k reads mapped");
+            }
+
+            let num_mapped = *counter.lock().unwrap();
+            if num_mapped % (twin_reads.len() / 10).max(1) == 0 {
+                let mapping_progress = (num_mapped as f64 / twin_reads.len() as f64) * 100.;
+                let dbgstring = format!(
+                    "Mapping batch {}/{}: Processed {} / {} ({}%) of reads...",
+                    batch_index + 1,
+                    outer_read_chunks.len(),
+                    num_mapped, 
+                    twin_reads.len(), 
+                    mapping_progress.round()
+                );
+                log_memory_usage(true, &dbgstring);
+
             }
 
             for (contig_id, anchors) in mini_anchors.into_iter() {
@@ -1003,6 +1296,7 @@ pub fn map_reads_to_outer_reads_efficient(
                 }
                 drop(anchors);
             }
+            
 
             for hit in unitig_hits.into_iter() {
                 let max_overlap = check_maximal_overlap(
@@ -1179,12 +1473,10 @@ pub fn map_reads_to_outer_reads(
             tr_options.double_gap = 1500;
             //tr_options.force_one_to_one_alignments = true;
             tr_options.force_query_nonoverlap = true;
-            tr_options.read1_snpmers = Some(read.snpmers_vec());
-            let mini = read.minimizers_vec();
-            //let start = std::time::Instant::now();
+            tr_options.read1_snpmers = Some(read.snpmers_vec_strand());
+            let mini = read.minimizers_vec_strand();
             let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, Some(&tr_outer));
             drop(mini);
-            //let anchor_finding_time = start.elapsed().as_micros();
             let mut unitig_hits : Vec<TwinOverlap> = vec![];
             *counter.lock().unwrap() += 1;
             if *counter.lock().unwrap() % 100000 == 0 {
@@ -1356,7 +1648,7 @@ pub fn map_to_dereplicate(
 
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
-        let k = snpmer_i.k as usize;
+        let k = args.kmer_size as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
         let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k - 1));
         snpmer_set.insert(snpmer1);
@@ -1381,17 +1673,18 @@ pub fn map_to_dereplicate(
         node_unitig.passes_abundance_thresholds(args)
     });
 
+    log::info!("Initializing index for dereplication. {} unitigs pass abundance thresholds.", tr_unitigs.len());
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
 
     log::debug!("Built minimizer index of size {}", mini_index.len());
-    
+    log::info!("Mapping unitigs to each other for dereplication...");
     tr_unitigs.par_iter().for_each(|(q_id, q_unitig)| {
         
         let mut tr_options = CompareTwinReadOptions::default();
-        tr_options.read1_snpmers = Some(q_unitig.snpmers_vec());
+        tr_options.read1_snpmers = Some(q_unitig.snpmers_vec_strand());
         tr_options.retain_chain = true;
 
-        let mini = q_unitig.minimizers_vec();
+        let mini = q_unitig.minimizers_vec_strand();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
         let mut mini_anchor_sorted_indices = mini_anchors.keys().cloned().collect::<Vec<_>>();
         mini_anchor_sorted_indices.sort_by_key(|x| mini_anchors[x].anchors.len());
@@ -1537,7 +1830,7 @@ pub fn map_reads_to_unitigs(
     
     let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
-        let k = snpmer_i.k as usize;
+        let k = args.kmer_size as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
         let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k - 1));
         snpmer_set.insert(snpmer1);
@@ -1546,6 +1839,7 @@ pub fn map_reads_to_unitigs(
 
     //Convert unitigs to twinreads
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
+    drop(snpmer_set);
     let circular_unitigs = unitig_graph.nodes.iter().filter(|(_, u)| u.has_circular_walk()).map(|(id, _)| *id).collect::<FxHashSet<_>>();
     let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
@@ -1557,13 +1851,13 @@ pub fn map_reads_to_unitigs(
     twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mut tr_options = CompareTwinReadOptions::default();
         tr_options.retain_chain = true;
-        tr_options.read1_snpmers = Some(read.snpmers_vec());
+        tr_options.read1_snpmers = Some(read.snpmers_vec_strand());
         tr_options.secondary_threshold = Some(0.15);
 
         // This should've been added in v0.3; adding in v0.4 TESTING
         tr_options.maximal_only = true;
 
-        let mini = read.minimizers_vec();
+        let mini = read.minimizers_vec_strand();
         let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
         let mut unitig_hits = vec![];
 
@@ -1925,4 +2219,253 @@ fn _get_splitmers(snpmers: &[(usize, u64)], k: u64) -> Vec<(usize, u64)> {
         .iter()
         .map(|x| (x.0, x.1 as u64 & mask))
         .collect::<Vec<(usize, u64)>>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn anc(pos1: u32, pos2: u32) -> Anchor {
+        Anchor { i: None, j: None, pos1, pos2 }
+    }
+
+    /// Reverse-strand anchor: pos1 bit31=1 (rel_strand=1), pos2 raw (decreasing along chain).
+    fn anc_rev(pos1_raw: u32, pos2: u32) -> Anchor {
+        Anchor { i: None, j: None, pos1: (1u32 << 31) | pos1_raw, pos2 }
+    }
+
+
+    // Canonical params matching CompareTwinReadOptions::default()
+    const GAP_COST: i32 = 1;
+    const MATCH_SCORE: i32 = 10;
+    const BAND: usize = 50;
+    const MAX_ITER: usize = 500;
+    const MAX_SKIP: usize = 10;
+    const MAX_GAP: usize = 200;     // gap imbalance threshold
+    const DOUBLE_GAP: usize = 10_000; // absolute distance threshold
+
+    /// Sort chains for deterministic comparison: descending score,
+    /// then by position of the first anchor as a tiebreaker.
+    fn sorted(mut chains: Vec<(i32, Vec<Anchor>, bool)>) -> Vec<(i32, Vec<Anchor>, bool)> {
+        chains.sort_by(|a, b| {
+            b.0.cmp(&a.0).then_with(|| {
+                a.1.first().map(|x| x.pos1).cmp(&b.1.first().map(|x| x.pos1))
+            })
+        });
+        chains
+    }
+
+    fn chains_equal(v1: &[(i32, Vec<Anchor>, bool)], v2: &[(i32, Vec<Anchor>, bool)]) {
+        assert_eq!(v1.len(), v2.len(), "chain count: v1={} v2={}", v1.len(), v2.len());
+        for (i, (c1, c2)) in v1.iter().zip(v2.iter()).enumerate() {
+            assert_eq!(c1.0, c2.0, "chain {i}: score v1={} v2={}", c1.0, c2.0);
+            assert_eq!(c1.1, c2.1, "chain {i}: anchor list differs");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test min_chain parameter
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_simple_chain() {
+        let anchors: Vec<Anchor> = (0..1).map(|i: u32| anc(i * 20, i * 20)).collect();
+
+        let t0 = std::time::Instant::now();
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 1);
+        let e2 = t0.elapsed();
+
+        let r2 = sorted(r2);
+        eprintln!("  v2 chains: {:?}", r2.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());
+
+        assert_eq!(r2[0].0, MATCH_SCORE, "expected score {}, got {}", MATCH_SCORE, r2[0].0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 1: five anchors on a perfect diagonal (no gap, no noise).
+    // Both algorithms must produce one chain of length 5 with the same score.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_simple_linear_chain() {
+        // Anchors at (0,0),(20,20),(40,40),(60,60),(80,80)
+        // Each step: dist1=dist2=20, gap_penalty=0, kmer_overlap=min(20,20,10)=10
+        // Expected chain score: match_score + 4 * kmer_overlap = 10 + 40 = 50
+        let anchors: Vec<Anchor> = (0..5).map(|i: u32| anc(i * 20, i * 20)).collect();
+
+        let t0 = std::time::Instant::now();
+        let r1 = dp_anchors(&anchors, false, GAP_COST, MATCH_SCORE, BAND, MAX_GAP, DOUBLE_GAP, true);
+        let e1 = t0.elapsed();
+
+        let t0 = std::time::Instant::now();
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
+        let e2 = t0.elapsed();
+
+        eprintln!("[simple_linear] v1={e1:?}  v2={e2:?}");
+
+        let r1 = sorted(r1);
+        let r2 = sorted(r2);
+        eprintln!("  v1 chains: {:?}", r1.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());
+        eprintln!("  v2 chains: {:?}", r2.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());
+
+        assert_eq!(r1[0].0, 50, "expected score 50, got {}", r1[0].0);
+        chains_equal(&r1, &r2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 2: two chains separated by a gap > double_gap so they cannot link.
+    // Each chain has 5 anchors; both algorithms should return two equal chains.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_two_separate_chains() {
+        // Chain A: pos1 = 100..180, pos2 = 100..180
+        // Chain B: pos1 = 15000..15080, pos2 = 15000..15080
+        // Gap between chains: ~14820 > DOUBLE_GAP(10000) → cannot link
+        let mut anchors: Vec<Anchor> = (0..5).map(|i: u32| anc(100 + i * 20, 100 + i * 20)).collect();
+        anchors.extend((0..5).map(|i: u32| anc(15_000 + i * 20, 15_000 + i * 20)));
+        // Already sorted by pos1
+
+        let t0 = std::time::Instant::now();
+        let r1 = dp_anchors(&anchors, false, GAP_COST, MATCH_SCORE, BAND, MAX_GAP, DOUBLE_GAP, true);
+        let e1 = t0.elapsed();
+
+        let t0 = std::time::Instant::now();
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
+        let e2 = t0.elapsed();
+
+        eprintln!("[two_chains] v1={e1:?}  v2={e2:?}");
+
+        let r1 = sorted(r1);
+        let r2 = sorted(r2);
+        eprintln!("  v1 chains: {:?}", r1.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());
+        eprintln!("  v2 chains: {:?}", r2.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());
+
+        chains_equal(&r1, &r2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 3: ~1300 anchors on a perfect diagonal — matches the log entry
+    //   "DP chaining of 1279 anchors took 3.000917ms"
+    // Primary purpose: timing comparison between v1 and v2 with debug=true.
+    // On a clean diagonal both algorithms should agree on a single chain.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_large_timing_diagonal() {
+        let n = 1300u32;
+        // 20bp minimizer spacing, perfect diagonal (no gap noise)
+        let anchors1: Vec<Anchor> = (0..n).map(|i| anc(i * 20, i * 20)).collect();
+        let anchors2: Vec<Anchor> = (0..n).map(|i| anc(i * 20 + 100000, i * 20 + 500000)).collect();
+        let mut anchors = [anchors1, anchors2].concat();
+        anchors.sort_unstable_by_key(|a| (a.pos1, a.pos2)); // Ensure sorted by pos1 for DP
+
+        let t0 = std::time::Instant::now();
+        let r1 = dp_anchors(&anchors, false, GAP_COST, MATCH_SCORE, BAND, MAX_GAP, DOUBLE_GAP, true);
+        let e1 = t0.elapsed();
+
+        let t0 = std::time::Instant::now();
+        let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
+        let e2 = t0.elapsed();
+
+        eprintln!("[large_diagonal n={n}] v1={e1:?}  v2={e2:?}");
+
+        let r1 = sorted(r1);
+        let r2 = sorted(r2);
+        eprintln!("  v1: {} chain(s), best score={}, len={}",
+            r1.len(), r1[0].0, r1[0].1.len());
+        eprintln!("  v2: {} chain(s), best score={}, len={}",
+            r2.len(), r2[0].0, r2[0].1.len());
+
+        chains_equal(&r1, &r2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 4: five anchors on a perfect reverse-strand diagonal.
+    // pos1 increases (0→80), pos2 decreases (80→0).  Same step size as test 1,
+    // so the score must also be 50 and the chain must be marked is_reverse=true.
+    // Strand bit is stripped from returned anchor.pos1.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_simple_reverse_chain() {
+        let anchors: Vec<Anchor> = (0..5u32).map(|i| anc_rev(i * 20, 80 - i * 20)).collect();
+
+        let t0 = std::time::Instant::now();
+        let r = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2);
+        eprintln!("[simple_reverse] took {:?}", t0.elapsed());
+        eprintln!("  chains: {:?}", r.iter().map(|(s, c, rev)| (s, c.len(), rev)).collect::<Vec<_>>());
+
+        assert_eq!(r.len(), 1, "expected 1 chain, got {}", r.len());
+        let (score, chain, is_reverse) = &r[0];
+        assert_eq!(*score, 50, "expected score 50, got {score}");
+        assert_eq!(chain.len(), 5, "expected 5 anchors, got {}", chain.len());
+        assert!(*is_reverse, "chain should be marked is_reverse=true");
+        // Strand bit must be stripped from returned anchor.pos1.
+        assert_eq!(chain[0].pos1, 0,  "first anchor pos1 wrong (strand bit not stripped?)");
+        assert_eq!(chain[4].pos1, 80, "last  anchor pos1 wrong");
+        // pos2 should be in decreasing order (raw values unchanged).
+        assert_eq!(chain[0].pos2, 80);
+        assert_eq!(chain[4].pos2, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5: one forward chain and one reverse chain in the same anchor set.
+    // They must be found independently with correct strand flags.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_forward_and_reverse_chains() {
+        // Forward: pos1 0..80, pos2 100..180  (bit31=0)
+        // Reverse: pos1_raw 200..280, pos2 380..300  (bit31=1, pos2 decreasing)
+        let mut anchors: Vec<Anchor> = (0..5u32)
+            .map(|i| anc(i * 20, 100 + i * 20))
+            .collect();
+        anchors.extend((0..5u32).map(|i| anc_rev(200 + i * 20, 380 - i * 20)));
+
+        let t0 = std::time::Instant::now();
+        let r = sorted(dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2));
+        eprintln!("[fwd+rev] took {:?}", t0.elapsed());
+        eprintln!("  chains: {:?}", r.iter().map(|(s, c, rev)| (s, c.len(), rev)).collect::<Vec<_>>());
+
+        assert_eq!(r.len(), 2, "expected 2 chains, got {}", r.len());
+        assert_eq!(r[0].0, 50, "forward chain score wrong");
+        assert_eq!(r[1].0, 50, "reverse chain score wrong");
+        let has_fwd = r.iter().any(|(_, _, rev)| !rev);
+        let has_rev = r.iter().any(|(_, _, rev)| *rev);
+        assert!(has_fwd, "missing forward chain");
+        assert!(has_rev, "missing reverse chain");
+        // Each chain should have all 5 anchors.
+        for (_, chain, _) in &r {
+            assert_eq!(chain.len(), 5, "chain length should be 5");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 6: interleaved forward and reverse anchors at similar pos1 values.
+    // Cross-strand transitions must be rejected — each strand forms its own chain.
+    // -----------------------------------------------------------------------
+    #[test]
+    fn test_no_cross_strand_chaining() {
+        // Forward: pos1=0,20,40  pos2=100,120,140
+        // Reverse: pos1_raw=10,30,50  pos2=140,120,100 (decreasing)
+        // The forward anchor at pos1=0,pos2=100 and reverse anchor at pos1_raw=10,pos2=140
+        // look spatially close, but must NOT chain together.
+        let fwd: Vec<Anchor> = (0..3u32).map(|i| anc(i * 20, 100 + i * 20)).collect();
+        let rev: Vec<Anchor> = (0..3u32).map(|i| anc_rev(i * 20 + 10, 140 - i * 20)).collect();
+        let anchors: Vec<Anchor> = [fwd, rev].concat();
+
+        let r = sorted(dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 2));
+        eprintln!("[cross_strand] chains: {:?}", r.iter().map(|(s, c, rev)| (s, c.len(), rev)).collect::<Vec<_>>());
+
+        assert_eq!(r.len(), 2, "expected 2 chains (one per strand), got {}", r.len());
+        let has_fwd = r.iter().any(|(_, _, rev)| !rev);
+        let has_rev = r.iter().any(|(_, _, rev)| *rev);
+        assert!(has_fwd, "missing forward chain");
+        assert!(has_rev, "missing reverse chain");
+        // No chain should mix strands (all anchors in a chain share the same bit31).
+        for (_, chain, is_rev) in &r {
+            for anchor in chain {
+                let anchor_strand = anchor.pos1 >> 31 == 1;
+                // Strand bit is stripped before returning, so all returned pos1 have bit31=0.
+                // The chain-level is_reverse flag encodes the strand.
+                assert_eq!(anchor.pos1 >> 31, 0, "strand bit should be stripped from returned anchor");
+                let _ = (anchor_strand, is_rev); // suppress unused warning
+            }
+        }
+    }
 }

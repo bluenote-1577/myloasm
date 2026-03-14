@@ -1,6 +1,6 @@
 [package]
 name = "myloasm"
-version = "0.4.0-stallfix"
+version = "0.5.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 #build = "build.rs"
@@ -43,6 +43,7 @@ wide = "=0.7.33"
 block-aligner = { version = "0.5" }
 clap-markdown = { git = "https://github.com/bluenote-1577/clap-markdown.git" }
 nibble_vec = "0.1.0"
+minimum_redundancy = "0.3.3"
 
 [features]
 default = ["avx2"]
@@ -74,3 +75,7 @@ approx = "0.4"
 [profile.dev]
 #opt-level = 1
 opt-level = 3
+
+[[bin]]
+name = "myloasm" # The desired binary name
+path = "src/main.rs"

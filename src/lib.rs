@@ -15,6 +15,7 @@ pub mod polishing;
 pub mod utils;
 pub mod small_genomes;
 pub mod skani_dereplicate;
+pub mod kmc_reader;
 
 //pub mod cbloom;
 //

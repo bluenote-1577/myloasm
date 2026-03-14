@@ -58,11 +58,13 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             .unwrap()
             .iter()
             .collect::<Vec<&Interval<u32, SmallTwinOl>>>();
-        poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
 
+        poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
+        let (_blocks_filled, _total_seqs, _max_seqs, _median_seqs, _suspicious_blocks, _max_length_seq) = poa_cons_builder.get_block_stats();
         log::trace!("Starting POA consensus for u{} ...", contig.node_id);
 
         let cons = poa_cons_builder.spoa_blocks();
+
         let mut final_seq = Vec::new();
 
         for consensus in cons {

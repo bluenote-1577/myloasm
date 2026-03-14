@@ -51,6 +51,7 @@ fn main() {
     let cleaning_unitig_temp = Path::new(&args.output_dir).join("0-cleaning_and_unitigs");
     std::fs::create_dir_all(&cleaning_unitig_temp).expect("Could not create temp directory for cleaning and unitigs");
     let twin_read_container = get_twin_reads_from_kmer_info(&mut kmer_info, &args, &output_dir, &cleaning_unitig_temp);
+
     let twin_reads = &twin_read_container.twin_reads;
     log_memory_usage(true, "STAGE 3: Obtained clean twin reads");
 
@@ -216,7 +217,6 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
         std::process::exit(0);
     }
 
-
     for file in &args.input_files {
         if !Path::new(file).exists() && file != MAGIC_EXIST_STRING{
             eprintln!(
@@ -318,7 +318,19 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
         log::info!("Loaded snpmer info from file.");
     } else {
         let start = Instant::now();
-        let big_kmer_map = seq_parse::read_to_split_kmers(args.kmer_size, args.threads, &args);
+        let big_kmer_map;
+        if args.kmc_db.is_some() {
+            log::info!("Using precomputed KMC database at {}", args.kmc_db.as_ref().unwrap());
+            big_kmer_map = seq_parse::read_kmers_from_kmc_db(
+                args.kmer_size,
+                args.threads,
+                args.kmc_db.as_ref().unwrap(),
+                &args,
+            );
+        }
+        else{
+            big_kmer_map = seq_parse::read_to_split_kmers(args.kmer_size, args.threads, &args);
+        }
         log::info!(
             "Time elapsed in for counting k-mers is: {:?}",
             start.elapsed()
@@ -352,6 +364,13 @@ fn get_twin_reads_from_kmer_info(
     let saved_input = args.input_files == [MAGIC_EXIST_STRING];
     let twin_read_container;
     let twin_read_bin_path = output_dir.join("binary_temp").join("twin_reads.bin");
+    let twin_read_raw_path = output_dir.join("binary_temp").join("twin_reads_raw.bin");
+    let huffman_bin_path = output_dir.join("binary_temp").join("huffman_tables.bin");
+
+    if saved_input && huffman_bin_path.exists() {
+        types::load_huffman_tables(&huffman_bin_path).unwrap();
+        log::info!("Loaded Huffman tables from file.");
+    }
 
     if saved_input && twin_read_bin_path.exists() {
         twin_read_container = bincode::deserialize_from(BufReader::new(
@@ -362,7 +381,31 @@ fn get_twin_reads_from_kmer_info(
     } else {
         // (1) read file, get twin reads
         log::info!("Getting twin reads from snpmers...");
-        let twin_reads_raw = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
+
+        let twin_reads_raw;
+        if !twin_read_raw_path.exists() || !saved_input {
+            let twin_reads_raw_temp = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
+            // Dump the raw twin reads to disk before cleaning for possible reruns
+
+            if !args.clean_dir{
+                bincode::serialize_into(
+                    BufWriter::new(File::create(&twin_read_raw_path).unwrap()),
+                    &twin_reads_raw_temp,
+                )
+                .unwrap();
+                if let Err(e) = types::save_huffman_tables(&huffman_bin_path) {
+                    log::warn!("Could not save Huffman tables: {}", e);
+                }
+            }
+            twin_reads_raw = twin_reads_raw_temp;
+            log::info!("Finished getting twin reads from snpmers and saved temporarily to disk.");
+        }
+        else{
+            twin_reads_raw = bincode::deserialize_from(BufReader::new(
+                File::open(&twin_read_raw_path).unwrap(),
+            )).unwrap();
+        }
+
         let num_reads = twin_reads_raw.len();
         log_memory_usage(true, "STAGE 1.5: Initially obtained dirty twin reads");
 
@@ -512,6 +555,18 @@ fn get_twin_reads_from_kmer_info(
                 &twin_read_container,
             )
             .unwrap();
+
+            // Remove twin_read_raw_path TODO
+            if twin_read_raw_path.exists() {
+                std::fs::remove_file(&twin_read_raw_path).expect("Could not remove raw twin reads file");
+            }
+
+            // Save Huffman tables alongside twin reads for reload
+            if types::huffman_initialized() {
+                if let Err(e) = types::save_huffman_tables(&huffman_bin_path) {
+                    log::warn!("Could not save Huffman tables: {}", e);
+                }
+            }
         }
     }
     return twin_read_container;
