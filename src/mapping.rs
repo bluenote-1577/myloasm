@@ -1688,7 +1688,8 @@ pub fn map_to_dereplicate(
         true
     }).collect::<FxHashMap<_, _>>();
 
-    log::info!("Initializing index for dereplication. {} unitigs pass abundance thresholds.", tr_unitigs.len());
+    let mean_length: f64 = tr_unitigs.values().map(|tr| tr.base_length as f64).sum::<f64>() / tr_unitigs.len() as f64;
+    log::info!("Initializing index for dereplication. {} unitigs with mean length {:.2} pass abundance thresholds.", tr_unitigs.len(), mean_length);
     let mini_index = get_minimizer_index(None, Some(&unitigs_to_index));
 
     log::debug!("Built minimizer index of size {}", mini_index.len());
@@ -1855,6 +1856,10 @@ pub fn map_reads_to_unitigs(
     //Convert unitigs to twinreads
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     drop(snpmer_set);
+
+    let mean_length: f64 = tr_unitigs.values().map(|tr| tr.base_length as f64).sum::<f64>() / tr_unitigs.len() as f64;
+    log::info!("Mapping reads to {} unitigs after filtering with mean length {:.2}. ", tr_unitigs.len(), mean_length);
+
     let circular_unitigs = unitig_graph.nodes.iter().filter(|(_, u)| u.has_circular_walk()).map(|(id, _)| *id).collect::<FxHashSet<_>>();
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
     let num_reads = twin_reads.len();
