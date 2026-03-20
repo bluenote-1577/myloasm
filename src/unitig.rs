@@ -1,5 +1,6 @@
 use crate::cli::Cli;
 use crate::constants::FORWARD_READ_SAFE_SEARCH_CUTOFF;
+use serde::{Serialize, Deserialize};
 use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::PSEUDOCOUNT;
 use crate::constants::QUANTILE_UNITIG_WEIGHT;
@@ -54,7 +55,7 @@ impl RemovedEdgeSet for RwLock<FxHashSet<EdgeIndex>> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UnitigNode {
     pub read_indices_ori: Vec<(NodeIndex, bool)>,
     pub internal_overlaps: Vec<ReadOverlapEdgeTwin>,
@@ -88,7 +89,7 @@ pub trait NodeSequence {
     fn set_info(&mut self, info: BaseInfo);
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BaseInfo {
     pub base_seq: Seq<Dna>,
     pub read_positions_internal: Vec<(usize, usize)>,
@@ -237,7 +238,7 @@ impl UnitigNode {
 }
 
 // UnitigEdge is essentially a wrapper around ReadOverlapEdgeTwin with unitig context
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnitigEdge {
     // The actual overlap information
     pub overlap: ReadOverlapEdgeTwin,

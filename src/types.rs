@@ -38,7 +38,6 @@ use bio_seq::prelude::*;
 use rust_lapper::Lapper;
 use block_aligner::cigar::OpLen;
 use std::cmp::Ordering;
-use nibble_vec::*;
 use std::collections::BTreeMap;
 use minimum_redundancy::{Coding, Code, DecodingResult, BitsPerFragment};
 use std::sync::OnceLock;
@@ -1235,7 +1234,7 @@ pub fn bits_to_ascii(bit_rep: u8) -> u8{
 }
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MappingInfo {
     pub median_depth: f64,
     pub minimum_depth: f64,
@@ -1247,7 +1246,7 @@ pub struct MappingInfo {
     pub length: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct BareMappingOverlap{
     pub snpmer_identity: Fraction,
 }
@@ -1264,7 +1263,7 @@ pub struct TwoCycle {
 }
 
 
-#[derive(Debug, Clone,  Default)]
+#[derive(Debug, Clone,  Default, Serialize, Deserialize)]
 pub struct SmallTwinOl{
     pub query_id: u32,
     pub snpmer_identity: f32,
@@ -1272,7 +1271,7 @@ pub struct SmallTwinOl{
     pub alignment_result: Option<AlignmentResult>
 }
 
-#[derive(Debug, Clone, PartialEq, Default, Eq)]
+#[derive(Debug, Clone, PartialEq, Default, Eq, Hash, Serialize, Deserialize)]
 pub struct BareInterval{
     pub start: u32,
     pub stop: u32
@@ -1382,9 +1381,56 @@ pub struct OverlapAdjMap {
     pub adj_map: FxHashMap<NodeIndex, Vec<NodeIndex>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+/// Simple 4-bit packed vector. Values must be in 0..=15.
+/// Two nibbles are packed per byte (high nibble first), so N values occupy ⌈N/2⌉ bytes.
+/// Derives Serialize/Deserialize directly since `data` is a plain Vec<u8>.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NibbleVec {
+    data: Vec<u8>,
+    len: usize,
+}
+
+impl NibbleVec {
+    /// Pack a slice of nibble values (each in 0..=15) into 2-per-byte storage.
+    pub fn from_nibbles(nibbles: &[u8]) -> Self {
+        let n = nibbles.len();
+        let mut data = Vec::with_capacity((n + 1) / 2);
+        for chunk in nibbles.chunks(2) {
+            let hi = chunk[0] & 0x0F;
+            let lo = if chunk.len() > 1 { chunk[1] & 0x0F } else { 0 };
+            data.push((hi << 4) | lo);
+        }
+        NibbleVec { data, len: n }
+    }
+
+    /// Unpack all nibbles into a Vec<u8> (values 0..=15).
+    pub fn to_nibbles(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.len);
+        for i in 0..self.len {
+            out.push(self.get(i));
+        }
+        out
+    }
+
+    /// Get nibble at index (0-based).
+    #[inline]
+    pub fn get(&self, idx: usize) -> u8 {
+        let byte = self.data[idx / 2];
+        if idx % 2 == 0 { byte >> 4 } else { byte & 0x0F }
+    }
+
+    /// Number of nibbles stored.
+    #[inline]
+    pub fn len(&self) -> usize { self.len }
+
+    /// Raw packed byte storage (each byte holds two nibbles).
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] { &self.data }
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct OpLenVec{
-    op_vec: NibbleVec<[u8; 32]>,
+    op_vec: NibbleVec,
     // Variable-length encoded lengths
     len_vec: Vec<u8>,
     // Number of operations (needed since varints have variable size)
@@ -1421,7 +1467,7 @@ impl OpLenVec{
         len_vec.shrink_to_fit();
 
         OpLenVec{
-            op_vec: NibbleVec::<[u8; 32]>::from_byte_vec(op_vec),
+            op_vec: NibbleVec::from_nibbles(&op_vec),
             len_vec,
             count,
         }
@@ -1459,7 +1505,9 @@ impl<'a> Iterator for OpLenIter<'a> {
             return None;
         }
 
-        let op = u8_to_operation(self.op_bytes[self.op_idx]);
+        let byte = self.op_bytes[self.op_idx / 2];
+        let nibble = if self.op_idx % 2 == 0 { byte >> 4 } else { byte & 0x0F };
+        let op = u8_to_operation(nibble);
         let (len, bytes_consumed) = decode_varint_u32(self.len_bytes, self.len_pos);
 
         self.op_idx += 1;
@@ -1489,7 +1537,7 @@ pub fn u8_to_operation(b: u8) -> Operation{
 }
 
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AlignmentResult{
     pub cigar: OpLenVec,
     pub q_start: usize,

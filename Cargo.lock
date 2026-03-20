@@ -282,6 +282,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8986feb1596f749fdcf1046e1b8068dfe802fc45708e6e293b736e4c0bb3b3a5"
 
 [[package]]
+name = "boomphf"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617e2d952880a00583ddb9237ac3965732e8df6a92a8e7bcc054100ec467ec3b"
+dependencies = [
+ "crossbeam-utils",
+ "log",
+ "rayon",
+ "wyhash",
+]
+
+[[package]]
 name = "bstr"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1085,13 +1097,14 @@ dependencies = [
 
 [[package]]
 name = "myloasm"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "approx 0.4.0",
  "assert_cmd",
  "bincode",
  "bio-seq",
  "block-aligner",
+ "boomphf",
  "built",
  "clap",
  "clap-markdown",
@@ -1107,7 +1120,6 @@ dependencies = [
  "memory-stats",
  "minimum_redundancy",
  "needletail",
- "nibble_vec",
  "ordered-float 4.6.0",
  "rand 0.8.5",
  "rayon",
@@ -1195,15 +1207,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac8cd24d9f185bb7223958d8c1ff7a961b74b1953fd05dba7cc568a63b3861ec"
 dependencies = [
  "rustc_version",
-]
-
-[[package]]
-name = "nibble_vec"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
-dependencies = [
- "smallvec",
 ]
 
 [[package]]
@@ -1630,6 +1633,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2274b9cc4f205bc0945b7be3e4fc1a102b0b7119ba6482faaedb9c4f76dde5d1"
 dependencies = [
  "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -2427,6 +2431,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f42320e61fe2cfd34354ecb597f86f413484a798ba44a8ca1165c58d42da6c1"
 dependencies = [
  "bitflags 2.9.3",
+]
+
+[[package]]
+name = "wyhash"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf6e163c25e3fac820b4b453185ea2dea3b6a3e0a721d4d23d75bd33734c295"
+dependencies = [
+ "rand_core 0.6.4",
 ]
 
 [[package]]

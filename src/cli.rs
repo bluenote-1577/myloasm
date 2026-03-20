@@ -49,6 +49,11 @@ pub struct Cli {
     /// Use precomputed KMC database at this path for kmer counting. Must use -b and -k21 for KMC db creation with version v3. 
     #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub kmc_db: Option<String>, 
+
+    /// ALPHA MODE FOR SELECT USERS (only for read-to-unitig mapping stage right now). May make polishing slightly worse, but not necessarily bad. 
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub low_mem: bool,
+
         
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
@@ -118,7 +123,7 @@ pub struct Cli {
     #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
     pub no_snpmers: bool,
 
-    /// Batch size of indexing for read-to-read mapping and overlap stage. Higher = faster, but more memory. 
+    /// Batch size of indexing for read-to-read mapping and overlap stage. Higher = faster, but more memory.
     #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3], hide = true)]
     pub read_map_batch_size: usize,
     

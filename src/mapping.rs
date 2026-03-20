@@ -1095,7 +1095,7 @@ fn unitigs_to_tr(
     args: &Cli,
 ) -> FxHashMap<usize, TwinRead> {
     let tr_unitigs = Mutex::new(FxHashMap::default());
-    for (&node_hash_id, unitig) in unitig_graph.nodes.iter() {
+    unitig_graph.nodes.par_iter().for_each(|(&node_hash_id, unitig)| {
         let id = format!("u{}", unitig.read_indices_ori[0].0);
         let u8_seq = unitig
             .base_seq()
@@ -1135,7 +1135,7 @@ fn unitigs_to_tr(
             tr.retain_snpmer_indices(solid_snpmer_indices);
             tr_unitigs.lock().unwrap().insert(node_hash_id, tr);
         }
-    }
+    });
     return tr_unitigs.into_inner().unwrap();
 }
 
@@ -1194,6 +1194,8 @@ pub fn get_minimizer_index(
     if mini_index.len() > 500_000{
         mini_index.retain(|_, v| v.len() < threshold);
     }
+
+    mini_index.shrink_to_fit();
 
     return mini_index;
 }
@@ -1673,11 +1675,24 @@ pub fn map_to_dereplicate(
         node_unitig.passes_abundance_thresholds(args)
     });
 
+    let unitigs_to_index = tr_unitigs.iter().map(|(id, read)| (*id, read)).filter(|(id, _)| {
+        let unitig =  tr_unitigs.get(id).unwrap();
+        let node_unitig = &unitig_graph.nodes[id];
+        if unitig.base_length >= 100_000 && node_unitig.read_indices_ori.len() >= 5 {
+            return false;
+        }
+        // Don't remove circular contigs
+        if node_unitig.has_circular_walk(){
+            return false;
+        }
+        true
+    }).collect::<FxHashMap<_, _>>();
+
     log::info!("Initializing index for dereplication. {} unitigs pass abundance thresholds.", tr_unitigs.len());
-    let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
+    let mini_index = get_minimizer_index(None, Some(&unitigs_to_index));
 
     log::debug!("Built minimizer index of size {}", mini_index.len());
-    log::info!("Mapping unitigs to each other for dereplication...");
+    log_memory_usage(true, "Mapping unitigs to each other for dereplication...");
     tr_unitigs.par_iter().for_each(|(q_id, q_unitig)| {
         
         let mut tr_options = CompareTwinReadOptions::default();
@@ -1841,14 +1856,20 @@ pub fn map_reads_to_unitigs(
     let tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
     drop(snpmer_set);
     let circular_unitigs = unitig_graph.nodes.iter().filter(|(_, u)| u.has_circular_walk()).map(|(id, _)| *id).collect::<FxHashSet<_>>();
-    let mini_index = get_minimizer_index(Some(&tr_unitigs), None);
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
-    let counter = Mutex::new(0);
     let num_reads = twin_reads.len();
 
-    log_memory_usage(true, "Built index for mapping to unitigs: starting final alignments");
+    let chunk_size = if args.low_mem { tr_unitigs.len() / 3 + 1 } else { tr_unitigs.len() };
+    let tr_unitig_keys: Vec<usize> = tr_unitigs.keys().cloned().collect();
+    let num_chunks = (tr_unitig_keys.len() + chunk_size - 1) / chunk_size.max(1);
+    for (chunk_idx, key_chunk) in tr_unitig_keys.chunks(chunk_size.max(1)).enumerate() {
+        let tr_chunk: FxHashMap<usize, &TwinRead> = key_chunk.iter().map(|k| (*k, &tr_unitigs[k])).collect();
+        let mini_index = get_minimizer_index(None, Some(&tr_chunk));
+        let counter = Mutex::new(0_usize);
 
-    twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
+        log_memory_usage(true, &format!("Built unitig index chunk {}/{}: starting alignments", chunk_idx + 1, num_chunks));
+
+        twin_reads.par_iter().enumerate().for_each(|(rid, read)| {
         let mut tr_options = CompareTwinReadOptions::default();
         tr_options.retain_chain = true;
         tr_options.read1_snpmers = Some(read.snpmers_vec_strand());
@@ -1858,7 +1879,7 @@ pub fn map_reads_to_unitigs(
         tr_options.maximal_only = true;
 
         let mini = read.minimizers_vec_strand();
-        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
+        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, None);
         let mut unitig_hits = vec![];
 
         for (contig_id, anchors) in mini_anchors.iter() {
@@ -1871,7 +1892,7 @@ pub fn map_reads_to_unitigs(
             }
 
             // Improved alignment to small circular genomes, that are "repetitive" before end trimming
-            let unitig_length = tr_unitigs[&(*contig_id as usize)].base_length;
+            let unitig_length = tr_chunk[&(*contig_id as usize)].base_length;
             if unitig_length < read.base_length * 3 {
                 tr_options.force_ref_nonoverlap = false;
             }
@@ -1883,10 +1904,10 @@ pub fn map_reads_to_unitigs(
             //     dbg!(contig_id);
             //     dbg!(&anchors.anchors);
             // }
-            
+
             for twinol in compare_twin_reads(
                 read,
-                &tr_unitigs[&(*contig_id as usize)],
+                &tr_chunk[&(*contig_id as usize)],
                 Some(anchors),
                 None,
                 rid,
@@ -1894,7 +1915,7 @@ pub fn map_reads_to_unitigs(
                 &tr_options,
                 args
             ) {
-                log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}; anchor mult {}", &read.id, &tr_unitigs[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2, anchors.max_mult);
+                log::trace!("Read {} unitig {} snpmers_shared {} snpmers_diff {} range1 {}-{} range2 {}-{}; anchor mult {}", &read.id, &tr_chunk[&(*contig_id as usize)].id, twinol.shared_snpmers, twinol.diff_snpmers, twinol.start1, twinol.end1, twinol.start2, twinol.end2, anchors.max_mult);
                 
                 //Disallow large indels because they may cause windowed POA to fail
                 let ol_len = twinol.end2 - twinol.start2;
@@ -1930,7 +1951,7 @@ pub fn map_reads_to_unitigs(
             x.start2,
             x.end2,
             read.base_length,
-            tr_unitigs[&x.i2].base_length,
+            tr_chunk[&x.i2].base_length,
             x.chain_reverse,
             end_fuzz
         ));
@@ -1999,7 +2020,7 @@ pub fn map_reads_to_unitigs(
 
         for hit in perfect_hits.iter().chain(imperfect_hits.iter()) {
 
-            log::trace!("FULL LENGTH MAPPING: {} query:{}-{} ref:{}-{} snp_shared {} snp_diff {} unitig u{}", first_word(&read.id), hit.start1, hit.end1, hit.start2, hit.end2, hit.shared_snpmers, hit.diff_snpmers, &tr_unitigs[&(hit.i2 as usize)].id);
+            log::trace!("FULL LENGTH MAPPING: {} query:{}-{} ref:{}-{} snp_shared {} snp_diff {} unitig u{}", first_word(&read.id), hit.start1, hit.end1, hit.start2, hit.end2, hit.shared_snpmers, hit.diff_snpmers, &tr_chunk[&(hit.i2 as usize)].id);
 
             // If this passes stringent standards, retain the hit. Otherwise, only retain the top hit. 
             if !same_strain(
@@ -2079,7 +2100,7 @@ pub fn map_reads_to_unitigs(
                 val: (hit.start2 as u32, hit.end2 as u32, hit.i2 as u32)
             };
 
-            let reference_length = tr_unitigs[&hit.i2].base_length;
+            let reference_length = tr_chunk[&hit.i2].base_length;
             let read_length = twin_reads[hit.i1].base_length;
 
             //Internal secondary filter in chaining procedure (compare twin reads)
@@ -2096,7 +2117,7 @@ pub fn map_reads_to_unitigs(
 
                             // Allow mappings to "repeats" caused by end circularity
                             if circular_unitigs.contains(&(hit.i2 as usize)) && q_interval.val.2 == hit.i2 as u32{
-                                let reference_length = tr_unitigs[&hit.i2].base_length;
+                                let reference_length = tr_chunk[&hit.i2].base_length;
                                 if overlap < 0.7 
                                 || (q_interval.val.1 as i32 - interval.val.0 as i32).abs() + 100_000 < reference_length as i32 {
                                 //|| ((hit.chain_score as f64) < 0.1 * (max_score as f64)){
@@ -2119,7 +2140,7 @@ pub fn map_reads_to_unitigs(
 
             let alignment_result = alignment::get_full_alignment(
                 &twin_reads[hit.i1].dna_seq,
-                &tr_unitigs[&hit.i2].dna_seq,
+                &tr_chunk[&hit.i2].dna_seq,
                 &hit,
                 args,
             );
@@ -2133,8 +2154,8 @@ pub fn map_reads_to_unitigs(
                 alignment_result.as_ref().unwrap().q_start,
                 alignment_result.as_ref().unwrap().q_end,
                 if hit.chain_reverse { "-" } else { "+" },
-                format!("{}ctg", &tr_unitigs[&hit.i2].id),
-                tr_unitigs[&hit.i2].base_length,
+                format!("{}ctg", &tr_chunk[&hit.i2].id),
+                tr_chunk[&hit.i2].base_length,
                 alignment_result.as_ref().unwrap().r_start,
                 alignment_result.as_ref().unwrap().r_end,
                 hit.end1 - hit.start1,
@@ -2164,10 +2185,9 @@ pub fn map_reads_to_unitigs(
         if count % (num_reads / 10) == 0{
             log::info!("Mapped {:.0}% of reads back to contigs", count as f64 / num_reads as f64 * 100.);
         }
-        
-    });
+        });
 
-    drop(mini_index);
+    } // end chunk loop
 
     let mut number_of_alignments = 0;
     let mut cigar_string_lengths = vec![];
@@ -2272,7 +2292,7 @@ mod tests {
 
         let t0 = std::time::Instant::now();
         let r2 = dp_anchors_v2(&anchors, GAP_COST, MATCH_SCORE, MAX_ITER, MAX_SKIP, MAX_GAP, DOUBLE_GAP, true, 1);
-        let e2 = t0.elapsed();
+        let _e2 = t0.elapsed();
 
         let r2 = sorted(r2);
         eprintln!("  v2 chains: {:?}", r2.iter().map(|(s, c, _)| (s, c.len())).collect::<Vec<_>>());

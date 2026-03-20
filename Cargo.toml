@@ -1,6 +1,6 @@
 [package]
 name = "myloasm"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 #build = "build.rs"
@@ -25,7 +25,7 @@ fishers_exact = "1.0"
 fxhash = "0"
 #bio-seq = { version = "0.14", features = ["serde"]}
 bio-seq = { git = "https://github.com/bluenote-1577/bio-seq.git", features = ["serde"]}
-rust-lapper = "1.1"
+rust-lapper = { version = "1.1", features = ["with_serde"]}
 memory-stats = "1.2.0"
 fastbloom = "0.11.0"
 crossbeam-channel = "0.5.13"
@@ -42,8 +42,8 @@ clap-num = "1.2.0"
 wide = "=0.7.33"
 block-aligner = { version = "0.5" }
 clap-markdown = { git = "https://github.com/bluenote-1577/clap-markdown.git" }
-nibble_vec = "0.1.0"
 minimum_redundancy = "0.3.3"
+boomphf = "0.6.0"
 
 [features]
 default = ["avx2"]

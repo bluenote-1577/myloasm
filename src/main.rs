@@ -55,59 +55,79 @@ fn main() {
     let twin_reads = &twin_read_container.twin_reads;
     log_memory_usage(true, "STAGE 3: Obtained clean twin reads");
 
-    // Step 3: Get overlaps between outer twin reads and construct raw unitig graph
-    let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &cleaning_unitig_temp, &output_dir);
-
-    // Step 4: Construct raw unitig graph
-    let (mut unitig_graph, overlap_adj_map) =
-        unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, Some(&twin_read_container.outer_indices), &args);
-    log_memory_usage(true, "Obtained unitig graph from overlaps");
-
     let graph_dir = Path::new(&args.output_dir).join("assembly_graphs");
     std::fs::create_dir_all(&graph_dir).expect("Could not create temp directory for graphs");
-    let out_file = graph_dir.join("unitig_graph-0.gfa");
-    unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
 
-    // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
-    let light_cleaning_temp_dir = Path::new(&args.output_dir).join("1-light_resolve");
-    std::fs::create_dir_all(&light_cleaning_temp_dir).expect("Could not create temp directory for light cleaning");
-    light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &light_cleaning_temp_dir, &graph_dir, true);
-    
-    // Step 6: Second round of progressive cleaning; more aggressive.
-    //heavy_cleaning(&mut unitig_graph, &twin_reads, &args, &temp_dir);
-    let heavy_cleaning_temp_dir = Path::new(&args.output_dir).join("2-heavy_path_resolve");
-    std::fs::create_dir_all(&heavy_cleaning_temp_dir).expect("Could not create temp directory for heavy cleaning");
+    // Steps 3–7: overlaps → unitig graph → cleaning → progressive coverage filter.
+    // Checkpoint: skip all of this if a serialized contig graph already exists.
+    let contig_graph_bin_path = output_dir.join("binary_temp").join("contig_graph.bin");
+    let mut contig_graph;
+    if args.input_files == [MAGIC_EXIST_STRING] && contig_graph_bin_path.exists() {
+        contig_graph = bincode::deserialize_from(BufReader::new(
+            File::open(&contig_graph_bin_path).unwrap(),
+        ))
+        .unwrap();
+        log::info!("Loaded contig graph from file.");
+    } else {
+        // Step 3: Get overlaps between outer twin reads and construct raw unitig graph
+        let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &cleaning_unitig_temp, &output_dir);
 
-    heavy_clean_with_walk(
-        &mut unitig_graph,
-        &twin_reads,
-        &overlap_adj_map,
-        &args,
-        &heavy_cleaning_temp_dir,
-        &graph_dir,
-    );
+        // Step 4: Construct raw unitig graph
+        let (mut unitig_graph, overlap_adj_map) =
+            unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, Some(&twin_read_container.outer_indices), &args);
+        log_memory_usage(true, "Obtained unitig graph from overlaps");
 
-    walk_tip_bubble(&mut unitig_graph, 
-        twin_reads, 
-        args.tip_length_cutoff * 30,
-        args.tip_read_cutoff * 30,
-        1_000_000,
-        usize::MAX,
-        Some(5),
-        &heavy_cleaning_temp_dir, 
-        true, 
-        &args
-    );
-    
-    // Step 6.5: Small circular contig retrieval
-    small_genomes::two_cycle_retrieval(&mut unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir);
-    let out_file = graph_dir.join("small_and_tip_bubble-3.gfa");
-    unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
+        let out_file = graph_dir.join("unitig_graph-0.gfa");
+        unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
 
+        // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
+        let light_cleaning_temp_dir = Path::new(&args.output_dir).join("1-light_resolve");
+        std::fs::create_dir_all(&light_cleaning_temp_dir).expect("Could not create temp directory for light cleaning");
+        light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &light_cleaning_temp_dir, &graph_dir, true);
 
-    // Step 7: Progressive coverage filter
-     let mut contig_graph =
-         progressive_coverage_contigs_circular(unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir, &output_dir);
+        // Step 6: Second round of progressive cleaning; more aggressive.
+        let heavy_cleaning_temp_dir = Path::new(&args.output_dir).join("2-heavy_path_resolve");
+        std::fs::create_dir_all(&heavy_cleaning_temp_dir).expect("Could not create temp directory for heavy cleaning");
+
+        heavy_clean_with_walk(
+            &mut unitig_graph,
+            &twin_reads,
+            &overlap_adj_map,
+            &args,
+            &heavy_cleaning_temp_dir,
+            &graph_dir,
+        );
+
+        walk_tip_bubble(&mut unitig_graph,
+            twin_reads,
+            args.tip_length_cutoff * 30,
+            args.tip_read_cutoff * 30,
+            1_000_000,
+            usize::MAX,
+            Some(5),
+            &heavy_cleaning_temp_dir,
+            true,
+            &args
+        );
+
+        // Step 6.5: Small circular contig retrieval
+        small_genomes::two_cycle_retrieval(&mut unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir);
+        let out_file = graph_dir.join("small_and_tip_bubble-3.gfa");
+        unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
+
+        // Step 7: Progressive coverage filter
+        contig_graph = progressive_coverage_contigs_circular(unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir, &output_dir);
+
+        if !args.clean_dir {
+            bincode::serialize_into(
+                BufWriter::new(File::create(&contig_graph_bin_path).unwrap()),
+                &contig_graph,
+            )
+            .unwrap();
+        }
+    }
+
+    log_memory_usage(true, "STAGE 4: Obtained unpolished contigs from graph");
 
     // Step 8: Align reads back to graph. TODO consensus and etc.
     let mut get_seq_config = types::GetSequenceInfoConfig::default();
@@ -123,7 +143,7 @@ fn main() {
     mapping::map_to_dereplicate(&mut contig_graph, &kmer_info, &twin_reads, &mapping_dir, &args);
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
-    log_memory_usage(true, "STAGE 4: Obtained unpolished contigs");
+    log_memory_usage(true, "STAGE 4.5: Dereplicated spurious contigs");
     contig_graph.print_statistics(&args);
 
     if log::log_enabled!(log::Level::Trace) || !args.clean_dir {
