@@ -662,7 +662,7 @@ pub fn get_overlaps_outer_reads_twin(twin_reads: &[TwinRead], outer_read_indices
     for outer_index_batch in outer_index_batches{
         let outer_twin_reads_batch = outer_index_batch.iter().map(|x| (*x, &twin_reads[*x])).collect::<FxHashMap<_,_>>();
         let inverted_index = get_minimizer_index(None, Some(&outer_twin_reads_batch));
-        outer_read_indices.into_par_iter().for_each(|&i| { 
+        outer_read_indices.into_par_iter().for_each(|&i| {
             let read = &twin_reads[i];
             let mini_anchors = find_exact_matches_with_full_index(&read.minimizers_vec_strand(), &inverted_index, None, Some(&outer_twin_reads_batch));
 

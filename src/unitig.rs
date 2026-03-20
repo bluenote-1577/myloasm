@@ -1913,6 +1913,7 @@ impl UnitigGraph {
         safe_length_back: usize,
         safety_cov_edge_ratio: Option<f64>,
         removed_edges: &R,
+        dfs_back_search: bool,
     ) -> bool {
         //Special case for circular contigs; we can cut the circular edge
         // if the contig looks like
@@ -1927,56 +1928,65 @@ impl UnitigGraph {
             }
         }
 
-        let max_length_forward_search = max_forward;
         let length_back_safe = safe_length_back;
         let mut safe = false;
 
         let mut seen_nodes = FxHashSet::default();
-        let mut to_search = VecDeque::new();
+        // Stack entries: (node, direction, path_length_so_far, path_reads_so_far)
+        let mut to_search: VecDeque<(NodeIndex, Direction, usize, usize)> = VecDeque::new();
 
         let other_node = starting_edge.other_node(starting_unitig.node_hash_id);
         let other_node_back_dir = starting_edge.node_edge_direction(&other_node);
 
-        //Node and back-direction
-        to_search.push_back((other_node, other_node_back_dir));
+        to_search.push_front((other_node, other_node_back_dir, 0, 0));
         seen_nodes.insert(starting_unitig.node_hash_id);
-        let mut travelled = 0;
-        let mut travelled_reads = 0;
 
         let mut forbidden_nodes = FxHashSet::default();
         forbidden_nodes.insert(starting_unitig.node_hash_id);
+        let mut bound_hit = false;
 
         //Search forward until a node has sufficient "backing"
-        while travelled < max_length_forward_search && travelled_reads < max_reads_forward {
-
-            // Allow cutting small tips that have search length < max_length_forward_search and
-            // # of reads < max_reads_forward
-            if to_search.len() == 0 {
-                safe = true;
-                break;
-            }
-
-            let (node, direction) = to_search.pop_front().unwrap();
-            //println!("DBG! {}", node);
+        while let Some((node, direction, path_len, path_reads)) = to_search.pop_front() {
             if seen_nodes.contains(&node) {
                 continue;
             }
             seen_nodes.insert(node);
             let unitig = &self.nodes[&node];
 
+            let new_path_len = path_len + unitig.unique_length.unwrap();
+            let new_path_reads = path_reads + unitig.read_indices_ori.len();
+
             //Check if the node has sufficient "backing"
-            let back_found = self.search_dir_until_safe(
-                unitig,
-                direction,
-                length_back_safe,
-                safety_cov_edge_ratio,
-                &forbidden_nodes,
-                removed_edges,
-                Some((starting_unitig, starting_edge)),
-            );
+            let back_found = if dfs_back_search {
+                self.search_dir_until_safe_v2(
+                    unitig,
+                    direction,
+                    length_back_safe,
+                    safety_cov_edge_ratio,
+                    &forbidden_nodes,
+                    removed_edges,
+                    Some((starting_unitig, starting_edge)),
+                )
+            } else {
+                self.search_dir_until_safe(
+                    unitig,
+                    direction,
+                    length_back_safe,
+                    safety_cov_edge_ratio,
+                    &forbidden_nodes,
+                    removed_edges,
+                    Some((starting_unitig, starting_edge)),
+                )
+            };
             if back_found {
                 safe = true;
                 break;
+            }
+
+            // Only expand this node's forward neighbours if we haven't exceeded the bounds
+            if new_path_len >= max_forward || new_path_reads >= max_reads_forward {
+                bound_hit = true;
+                continue;
             }
 
             forbidden_nodes.insert(node);
@@ -1990,11 +2000,14 @@ impl UnitigGraph {
                 }
                 let f_edge = self.edges[f_edge].as_ref().unwrap();
                 let f_node = f_edge.other_node(node);
-                to_search.push_front((f_node, f_edge.node_edge_direction(&f_node)));
+                to_search.push_front((f_node, f_edge.node_edge_direction(&f_node), new_path_len, new_path_reads));
             }
+        }
 
-            travelled_reads += unitig.read_indices_ori.len();
-            travelled += unitig.unique_length.unwrap();
+        // If we exhausted the forward neighbourhood without hitting any path bound, the downstream
+        // side is a small tip — allow cutting small tips.
+        if !safe && !bound_hit {
+            safe = true;
         }
 
         return safe;
@@ -2327,6 +2340,73 @@ impl UnitigGraph {
         return achieved_length;
     }
 
+    // DFS-based variant: dives deep along one branch first, accumulating path length.
+    // Returns true as soon as any path from `unitig` in `direction` exceeds `safe_length_back`.
+    fn search_dir_until_safe_v2<R: RemovedEdgeSet>(
+        &self,
+        unitig: &UnitigNode,
+        direction: Direction,
+        safe_length_back: usize,
+        safety_cov_edge_ratio: Option<f64>,
+        forbidden_nodes: &FxHashSet<NodeIndex>,
+        removed_edges: &R,
+        starting_node_edge: Option<(&UnitigNode, &UnitigEdge)>,
+    ) -> bool {
+        // Stack entries: (node, direction_to_traverse, accumulated_length_so_far)
+        let mut stack: Vec<(NodeIndex, Direction, usize)> = Vec::new();
+        let mut visited: FxHashSet<NodeIndex> = FxHashSet::default();
+
+        stack.push((unitig.node_hash_id, direction, 0));
+
+        while let Some((node, dir, acc)) = stack.pop() {
+            if visited.contains(&node) {
+                continue;
+            }
+            visited.insert(node);
+
+            let edges = self.get_safe_edges_from_cov_threshold(
+                self.nodes[&node].edges_direction(&dir),
+                safety_cov_edge_ratio,
+            );
+
+            for edge_id in edges {
+                let edge = self.edges[edge_id].as_ref().unwrap();
+                let other_node = edge.other_node(node);
+
+                // Circular condition: same as v1
+                if let Some((start_node, start_edge)) = starting_node_edge {
+                    if start_node.node_hash_id == other_node {
+                        let direction_start =
+                            start_edge.node_edge_direction(&start_node.node_hash_id);
+                        let direction_search = edge.node_edge_direction(&other_node);
+                        if direction_start != direction_search {
+                            assert!(start_node.base_info_present());
+                            if start_node.base_info.length > safe_length_back {
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                if forbidden_nodes.contains(&other_node)
+                    || removed_edges.contains_edge(edge_id)
+                    || visited.contains(&other_node)
+                {
+                    continue;
+                }
+
+                let other_unitig = &self.nodes[&other_node];
+                let new_acc = acc + other_unitig.base_info.length;
+                if new_acc > safe_length_back {
+                    return true;
+                }
+                let other_dir = edge.node_edge_direction(&other_node).reverse();
+                stack.push((other_node, other_dir, new_acc));
+            }
+        }
+        false
+    }
+
     //Assume that the graph has not been blunted.
     fn get_unique_lengths(&mut self) {
         for node in self.nodes.values_mut() {
@@ -2628,19 +2708,32 @@ impl UnitigGraph {
             }
 
             // ----- CONDITION 4 ----- (Not self-tipping condition)
-            // If we cut this edge, the "current" unitig must not be a tip. 
+            // If we cut this edge, the "current" unitig must not be a tip.
             let mut forward_search_forbidden_nodes = FxHashSet::default();
             forward_search_forbidden_nodes.insert(unitig.node_hash_id);
             forward_search_forbidden_nodes.insert(edge.other_node(unitig.node_hash_id));
-            let mut safe_if_cut = self.search_dir_until_safe(
-                unitig,
-                direction,
-                safe_length_back,
-                safety_cov_edge_ratio,
-                &forward_search_forbidden_nodes,
-                removed_edges,
-                Some((unitig, edge)),
-            );
+            let mut safe_if_cut = if args.dfs_back_search {
+                self.search_dir_until_safe_v2(
+                    unitig,
+                    direction,
+                    safe_length_back,
+                    safety_cov_edge_ratio,
+                    &forward_search_forbidden_nodes,
+                    removed_edges,
+                    Some((unitig, edge)),
+                )
+            } else {
+                self.search_dir_until_safe(
+                    unitig,
+                    direction,
+                    safe_length_back,
+                    safety_cov_edge_ratio,
+                    &forward_search_forbidden_nodes,
+                    removed_edges,
+                    Some((unitig, edge)),
+                )
+            };
+            //log::debug!("Condition 4 took {:?}", t4.elapsed());
 
             // ----- CONDITION 4.5 ----- (Small circularity condition)
             // The above condition can fail for small circular unitigs (< safe_length_back) 
@@ -2671,7 +2764,7 @@ impl UnitigGraph {
             }
 
             // ----- CONDITION 5 ----- (Forward and back search condition)
-            // Main search criteria. If the edge is cut, we can the downstream unitig (not current unitig) is not a "tip".
+            // Main search criteria. If the edge is cut, the downstream unitig (not current unitig) is not a "tip".
             let safe = self.safe_given_forward_back(
                 unitig,
                 edge,
@@ -2680,7 +2773,9 @@ impl UnitigGraph {
                 safe_length_back,
                 safety_cov_edge_ratio,
                 removed_edges,
+                args.dfs_back_search,
             );
+            //log::debug!("Condition 5 took {:?}", t5.elapsed());
 
             let mut is_cut = false;
             if (safe || strain_repeat_safe)
@@ -3427,6 +3522,18 @@ mod tests {
         return args;
     }
 
+    /// Run `test_fn` twice: once with the BFS back-search (v1) and once with the DFS back-search (v2).
+    /// Use this in place of `get_reasonable_args()` for any test that exercises `safely_cut_edge`.
+    fn for_both_versions(test_fn: impl Fn(Cli)) {
+        let mut args_v1 = get_reasonable_args();
+        args_v1.dfs_back_search = false;
+        test_fn(args_v1);
+
+        let mut args_v2 = get_reasonable_args();
+        args_v2.dfs_back_search = true;
+        test_fn(args_v2);
+    }
+
     impl MockUnitigBuilder {
         fn new() -> Self {
             Self {
@@ -4040,8 +4147,8 @@ mod tests {
             5,    // max_reads_forward
             1000, // safe_length_back
             None,
-            //&FxHashSet::default(),
             &RefCell::new(FxHashSet::default()),
+            false,
         );
 
         assert!(result);
@@ -4054,7 +4161,8 @@ mod tests {
             5,    // max_reads_forward
             1000, // safe_length_back
             None,
-            &RefCell::new(FxHashSet::default())
+            &RefCell::new(FxHashSet::default()),
+            false,
         );
 
         assert!(!result);
@@ -4097,6 +4205,7 @@ mod tests {
                 100000, // safe_length_back
                 None,
                 &RefCell::new(FxHashSet::default()),
+                false,
             );
             assert!(result);
         }
@@ -4131,6 +4240,7 @@ mod tests {
             10000, // safe_length_back
             None,
             &RefCell::new(FxHashSet::default()),
+            false,
         );
 
         assert!(result);
@@ -4138,140 +4248,75 @@ mod tests {
 
     #[test]
     fn safely_cut_edge_test_basic_x() {
-        let mut builder = MockUnitigBuilder::new();
-
         // Make sure not to cut the safe edge after multiple iterations
         //   1k
         // 1 ---> 2
         //    X    (3->2 : 10k), (3->2 : 1k)
         // 3 ---> 4
         //   10k
+        for_both_versions(|args| {
+            let mut builder = MockUnitigBuilder::new();
+            let n1 = builder.add_node(100, 10.0);
+            let n2 = builder.add_node(100, 10.0);
+            let n3 = builder.add_node(100, 10.0);
+            let n4 = builder.add_node(100, 10.0);
 
-        let n1 = builder.add_node(100, 10.0);
-        let n2 = builder.add_node(100, 10.0);
-        let n3 = builder.add_node(100, 10.0);
-        let n4 = builder.add_node(100, 10.0);
+            builder.add_edge(n1, n2, 1000, true, true);
+            builder.add_edge(n1, n4, 10000, true, true);
+            builder.add_edge(n3, n4, 10000, true, true);
+            builder.add_edge(n3, n2, 1000, true, true);
 
-        builder.add_edge(n1, n2, 1000, true, true);
-        builder.add_edge(n1, n4, 10000, true, true);
-        builder.add_edge(n3, n4, 10000, true, true);
-        builder.add_edge(n3, n2, 1000, true, true);
+            let (graph, _reads) = builder.build();
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::sink());
 
-        let (graph, _reads) = builder.build();
+            for edge_id in [0, 3, 2, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, None, None, None, false, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
 
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        //let mut unitig_edge_file = BufWriter::new(std::fs::File::create("unitig_edge_file").unwrap());
-        //create empty mock file
-        let mut unitig_edge_file = BufWriter::new(std::io::sink());
-
-        //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
-        let edge_order = vec![0, 3, 2, 1];
-
-        let args = get_reasonable_args();
-
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                None,
-                None,
-                None,
-                false,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        assert!(removed_edges.borrow().contains(&0));
-        assert!(!removed_edges.borrow().contains(&3));
+            assert!(removed_edges.borrow().contains(&0));
+            assert!(!removed_edges.borrow().contains(&3));
+        });
     }
 
     #[test]
     fn safely_cut_edge_test_basic_x_fsv_safety() {
-        let mut builder = MockUnitigBuilder::new();
+        for_both_versions(|args| {
+            let mut builder = MockUnitigBuilder::new();
+            let n1 = builder.add_node(100, 10.0);
+            let n2 = builder.add_node(100, 10.0);
+            let n3 = builder.add_node(100, 10.0);
+            let n4 = builder.add_node(100, 10.0);
 
-        // Make sure not to cut the safe edge after multiple iterations
-        //   1k
-        // 1 ---> 2
-        //    X    (3->2 : 10k), (3->2 : 1k)
-        // 3 ---> 4
-        //   10k
+            let e1 = builder.add_edge(n1, n2, 10000, true, true);
+            builder.add_edge(n1, n4, 2000, true, true);
+            builder.add_edge(n3, n2, 2000, true, true);
+            let e4 = builder.add_edge(n3, n4, 10000, true, true);
+            builder.edges[e1].as_mut().unwrap().overlap.diff_snpmers = 10;
+            builder.edges[e4].as_mut().unwrap().overlap.diff_snpmers = 10;
 
-        let n1 = builder.add_node(100, 10.0);
-        let n2 = builder.add_node(100, 10.0);
-        let n3 = builder.add_node(100, 10.0);
-        let n4 = builder.add_node(100, 10.0);
+            let (graph, _reads) = builder.build();
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::sink());
 
-        let e1 = builder.add_edge(n1, n2, 10000, true, true);
-        builder.add_edge(n1, n4, 2000, true, true);
-        builder.add_edge(n3, n2, 2000, true, true);
-        let e4 = builder.add_edge(n3, n4, 10000, true, true);
-        builder.edges[e1].as_mut().unwrap().overlap.diff_snpmers = 10;
-        builder.edges[e4].as_mut().unwrap().overlap.diff_snpmers = 10;
+            for edge_id in [0, 3, 2, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, None, None, None, true, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            assert!(removed_edges.borrow().len() == 0);
 
-        let (graph, _reads) = builder.build();
-
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        let mut unitig_edge_file = BufWriter::new(std::io::sink());
-
-        let edge_order = vec![0, 3, 2, 1];
-        let args = get_reasonable_args();
-
-        for edge_id in edge_order.iter() {
-            graph.safely_cut_edge(
-                *edge_id,
-                &removed_edges,
-                0.5,
-                None,
-                None,
-                None,
-                true,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        assert!(removed_edges.borrow().len() == 0);
-
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                None,
-                None,
-                None,
-                false,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        assert!(removed_edges.borrow().len() == 2);
+            for edge_id in [0, 3, 2, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, None, None, None, false, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            assert!(removed_edges.borrow().len() == 2);
+        });
     }
 
     #[test]
     fn nanopore_rescue_cut() {
-        let mut builder = MockUnitigBuilder::new();
-
-        // Make sure not to cut the safe edge after multiple iterations
         // 1 ---> 2
-        //  (1->4)    
+        //  (1->4)
         // 3 ---> 4
-
+        let mut builder = MockUnitigBuilder::new();
         let n1 = builder.add_node(100, 10.0);
         let n2 = builder.add_node(100, 10.0);
         let n3 = builder.add_node(100, 10.0);
@@ -4286,271 +4331,150 @@ mod tests {
 
         let (graph, _reads) = builder.build();
 
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        let mut unitig_edge_file = BufWriter::new(std::io::sink());
+        for_both_versions(|args| {
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::sink());
 
-        let edge_order = vec![0, 3, 2, 1];
-        let args = get_reasonable_args();
-
-        for edge_id in edge_order.iter() {
-            graph.safely_cut_edge(
-                *edge_id,
-                &removed_edges,
-                0.5,
-                None,
-                None,
-                None,
-                true,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        dbg!(&*removed_edges.borrow());
-        assert!(removed_edges.borrow().len() == 1);
+            for edge_id in [0, 3, 2, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, None, None, None, true, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            dbg!(&*removed_edges.borrow());
+            assert!(removed_edges.borrow().len() == 1);
+        });
     }
 
     #[test]
     fn safely_cut_edge_test_basic_x_cov() {
-        let mut builder = MockUnitigBuilder::new();
-
         // Make sure not to cut the safe edge after multiple iterations
         //          1k
         // 1 (100x) ---> 2 (10x)
         //           X
         // 3 (10x) ---> 4 (100x)
         //          10k
+        for_both_versions(|args| {
+            let mut builder = MockUnitigBuilder::new();
+            let n1 = builder.add_node(100, 100.0);
+            let n2 = builder.add_node(100, 10.0);
+            let n3 = builder.add_node(100, 10.0);
+            let n4 = builder.add_node(100, 100.0);
 
-        let n1 = builder.add_node(100, 100.0);
-        let n2 = builder.add_node(100, 10.0);
-        let n3 = builder.add_node(100, 10.0);
-        let n4 = builder.add_node(100, 100.0);
+            builder.add_edge(n1, n2, 1000, true, true);
+            builder.add_edge(n1, n4, 10000, true, true);
+            builder.add_edge(n3, n4, 10000, true, true);
+            builder.add_edge(n3, n2, 1000, true, true);
 
-        builder.add_edge(n1, n2, 1000, true, true);
-        builder.add_edge(n1, n4, 10000, true, true);
-        builder.add_edge(n3, n4, 10000, true, true);
-        builder.add_edge(n3, n2, 1000, true, true);
+            let (graph, _reads) = builder.build();
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::sink());
 
-        let (graph, _reads) = builder.build();
+            for edge_id in [0, 3, 2, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, Some(3.), None, None, false, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            assert!(removed_edges.borrow().contains(&0));
+            assert!(!removed_edges.borrow().contains(&3));
 
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        //let mut unitig_edge_file = BufWriter::new(std::fs::File::create("unitig_edge_file").unwrap());
-        //create empty mock file
-        let mut unitig_edge_file = BufWriter::new(std::io::sink());
+            removed_edges.borrow_mut().clear();
 
-        //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
-        let edge_order = vec![0, 3, 2, 1];
-        let args = get_reasonable_args();
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                Some(3.),
-                None,
-                None,
-                false,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        assert!(removed_edges.borrow().contains(&0));
-        assert!(!removed_edges.borrow().contains(&3));
-
-        removed_edges.borrow_mut().clear();
-
-        // Edge 1 is cut due to cov, edge 0 is cut due to ol ratio and cov and is compatible
-        let edge_order = vec![1, 2, 3, 0];
-        let args = get_reasonable_args();
-
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                Some(3.),
-                None,
-                None,
-                false,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        dbg!(&*removed_edges.borrow());
-
-        assert!(removed_edges.borrow().contains(&0));
-        assert!(removed_edges.borrow().contains(&2));
-        assert!(!removed_edges.borrow().contains(&1));
-        assert!(!removed_edges.borrow().contains(&3));
+            // Edge 1 is cut due to cov, edge 0 is cut due to ol ratio and cov and is compatible
+            for edge_id in [1, 2, 3, 0] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, Some(3.), None, None, false, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            dbg!(&*removed_edges.borrow());
+            assert!(removed_edges.borrow().contains(&0));
+            assert!(removed_edges.borrow().contains(&2));
+            assert!(!removed_edges.borrow().contains(&1));
+            assert!(!removed_edges.borrow().contains(&3));
+        });
     }
 
     #[test]
     fn safely_cut_edge_test_dont_cut_if_supp_tip() {
-        let mut builder = MockUnitigBuilder::new();
-
         // Make sure not to cut the "safe" edge if it is supported by a tip
         //
         // 1 ---> 2
         //  (3->2)  (small edge)
         // 3 ---> 4 (tip)
         //          10k
+        for_both_versions(|args| {
+            let mut builder = MockUnitigBuilder::new();
+            let n1 = builder.add_node(100, 10.0);
+            let n2 = builder.add_node(100, 10.0);
+            let n3 = builder.add_node(100, 10.0);
+            let n4 = builder.add_node(1, 10.0);
 
-        let n1 = builder.add_node(100, 10.0);
-        let n2 = builder.add_node(100, 10.0);
-        let n3 = builder.add_node(100, 10.0);
-        let n4 = builder.add_node(1, 10.0);
+            builder.add_edge(n1, n2, 10000, true, true);
+            builder.add_edge(n3, n4, 10000, true, true);
+            builder.add_edge(n3, n2, 1000, true, true);
 
-        builder.add_edge(n1, n2, 10000, true, true);
-        builder.add_edge(n3, n4, 10000, true, true);
-        builder.add_edge(n3, n2, 1000, true, true);
+            let (graph, _reads) = builder.build();
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::sink());
 
-        let (graph, _reads) = builder.build();
-
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        //let mut unitig_edge_file = BufWriter::new(std::fs::File::create("unitig_edge_file").unwrap());
-        //create empty mock file
-        let mut unitig_edge_file = BufWriter::new(std::io::sink());
-
-        //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
-        let edge_order = vec![2, 0, 1];
-
-        let args = get_reasonable_args();
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                Some(3.),
-                None,
-                None,
-                false,
-                2000,
-                5,
-                2000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        dbg!(&*removed_edges.borrow());
-        assert!(!removed_edges.borrow().contains(&2));
-
-        removed_edges.borrow_mut().clear();
+            for edge_id in [2, 0, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, Some(3.), None, None, false, 2000, 5, 2000, &mut unitig_edge_file, 9, &args);
+            }
+            dbg!(&*removed_edges.borrow());
+            assert!(!removed_edges.borrow().contains(&2));
+        });
     }
 
     #[test]
     fn safely_cut_edge_test_circular_contig_tip() {
-        let mut builder = MockUnitigBuilder::new();
-
         // 1 ---> 1 (circular)
         // |  |
         // 2  3 (large)
-        let args = get_reasonable_args();
+        for_both_versions(|args| {
+            let mut builder = MockUnitigBuilder::new();
+            let n1 = builder.add_node(100, 100.0);
+            let n2 = builder.add_node(1, 10.0);
+            let n3 = builder.add_node(1, 100.0);
 
-        let n1 = builder.add_node(100, 100.0);
-        let n2 = builder.add_node(1, 10.0);
-        let n3 = builder.add_node(1, 100.0);
+            builder.add_edge(n1, n1, 10000, true, true);
+            builder.add_edge(n1, n2, 1000, true, true);
+            builder.add_edge(n1, n3, 8000, true, true);
 
-        builder.add_edge(n1, n1, 10000, true, true);
-        builder.add_edge(n1, n2, 1000, true, true);
-        builder.add_edge(n1, n3, 8000, true, true);
+            let (graph, _reads) = builder.build();
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::stdout());
 
-        let (graph, _reads) = builder.build();
-
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        let mut unitig_edge_file = BufWriter::new(std::io::stdout());
-
-        //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
-        let edge_order = vec![1, 0];
-
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                Some(3.),
-                None,
-                None,
-                false,
-                2000,
-                5,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        assert!(removed_edges.borrow().contains(&1));
-        assert!(!removed_edges.borrow().contains(&0));
-        assert!(!removed_edges.borrow().contains(&2));
+            for edge_id in [1, 0] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, Some(3.), None, None, false, 2000, 5, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            assert!(removed_edges.borrow().contains(&1));
+            assert!(!removed_edges.borrow().contains(&0));
+            assert!(!removed_edges.borrow().contains(&2));
+        });
     }
 
     #[test]
     fn safely_cut_edge_test_circular_tip() {
-        let mut builder = MockUnitigBuilder::new();
-        let args = get_reasonable_args();
-
         // 1 ----> 2
         // |
         // 3
         // |
         // 4 (-> 4 self loop)
-        //
+        for_both_versions(|args| {
+            let mut builder = MockUnitigBuilder::new();
+            let n1 = builder.add_node(100, 100.0);
+            let n2 = builder.add_node(100, 100.0);
+            let n3 = builder.add_node(1, 10.0);
+            let n4 = builder.add_node(2, 10.0);
 
-        let n1 = builder.add_node(100, 100.0);
-        let n2 = builder.add_node(100, 100.0);
-        let n3 = builder.add_node(1, 10.0);
-        let n4 = builder.add_node(2, 10.0);
+            builder.add_edge(n1, n2, 10000, true, true);
+            builder.add_edge(n1, n3, 1000, true, true);
+            builder.add_edge(n3, n4, 3000, true, true);
+            builder.add_edge(n4, n4, 3000, true, true);
 
-        builder.add_edge(n1, n2, 10000, true, true);
-        builder.add_edge(n1, n3, 1000, true, true);
-        builder.add_edge(n3, n4, 3000, true, true);
-        builder.add_edge(n4, n4, 3000, true, true);
+            let (graph, _reads) = builder.build();
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::stdout());
 
-        let (graph, _reads) = builder.build();
-
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        let mut unitig_edge_file = BufWriter::new(std::io::stdout());
-
-        //Cut 0 (ol 1000) but don't cut 1 (ol 1000)
-        let edge_order = vec![0, 1];
-
-        for edge_id in edge_order {
-            graph.safely_cut_edge(
-                edge_id,
-                &removed_edges,
-                0.5,
-                Some(3.),
-                None,
-                None,
-                false,
-                20000,
-                20,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        assert!(removed_edges.borrow().contains(&1));
-        assert!(removed_edges.borrow().len() == 1)
+            for edge_id in [0, 1] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, Some(3.), None, None, false, 20000, 20, 1000, &mut unitig_edge_file, 9, &args);
+            }
+            assert!(removed_edges.borrow().contains(&1));
+            assert!(removed_edges.borrow().len() == 1);
+        });
     }
 
     #[test]
@@ -4590,36 +4514,21 @@ mod tests {
         repeats.insert(n4);
         strain_repeat_map.insert(n5, repeats);
 
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        let mut unitig_edge_file = BufWriter::new(std::io::stdout());
+        for_both_versions(|args| {
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::stdout());
 
-        let edges = vec![0, 1, 2, 3, 4, 5];
-        let args = get_reasonable_args();
-        // Test safely_cut_edge with strain_repeat_safety
-        for edge in edges {
-            graph.safely_cut_edge(
-                edge, // edge_id
-                &removed_edges,
-                1.01,
-                None,
-                None,
-                Some(&strain_repeat_map),
-                false,
-                2000,
-                5,
-                1000000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
+            // Test safely_cut_edge with strain_repeat_safety
+            for edge in [0, 1, 2, 3, 4, 5] {
+                graph.safely_cut_edge(edge, &removed_edges, 1.01, None, None, Some(&strain_repeat_map), false, 2000, 5, 1000000, &mut unitig_edge_file, 9, &args);
+            }
 
-        dbg!(&*removed_edges.borrow(), &strain_repeat_map);
-
-        assert!(removed_edges.borrow().contains(&0));
-        assert!(removed_edges.borrow().contains(&2));
-        assert!(removed_edges.borrow().contains(&3));
-        assert!(removed_edges.borrow().len() == 3);
+            dbg!(&*removed_edges.borrow(), &strain_repeat_map);
+            assert!(removed_edges.borrow().contains(&0));
+            assert!(removed_edges.borrow().contains(&2));
+            assert!(removed_edges.borrow().contains(&3));
+            assert!(removed_edges.borrow().len() == 3);
+        });
     }
 
 
@@ -5277,39 +5186,25 @@ mod tests {
 
         let (graph, _reads) = builder.build();
 
-        let mut unitig_edge_file = BufWriter::new(std::io::stdout());
-        let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
-        let args = get_reasonable_args();
+        for_both_versions(|args| {
+            let removed_edges = RefCell::new(FxHashSet::<EdgeIndex>::default());
+            let mut unitig_edge_file = BufWriter::new(std::io::stdout());
 
-        //Realistic cut parameters for genome assembly
-        for edge_id in [cut1, cut2, cut3]{
-            graph.safely_cut_edge(
-                edge_id, // edge_id
-                &removed_edges,
-                0.5,
-                None,
-                None,
-                None,
-                false,
-                100_000,
-                20,
-                1000,
-                &mut unitig_edge_file,
-                9,
-                &args
-            );
-        }
-
-        {
-            let re = removed_edges.borrow();
-            for edge_id in re.iter(){
-                dbg!(edge_id, &graph.edges[*edge_id].as_ref().unwrap().from_unitig, &graph.edges[*edge_id].as_ref().unwrap().to_unitig);
+            //Realistic cut parameters for genome assembly
+            for edge_id in [cut1, cut2, cut3] {
+                graph.safely_cut_edge(edge_id, &removed_edges, 0.5, None, None, None, false, 100_000, 20, 1000, &mut unitig_edge_file, 9, &args);
             }
-        }
 
-        assert!(removed_edges.borrow().contains(&cut1));
-        assert!(removed_edges.borrow().contains(&cut2));
-        assert!(removed_edges.borrow().contains(&cut3));
+            {
+                let re = removed_edges.borrow();
+                for edge_id in re.iter() {
+                    dbg!(edge_id, &graph.edges[*edge_id].as_ref().unwrap().from_unitig, &graph.edges[*edge_id].as_ref().unwrap().to_unitig);
+                }
+            }
+            assert!(removed_edges.borrow().contains(&cut1));
+            assert!(removed_edges.borrow().contains(&cut2));
+            assert!(removed_edges.borrow().contains(&cut3));
+        });
     }
 
     #[test]

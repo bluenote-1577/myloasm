@@ -136,7 +136,7 @@ fn main() {
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
     // Step 8.5: Dereplicate small contigs
-    log::info!("Dereplicating spurious contigs...");
+    log_memory_usage(true, "Dereplicating spurious contigs...");
     let mapping_dir = Path::new(&args.output_dir).join("3-mapping");
     std::fs::create_dir_all(&mapping_dir).expect("Could not create temp directory for mapping");
 

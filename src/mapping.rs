@@ -1339,8 +1339,6 @@ pub fn map_reads_to_outer_reads_efficient(
 
         log::info!("Finished mapping batch {}/{} to outer reads. Splitting chimeras...", batch_index + 1, outer_read_chunks.len());
 
-        drop(mini_index);
-
         let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
 
         // Process each outer read immediately to compute split plan and free memory
@@ -1557,8 +1555,6 @@ pub fn map_reads_to_outer_reads(
             }
         });
 
-        drop(mini_index);
-
         let mapping_local_boundaries_map = mapping_local_boundaries_map.into_inner().unwrap();
         let mut mapping_maximal_boundaries = mapping_maximal_boundaries.into_inner().unwrap();
 
@@ -1659,6 +1655,7 @@ pub fn map_to_dereplicate(
 
     //Convert unitigs to twinreads
     let mut tr_unitigs = unitigs_to_tr(unitig_graph, &snpmer_set, &kmer_info.solid_kmers, &kmer_info.high_freq_kmers, args);
+    drop(snpmer_set);
     let contained_contigs = Mutex::new(FxHashSet::default());
     
     //Put low abund unitigs into contained contigs
@@ -1690,18 +1687,31 @@ pub fn map_to_dereplicate(
 
     let mean_length: f64 = tr_unitigs.values().map(|tr| tr.base_length as f64).sum::<f64>() / tr_unitigs.len() as f64;
     log::info!("Initializing index for dereplication. {} unitigs with mean length {:.2} pass abundance thresholds.", tr_unitigs.len(), mean_length);
-    let mini_index = get_minimizer_index(None, Some(&unitigs_to_index));
+    let mini_index_std_derep;
+    let mini_index_mph_derep;
+    if args.use_mph {
+        mini_index_mph_derep = Some(crate::mphmap::get_minimizer_index_mph(None, Some(&unitigs_to_index)));
+        mini_index_std_derep = None;
+    } else {
+        mini_index_std_derep = Some(get_minimizer_index(None, Some(&unitigs_to_index)));
+        mini_index_mph_derep = None;
+    }
+    let use_mph_derep = args.use_mph;
 
-    log::debug!("Built minimizer index of size {}", mini_index.len());
+    log::debug!("Built minimizer index");
     log_memory_usage(true, "Mapping unitigs to each other for dereplication...");
     tr_unitigs.par_iter().for_each(|(q_id, q_unitig)| {
-        
+
         let mut tr_options = CompareTwinReadOptions::default();
         tr_options.read1_snpmers = Some(q_unitig.snpmers_vec_strand());
         tr_options.retain_chain = true;
 
         let mini = q_unitig.minimizers_vec_strand();
-        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, Some(&tr_unitigs), None);
+        let mini_anchors = if use_mph_derep {
+            crate::mphmap::find_exact_matches_with_full_index_mph(&mini, mini_index_mph_derep.as_ref().unwrap())
+        } else {
+            find_exact_matches_with_full_index(&mini, mini_index_std_derep.as_ref().unwrap(), Some(&tr_unitigs), None)
+        };
         let mut mini_anchor_sorted_indices = mini_anchors.keys().cloned().collect::<Vec<_>>();
         mini_anchor_sorted_indices.sort_by_key(|x| mini_anchors[x].anchors.len());
         mini_anchor_sorted_indices.reverse();
@@ -1869,8 +1879,19 @@ pub fn map_reads_to_unitigs(
     let num_chunks = (tr_unitig_keys.len() + chunk_size - 1) / chunk_size.max(1);
     for (chunk_idx, key_chunk) in tr_unitig_keys.chunks(chunk_size.max(1)).enumerate() {
         let tr_chunk: FxHashMap<usize, &TwinRead> = key_chunk.iter().map(|k| (*k, &tr_unitigs[k])).collect();
-        let mini_index = get_minimizer_index(None, Some(&tr_chunk));
         let counter = Mutex::new(0_usize);
+
+        // Build minimizer index — either standard FxHashMap or MPHF.
+        let mini_index_std;
+        let mini_index_mph;
+        let use_mph = args.use_mph;
+        if use_mph {
+            mini_index_mph = Some(crate::mphmap::get_minimizer_index_mph(None, Some(&tr_chunk)));
+            mini_index_std = None;
+        } else {
+            mini_index_std = Some(get_minimizer_index(None, Some(&tr_chunk)));
+            mini_index_mph = None;
+        }
 
         log_memory_usage(true, &format!("Built unitig index chunk {}/{}: starting alignments", chunk_idx + 1, num_chunks));
 
@@ -1884,7 +1905,11 @@ pub fn map_reads_to_unitigs(
         tr_options.maximal_only = true;
 
         let mini = read.minimizers_vec_strand();
-        let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, None);
+        let mini_anchors = if use_mph {
+            crate::mphmap::find_exact_matches_with_full_index_mph(&mini, mini_index_mph.as_ref().unwrap())
+        } else {
+            find_exact_matches_with_full_index(&mini, mini_index_std.as_ref().unwrap(), None, None)
+        };
         let mut unitig_hits = vec![];
 
         for (contig_id, anchors) in mini_anchors.iter() {

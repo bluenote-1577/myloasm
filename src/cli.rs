@@ -50,9 +50,17 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub kmc_db: Option<String>, 
 
-    /// ALPHA MODE FOR SELECT USERS (only for read-to-unitig mapping stage right now). May make polishing slightly worse, but not necessarily bad. 
+    /// ALPHA MODE FOR SELECT USERS (only for read-to-unitig mapping stage right now). May make polishing slightly worse, but not necessarily bad.
     #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub low_mem: bool,
+
+    /// Use DFS-based back-safety search in graph cleaning (v2). Default is BFS-based (v1).
+    #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub dfs_back_search: bool,
+
+    /// Use a minimal perfect hash map for the minimizer index (experimental).
+    #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub use_mph: bool,
 
         
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
@@ -72,7 +80,7 @@ pub struct Cli {
     pub aggressive_bloom: bool,
 
     /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
-    #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[1], hide = true)]
+    #[arg(long, default_value_t=true, help_heading = CLI_HEADINGS[1], hide = true)]
     pub new_polish_trimming: bool,
 
     /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex metagenomes. 
