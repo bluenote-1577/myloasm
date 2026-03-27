@@ -13,4 +13,4 @@ See the [documentation](https://myloasm-docs.github.io/) for more information.
 
 ### Citation
 
-Jim Shaw, Maximillian Marin, and Heng Li. [High-resolution metagenome assembly for modern long reads with myloasm](https://www.biorxiv.org/content/10.1101/2025.09.05.674543v1). bioRxiv (2025).
+Jim Shaw, Maximillian Marin, and Heng Li. [High-resolution metagenome assembly for modern long reads with myloasm](https://www.biorxiv.org/content/10.1101/2025.09.05.674543v1). Nature Biotechnology (2025).
