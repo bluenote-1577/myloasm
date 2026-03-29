@@ -124,8 +124,13 @@ impl PoaConsensusBuilder {
                 sorted_indices.sort_by_key(|x| -x.1);
                 let mut sorted_indices = sorted_indices.into_iter().map(|x| x.0).collect::<Vec<_>>();
                 if seqs.len() > 20{
-                    let trim = seqs.len()  / 20;
-                    sorted_indices = sorted_indices[..sorted_indices.len() - trim].to_vec();
+                    let trim = sorted_indices.len()  / 20;
+                    if sorted_indices.len() > 10{
+                        sorted_indices = sorted_indices[..sorted_indices.len() - trim].to_vec();
+                    }
+                    else{
+                        log::debug!("Many low quality sequences ({}) for block {} of contig {}, proceeding with available sequences", seqs.len() - sorted_indices.len(), i, self.contig_name);
+                    }
                 }
 
                 let mut seqs = sorted_indices
