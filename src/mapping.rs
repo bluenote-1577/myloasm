@@ -1874,7 +1874,7 @@ pub fn map_reads_to_unitigs(
     let mapping_boundaries_map = Mutex::new(FxHashMap::default());
     let num_reads = twin_reads.len();
 
-    let chunk_size = if args.low_mem { tr_unitigs.len() / 3 + 1 } else { tr_unitigs.len() };
+    let chunk_size = tr_unitigs.len();
     let tr_unitig_keys: Vec<usize> = tr_unitigs.keys().cloned().collect();
     let num_chunks = (tr_unitig_keys.len() + chunk_size - 1) / chunk_size.max(1);
     for (chunk_idx, key_chunk) in tr_unitig_keys.chunks(chunk_size.max(1)).enumerate() {

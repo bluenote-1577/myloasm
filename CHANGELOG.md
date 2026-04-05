@@ -1,3 +1,13 @@
+# v0.5.1 (4-5-2026) - Extra checkpoints, faster graph cleaning + bugfix
+
+Major changes
+
+- Fixed a bug for crashing during the polishing stage (https://github.com/bluenote-1577/myloasm/issues/20)
+- Made graph cleaning much faster for massive, complex datasets (https://github.com/bluenote-1577/myloasm/issues/18)
+- Added more checkpoints
+
+Results may change slightly. 
+
 # v0.5.0 (3-12-2026) - RAM usage + read-mapping optimizations
 
 Major changes

@@ -46,13 +46,9 @@ pub struct Cli {
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
 
-    /// Use precomputed KMC database at this path for kmer counting. Must use -b and -k21 for KMC db creation with version v3. 
+    /// Use precomputed KMC database at this path for kmer counting. This helps if your run dies during the k-mer counting stage. Must use -b and -k21 for KMC db creation with version v3. 
     #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub kmc_db: Option<String>, 
-
-    /// ALPHA MODE FOR SELECT USERS (only for read-to-unitig mapping stage right now). May make polishing slightly worse, but not necessarily bad.
-    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
-    pub low_mem: bool,
 
     /// Use DFS-based back-safety search in graph cleaning (v2). Default is BFS-based (v1).
     #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
@@ -62,7 +58,6 @@ pub struct Cli {
     #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
     pub use_mph: bool,
 
-        
     /// Disallow reads with < % identity for graph building (estimated from base qualities) 
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
     pub quality_value_cutoff: f64,
