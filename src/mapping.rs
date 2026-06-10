@@ -1248,8 +1248,10 @@ pub fn map_reads_to_outer_reads_efficient(
 
             //log::debug!("Processing read {} with id {}...", rid, read.id);
 
+            let start_index_time = std::time::Instant::now();
             let mini = read.minimizers_vec_strand();
             let mini_anchors = find_exact_matches_with_full_index(&mini, &mini_index, None, Some(&tr_outer));
+            let elapsed_index_time = start_index_time.elapsed();
             drop(mini);
             let mut unitig_hits : Vec<TwinOverlap> = vec![];
             *counter.lock().unwrap() += 1;
@@ -1277,6 +1279,7 @@ pub fn map_reads_to_outer_reads_efficient(
 
             }
 
+            let start_chaining_time = std::time::Instant::now();
             for (contig_id, anchors) in mini_anchors.into_iter() {
                 if anchors.anchors.len() < 15 {
                     continue;
@@ -1298,8 +1301,20 @@ pub fn map_reads_to_outer_reads_efficient(
                 }
                 drop(anchors);
             }
-            
 
+            // Print chaining vs indexing time 
+            let chaining_elapsed_time = start_chaining_time.elapsed();
+            if log::log_enabled!(log::Level::Trace) {
+                if rid % 50 == 0{
+                    log::trace!(
+                        "Read {}: Indexing time: {:?}, Chaining time: {:?}",
+                        read.id,
+                        elapsed_index_time,
+                        chaining_elapsed_time
+                    );
+                }
+            }
+                
             for hit in unitig_hits.into_iter() {
                 let max_overlap = check_maximal_overlap(
                     hit.start1 as usize,

@@ -1103,7 +1103,7 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
     return graph;
 }
 
-pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf,  args: &Cli) -> Vec<usize>{
+pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf, debug_file_name: &str, args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
     let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
 
@@ -1114,7 +1114,8 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
     };
 
     //open file for writing
-    let name = if query_indices.is_none() { "all-cont.txt.gz" } else { "subset-cont.txt.gz" };
+    //let name = if query_indices.is_none() { "all-cont.txt.gz" } else { "subset-cont.txt.gz" };
+    let name = debug_file_name;
     let output_path = temp_dir.join(name);
     let bufwriter_dbg;
     if first_iteration && !log::log_enabled!(log::Level::Trace) {
@@ -1298,11 +1299,15 @@ fn parallel_remove_contained<T>(
         let num_tries = 50;
         let mut num_fails = 0;
         let mut max_ol = 0;
+        let mut num_iters = 0;
+        let mut num_almost_contained = 0;
+
         for (index, order_count) in top_indices.into_iter() {
             
             if contained{
                 break;
             }
+
 
             let read2 = &twin_reads[(*index) as usize];
             let twin_overlaps = compare_twin_reads(&read1, &read2, None, None, i, (*index) as usize, &comparison_options, args);
@@ -1337,7 +1342,7 @@ fn parallel_remove_contained<T>(
             if log::log_enabled!(log::Level::Trace) {
                 writeln!(
                     bufwriter_dbg.lock().unwrap(),
-                    "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}, order_count: {}, snpmer_thresh: {}",
+                    "{} {}:{}-{} ----- {} {}:{}-{}   minis: {} shared_snps: {}, diff_snps: {}, identity {}, ol_len {}, read1len: {}, read2len: {}, order_count: {}, snpmer_thresh: {}, almost contained/tries {}/{}",
                     read1.id.split_ascii_whitespace().next().unwrap(),
                     &i,
                     twin_overlap.start1,
@@ -1354,8 +1359,9 @@ fn parallel_remove_contained<T>(
                     read1.base_length,
                     read2.base_length,
                     order_count,
-                    snpmer_threshold
-
+                    snpmer_threshold,
+                    num_almost_contained,
+                    num_iters
                 )
                 .unwrap();
             }
@@ -1374,9 +1380,24 @@ fn parallel_remove_contained<T>(
                 contained_reads.lock().unwrap().insert(i);
                 break;
             }
-            
+            else{
+                if identity > 0.998 && r1_contained_r2(&twin_overlap, read1, read2, true, args.c){
+                    num_almost_contained += 1;
+                }
+            }
+
+            num_iters += 1;
         }
         //println!("Comparing took: {:?}", start.elapsed());
+
+        if !contained && (num_almost_contained as f64) / (num_iters as f64) > 0.95 && num_almost_contained >= num_tries {
+            writeln!(bufwriter_dbg.lock().unwrap(), "Read {} is almost contained in many others ({} out of {}). Adding to contained set", read1.id, num_almost_contained, num_iters).unwrap();
+            contained = true;
+            contained_reads.lock().unwrap().insert(i);
+        }
+        else{
+            writeln!(bufwriter_dbg.lock().unwrap(), "Read {} is not contained. Almost contained in {} out of {}. Not adding to contained set", read1.id, num_almost_contained, num_iters).unwrap();
+        }
 
         if !contained{
             outer_reads.lock().unwrap().push(i);

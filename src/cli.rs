@@ -74,9 +74,13 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub aggressive_bloom: bool,
 
-    /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
+    /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets.
     #[arg(long, default_value_t=true, help_heading = CLI_HEADINGS[1], hide = true)]
     pub new_polish_trimming: bool,
+
+    /// Experimental: homopolymer-compressed polishing. Compresses runs before POA, then expands using weighted-mode run lengths from read alignments.
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub hpc: bool,
 
     /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex (> 150 Gbp) metagenomes. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]

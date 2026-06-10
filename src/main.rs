@@ -432,7 +432,7 @@ fn get_twin_reads_from_kmer_info(
         // (2): removed contained reads
         log::info!("Removing contained reads - round 1...");
         let outer_read_indices_raw =
-            twin_graph::remove_contained_reads_twin(None, None, &twin_reads_raw, true, cleaning_temp_dir, &args);
+            twin_graph::remove_contained_reads_twin(None, None, &twin_reads_raw, true, cleaning_temp_dir, "all-cont-r1.txt.gz", &args);
 
         // (3): map all reads to the outer (non-contained) reads and compute split plans
         log::info!("Mapping reads to non-contained (outer) reads - round 1...");
@@ -472,6 +472,7 @@ fn get_twin_reads_from_kmer_info(
             &split_twin_reads,
             false, 
             cleaning_temp_dir,
+            "all-cont-r2.txt.gz",
             &args,
         );
 
@@ -513,6 +514,7 @@ fn get_twin_reads_from_kmer_info(
             &split_twin_reads_final,
             false, 
             &second_round_temp_dir,
+            "all-cont-r3.txt.gz",
             &args,
         );
 
@@ -612,7 +614,7 @@ fn get_overlaps_from_twin_reads(
     } else {
         log::info!("Getting overlaps between outer reads...");
         let overlaps_file_path = temp_dir.join("overlaps.txt.gz");
-        let contained_file_path = temp_dir.join("contained_r2.txt.gz");
+        let contained_file_path = temp_dir.join("contained_during_overlaps.txt.gz");
         let start = Instant::now();
         overlaps = twin_graph::get_overlaps_outer_reads_twin(
             &twin_reads,

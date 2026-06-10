@@ -3,6 +3,7 @@ use crate::kmc_reader::kmc::KmcReader;
 use crate::types::BYTE_TO_SEQ;
 use crate::types::Kmer48;
 use fastbloom::BloomFilter;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -59,6 +60,13 @@ fn estimate_bf_size(
         if fq_file.contains(".gz") || fq_file.contains(".gzip") || fq_file.contains(".bz") {
             is_gzipped = true;
         }
+
+        // Fail if file can not be read
+        if Path::new(fq_file).metadata().is_err() {
+            log::error!("Unable to read file: {}. Please check the file path and permissions.", fq_file);
+            std::process::exit(1);
+        }
+
         let metadata = std::fs::metadata(fq_file).expect("Unable to read file metadata");
         log::debug!("File: {}, size (Gbytes): {}", fq_file, metadata.len() as f64 / 1_000_000_000.);
         est_bases += metadata.len() as f64 / 1_000_000_000.;

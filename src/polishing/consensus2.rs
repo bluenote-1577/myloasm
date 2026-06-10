@@ -9,6 +9,7 @@ use crate::types::SmallTwinOl;
 use crate::types::*;
 use crate::cli::Cli;
 use crate::seeding;
+use std::path::Path;
 use bio_seq::prelude::*;
 use fxhash::FxHashSet;
 use block_aligner::cigar::*;
@@ -65,8 +66,11 @@ impl PoaConsensusBuilder {
             .for_each(|((i, seq), qual)| {
                 let mut seqs = seq.lock().unwrap();
                 let mut quals = qual.lock().unwrap();
+                let debug = i % 100 == 0;
+                let start_time_everything = std::time::Instant::now();
 
                 assert!(seqs.len() == quals.len());
+                let preprocess_time = std::time::Instant::now();
 
                 let max_len = seqs.iter().map(|x| x.len()).max().unwrap_or(0).min(self.window_overlap_len + self.bp_len);
 
@@ -155,7 +159,31 @@ impl PoaConsensusBuilder {
                 //     writeln!(writer, "{}", std::str::from_utf8(qual).unwrap()).unwrap();
                 // }
 
-                //TODO let's break contigs when we get no coverage -- the read itself doesn't even map well.
+                let mut max_run = 0;
+                if seqs.len() > 0{
+                    let mut current_base = seqs[0][0];
+                    let mut current_run = 0;
+                    for base in seqs[0].iter() {
+                        if *base == current_base {
+                            current_run += 1;
+                        }
+                        else{
+                            current_base = *base;
+                            current_run = 1;
+                        }
+                        if current_run > max_run {
+                            max_run = current_run;
+                        }
+                    }
+                }
+
+                if debug {
+                    log::debug!("Processing time for block {} of contig {} with {} seqs and max homopolymer run {}: {:?}", 
+                    i, self.contig_name, seqs.len(), max_run, preprocess_time.elapsed());
+                }
+
+                let use_hpc = if max_run >= 10 { true } else { false };
+
                 let mut cons;
                 if seqs.len() == 0{
                     let start = i * self.bp_len;
@@ -172,7 +200,44 @@ impl PoaConsensusBuilder {
                     // - 1 because last byte is null terminator
                     cons = seqs[0][0..seqs[0].len()-1].to_vec();
                 }
+                else if use_hpc || self.args.hpc {
+                    let hpc = hpc_compress_all(&seqs, &quals);
+
+                    let start_time = std::time::Instant::now();
+                    cons = poa_consensus(
+                        &hpc.seqs,
+                        &hpc.quals,
+                        consensus_max_length,
+                        alignment_type,
+                        match_score,
+                        mismatch_score,
+                        gap_open,
+                        gap_extend,
+                    );
+                    if debug {
+                        log::debug!("POA consensus time for block {} of contig {} with {} HPC seqs: {:?}", 
+                        i, self.contig_name, hpc.seqs.len(), start_time.elapsed());
+                    }
+
+                    // Trim on the HPC consensus, then expand
+                    let start_time = std::time::Instant::now();
+                    if quals.len() > 15 && self.args.new_polish_trimming {
+                        cons = trim_consensus_by_coverage(&cons, &hpc.seqs);
+                    }
+                    if debug {
+                        log::debug!("Trimming time for block {} of contig {} with HPC consensus length {}: {:?}", 
+                        i, self.contig_name, cons.len(), start_time.elapsed());
+                    }
+
+                    let start_time = std::time::Instant::now();
+                    cons = expand_hpc_consensus(&cons, &hpc);
+                    if debug {
+                        log::debug!("HPC expansion time for block {} of contig {} with HPC consensus length {}: {:?}", 
+                        i, self.contig_name, cons.len(), start_time.elapsed());
+                    }
+                }
                 else{
+                    let start_time = std::time::Instant::now();
                     cons = poa_consensus(
                         &seqs,
                         &quals,
@@ -183,10 +248,19 @@ impl PoaConsensusBuilder {
                         gap_open,
                         gap_extend,
                     );
+                    if debug{
+                        log::debug!("POA consensus time for block {} of contig {} with {} seqs: {:?}", 
+                        i, self.contig_name, seqs.len(), start_time.elapsed());
+                    }
 
                     // Trim consensus ends based on coverage
                     if quals.len() > 15 && self.args.new_polish_trimming{
+                        let start_time = std::time::Instant::now();
                         cons = trim_consensus_by_coverage(&cons, &seqs);
+                        if debug{
+                            log::debug!("Trimming time for block {} of contig {} with consensus length {}: {:?}", 
+                            i, self.contig_name, cons.len(), start_time.elapsed());
+                        }
                     }
                 }
 
@@ -197,6 +271,10 @@ impl PoaConsensusBuilder {
 
                 //log::trace!("Consensus for block {} complete", i);
 
+                if debug{
+                    log::debug!("Total processing time for block {} of contig {} with {} seqs: {:?}", 
+                    i, self.contig_name, seqs.len(), start_time_everything.elapsed());
+                }
                 consensuses.lock().unwrap().push((i, cons));
 
                 //writeln!(complete_writer.lock().unwrap(), "Block {} completed for {} with {} seqs", i, self.contig_name, seqs.len()).unwrap();
@@ -210,9 +288,10 @@ impl PoaConsensusBuilder {
         // if log trace level
         if log::log_enabled!(log::Level::Trace){
             //mkdir cons/
-            std::fs::create_dir_all("cons/").unwrap();
+            let cons_path = Path::new(&self.args.output_dir).join("cons");
+            std::fs::create_dir_all(&cons_path).unwrap();
 
-            let filename = format!("cons/cons_test_{}.fa", self.contig_name);
+            let filename = cons_path.join(format!("cons_test_{}.fa", self.contig_name));
             let mut fasta_writer = BufWriter::new(File::create(&filename).unwrap());
             for (i, cons) in consensuses.iter().enumerate() {
                 writeln!(fasta_writer, ">contig_{}_block_{}", self.contig_name, i).unwrap();
@@ -226,9 +305,10 @@ impl PoaConsensusBuilder {
 
         if log::log_enabled!(log::Level::Trace){
             //mkdir cons/
-            std::fs::create_dir_all("cons/").unwrap();
+            let cons_path = Path::new(&self.args.output_dir).join("cons");
+            std::fs::create_dir_all(&cons_path).unwrap();
 
-            let filename = format!("cons/cons_test_{}_polished.fa", self.contig_name);
+            let filename = cons_path.join(format!("cons_test_{}_polished.fa", self.contig_name));
             let mut fasta_writer = BufWriter::new(File::create(&filename).unwrap());
             for (i, cons) in consensuses.iter().enumerate() {
                 writeln!(fasta_writer, ">contig_{}_block_{}", self.contig_name, i).unwrap();
@@ -790,9 +870,145 @@ fn find_trim_positions(intervals: &[(usize, usize)], consensus_len: usize) -> (u
     (trim_start, trim_end)
 }
 
+/// All homopolymer-compressed reads for one polishing window.
+/// `seqs` and `quals` are null-terminated and can be passed directly to `poa_consensus`
+/// and `trim_consensus_by_coverage` without any extra allocation.
+struct HpcSeqsCompressed {
+    seqs: Vec<Vec<u8>>,            // null-terminated HPC sequences
+    quals: Vec<Vec<u8>>,           // null-terminated median qualities (one per HPC base)
+    run_lengths: Vec<Vec<u32>>,    // [read][hpc_base] -> original run length
+}
+
+/// Compress all `seqs`/`quals` (both null-terminated) into an [`HpcSeqsCompressed`].
+fn hpc_compress_all(seqs: &[Vec<u8>], quals: &[Vec<u8>]) -> HpcSeqsCompressed {
+    let mut hpc_seqs  = Vec::with_capacity(seqs.len());
+    let mut hpc_quals = Vec::with_capacity(quals.len());
+    let mut hpc_runs  = Vec::with_capacity(seqs.len());
+
+    for (seq, qual) in seqs.iter().zip(quals.iter()) {
+        let seq_data  = if seq.last()  == Some(&0) { &seq[..seq.len()  - 1] } else { seq };
+        let qual_data = if qual.last() == Some(&0) { &qual[..qual.len() - 1] } else { qual };
+        let qual_data = &qual_data[..qual_data.len().min(seq_data.len())];
+
+        let mut hpc_seq  = Vec::new();
+        let mut hpc_qual = Vec::new();
+        let mut runs     = Vec::new();
+
+        let mut i = 0;
+        while i < seq_data.len() {
+            let base = seq_data[i];
+            let run_start = i;
+            while i < seq_data.len() && seq_data[i] == base {
+                i += 1;
+            }
+            let run_len = i - run_start;
+            let q_end = (run_start + run_len).min(qual_data.len());
+            let run_quals = &qual_data[run_start.min(qual_data.len())..q_end];
+            let median_qual = if run_quals.is_empty() {
+                48u8
+            } else {
+                let mut sorted = run_quals.to_vec();
+                sorted.sort_unstable();
+                sorted[sorted.len() / 2]
+            };
+            hpc_seq.push(base);
+            hpc_qual.push(median_qual);
+            runs.push(run_len as u32);
+        }
+
+        hpc_seq.push(0u8);
+        hpc_qual.push(0u8);
+
+        hpc_seqs.push(hpc_seq);
+        hpc_quals.push(hpc_qual);
+        hpc_runs.push(runs);
+    }
+
+    HpcSeqsCompressed { seqs: hpc_seqs, quals: hpc_quals, run_lengths: hpc_runs }
+}
+
+/// Expand an HPC consensus back to full length by voting on run lengths from aligned reads.
+///
+/// For each position in `hpc_cons`, each read that aligns there votes for its original run
+/// length weighted by its median quality.  The run length with the highest total weight wins.
+///
+/// Note: this performs one alignment per read.  In the future this can be unified with
+/// `trim_consensus_by_coverage` to share alignments.
+fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
+    if hpc_cons.is_empty() {
+        return vec![];
+    }
+
+    // votes[r] = (run_length, quality_weight) from reads that matched consensus position r
+    let mut votes: Vec<Vec<(u32, u8)>> = vec![vec![]; hpc_cons.len()];
+
+    for (read_idx, seq) in hpc.seqs.iter().enumerate() {
+        let seq_data = if seq.last() == Some(&0) { &seq[..seq.len() - 1] } else { &seq[..] };
+        if seq_data.is_empty() { continue; }
+
+        let (query_end, ref_end, cigar) =
+            alignment::align_seq_to_ref_slice_local(seq_data, hpc_cons, &GAPS);
+        if cigar.is_empty() { continue; }
+
+        // Derive alignment start positions from CIGAR totals
+        let mut ref_consumed = 0usize;
+        let mut q_consumed   = 0usize;
+        for op in &cigar {
+            match op.op {
+                Operation::M | Operation::X | Operation::Eq => { ref_consumed += op.len; q_consumed += op.len; }
+                Operation::D => { ref_consumed += op.len; }
+                Operation::I => { q_consumed   += op.len; }
+                _ => {}
+            }
+        }
+        let mut r_pos = ref_end.saturating_sub(ref_consumed);
+        let mut q_pos = query_end.saturating_sub(q_consumed);
+
+        let runs  = &hpc.run_lengths[read_idx];
+        let quals = &hpc.quals[read_idx]; // null at [runs.len()]; safe to index up to runs.len()-1
+
+        for op in &cigar {
+            match op.op {
+                Operation::M | Operation::X | Operation::Eq => {
+                    for _ in 0..op.len {
+                        if q_pos < runs.len() && r_pos < votes.len() {
+                            votes[r_pos].push((runs[q_pos], quals[q_pos]));
+                        }
+                        q_pos += 1;
+                        r_pos += 1;
+                    }
+                }
+                Operation::I => { q_pos += op.len; }
+                Operation::D => { r_pos += op.len; }
+                _ => {}
+            }
+        }
+    }
+
+    // For each HPC base, repeat it the weighted-mode number of times
+    let mut expanded = Vec::new();
+    for (r, &base) in hpc_cons.iter().enumerate() {
+        let run_len = if votes[r].is_empty() {
+            1u32
+        } else {
+            let mut scores: FxHashMap<u32, u32> = FxHashMap::default();
+            for &(rl, w) in &votes[r] {
+                *scores.entry(rl).or_insert(0) += w as u32;
+            }
+            scores.into_iter().max_by_key(|(_, v)| *v).map(|(k, _)| k).unwrap_or(1)
+        };
+        for _ in 0..run_len {
+            expanded.push(base);
+        }
+    }
+
+    expanded
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
+
+use super::*;
 
     #[test]
     fn test_generate_breakpoints() {
@@ -1345,6 +1561,64 @@ mod tests {
         }
     }
 
+    // This test fails, hence we should use HPC instead....
+    //#[test]
+    fn _test_poa_homopolymer_distribution() {
+        // 25-base high-entropy flanks surrounding a poly-A homopolymer
+        let left_flank  = b"ACGTACGATCGCATGCTACGATCGA"; // 25 bases
+        let right_flank = b"TGCATCGATCGATCGTAGCATGCAT"; // 25 bases
+
+        // Triangular distribution of homopolymer lengths centered at 10.
+        // Range 5-15; lengths 5 and 15 have 0 sequences so are omitted.
+        //   len:   6   7   8   9  10  11  12  13  14
+        //   count: 2   4   6   8  10   8   6   4   2
+        let distribution: &[(usize, usize)] = &[
+            (6, 2), (7, 4), (8, 6), (9, 8), (10, 10),
+            (11, 8), (12, 6), (13, 4), (14, 2),
+        ];
+
+        let mut seqs: Vec<Vec<u8>> = vec![];
+        let mut quals: Vec<Vec<u8>> = vec![];
+
+        for &(hp_len, count) in distribution {
+            let mut seq = Vec::new();
+            seq.extend_from_slice(left_flank);
+            seq.extend(std::iter::repeat(b'A').take(hp_len));
+            seq.extend_from_slice(right_flank);
+            seq.push(0u8); // null terminator expected by poa_consensus
+
+            let mut qual = vec![50u8; seq.len() - 1]; // same length as seq excluding null
+            qual.push(0u8); // null terminator required by poa_consensus
+
+            for _ in 0..count {
+                seqs.push(seq.clone());
+                quals.push(qual.clone());
+            }
+        }
+
+        // Use same scoring as production spoa_blocks
+        let consensus = poa_consensus(&seqs, &quals, 100, 1, 5, -2, -2, -1);
+
+        // Find the longest poly-A run in the consensus
+        let mut max_run = 0usize;
+        let mut cur_run = 0usize;
+        for &b in &consensus {
+            if b == b'A' {
+                cur_run += 1;
+                max_run = max_run.max(cur_run);
+            } else {
+                cur_run = 0;
+            }
+        }
+
+        assert!(
+            max_run >= 9 && max_run <= 11,
+            "Expected poly-A homopolymer length ~10, got {}. Consensus: {}",
+            max_run,
+            std::str::from_utf8(&consensus).unwrap_or("(invalid utf8)")
+        );
+    }
+
     #[test]
     fn test_poa_cons_stall() {
         let mut builder = PoaConsensusBuilder::new_test(10000);
@@ -1374,4 +1648,73 @@ mod tests {
         let consensuses = builder.spoa_blocks();
         println!("Consensuses: {:?}", consensuses[0]);
     }
+
+    #[test]
+    fn test_hpc_compress_all() {
+        // Two reads: one with a 3-base poly-A, one with a 2-base poly-A
+        let seqs = vec![
+            b"GCAAATGC\0".to_vec(),
+            b"GCAATGC\0".to_vec(),
+        ];
+        // Qualities: 50 for every real base, null at end
+        let quals: Vec<Vec<u8>> = seqs.iter().map(|s| {
+            let mut q = vec![50u8; s.len() - 1];
+            q.push(0u8);
+            q
+        }).collect();
+
+        let hpc = hpc_compress_all(&seqs, &quals);
+
+        // Both reads compress to GCATGC\0 — no more adjacent identical bases
+        assert_eq!(&hpc.seqs[0], b"GCATGC\0");
+        assert_eq!(&hpc.seqs[1], b"GCATGC\0");
+
+        // Run lengths for read 0: G=1, C=1, A=3, T=1, G=1, C=1
+        assert_eq!(hpc.run_lengths[0], vec![1, 1, 3, 1, 1, 1]);
+        // Run lengths for read 1: G=1, C=1, A=2, T=1, G=1, C=1
+        assert_eq!(hpc.run_lengths[1], vec![1, 1, 2, 1, 1, 1]);
+
+        // Median quality of the poly-A run in read 0 (all 50) should be 50
+        assert_eq!(hpc.quals[0][2], 50);
+    }
+
+    #[test]
+    fn test_hpc_expand_recovers_majority_run_length() {
+        // Reads: 3 with poly-A length 5, 2 with poly-A length 3.
+        // After compress → POA → expand, the poly-A should be length 5.
+        let make_seq = |poly_len: usize| {
+            let mut s = b"GCATGC".to_vec();
+            s.extend(vec![b'A'; poly_len]);
+            s.extend_from_slice(b"TGCATG");
+            s.push(0u8);
+            s
+        };
+
+        let seqs: Vec<Vec<u8>> = [1, 2, 3, 4, 5, 6, 7, 3, 4, 2, 3].iter().map(|&n| make_seq(n)).collect();
+        let quals: Vec<Vec<u8>> = seqs.iter().map(|s| {
+            let mut q = vec![50u8; s.len() - 1];
+            q.push(0u8);
+            q
+        }).collect();
+
+        let consensus_without_hpc = poa_consensus(&seqs, &quals, 50, 1, 5, -2, -2, -1);
+        // There will be 5 As in the consensus...
+        assert_eq!(consensus_without_hpc, b"GCATGCAAAAAAATGCATG".to_vec());
+
+        let hpc = hpc_compress_all(&seqs, &quals);
+        // All HPC seqs are identical: GCATGCATGCATG\0
+        let hpc_cons = poa_consensus(&hpc.seqs, &hpc.quals, 50, 1, 5, -2, -2, -1);
+        let expanded = expand_hpc_consensus(&hpc_cons, &hpc);
+
+        // Longest poly-A run in the expanded sequence should be 3
+        let mut max_run = 0usize;
+        let mut cur = 0usize;
+        for &b in &expanded {
+            if b == b'A' { cur += 1; max_run = max_run.max(cur); } else { cur = 0; }
+        }
+        assert_eq!(max_run, 3,
+            "Expected poly-A of length 3, got {}. Expanded: {}",
+            max_run, std::str::from_utf8(&expanded).unwrap_or("?"));
+    }
+
 }

@@ -46,7 +46,7 @@ pub fn median_and_min_depth_from_lapper_new(
     // Filter intervals based on snpmer_identity and maximal_overlap
     let intervals_cutoff = lapper
         .iter()
-        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff))
+        .filter(|x| x.val.snpmer_identity as f64 >= snpmer_identity_cutoff)
         .map(|x| x.clone())
         .collect::<Vec<_>>();
     let lapper_cutoff = Lapper::new(intervals_cutoff);
@@ -130,7 +130,7 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, BareMappingOverlap>
     let mut depths = vec![];
     let intervals_cutoff = lapper
         .iter()
-        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff))
+        .filter(|x| x.val.snpmer_identity as f64 >= snpmer_identity_cutoff)
         .map (|x| x.clone())
         .collect::<Vec<_>>();
     let lapper_cutoff = Lapper::new(intervals_cutoff);
