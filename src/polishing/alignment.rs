@@ -4,6 +4,8 @@ use crate::constants::SUB_MATRIX;
 use crate::types::*;
 use bio_seq::prelude::*;
 use block_aligner::{cigar::*, scan_block::*, scores::*};
+use fxhash::FxHashMap;
+use crate::seeding::minimizer_seeds_positions;
 
 fn get_length_from_cigar(cigar: &Vec<OpLen>) -> (usize, usize) {
     let mut add_length_ref = 0;
@@ -467,4 +469,173 @@ pub fn align_seq_to_ref_slice_local(
     }
     
     return (res.query_idx, res.reference_idx, cigar.to_vec());
+}
+
+const SEED_K: usize = 21;
+const SEED_W: usize = 25;
+const MIN_ANCHORS: usize = 10;
+const MAX_HITS_PER_KMER: usize = 4;
+
+/// Minimizer index built once over a reference sequence; reused for many query alignments.
+pub struct SeedChainAligner<'a> {
+    reference: &'a [u8],
+    index: FxHashMap<u64, Vec<u32>>,
+    use_seeds: bool,
+}
+
+impl<'a> SeedChainAligner<'a> {
+    pub fn new(reference: &'a [u8]) -> Self {
+        let mut ref_kmers: Vec<u64> = Vec::new();
+        let mut ref_positions: Vec<u64> = Vec::new();
+        minimizer_seeds_positions(reference, &mut ref_kmers, &mut ref_positions, SEED_W, SEED_K);
+
+        let use_seeds = ref_kmers.len() >= MIN_ANCHORS;
+        let mut index: FxHashMap<u64, Vec<u32>> = FxHashMap::default();
+        for (hash, pos) in ref_kmers.iter().zip(ref_positions.iter()) {
+            index.entry(*hash).or_default().push(*pos as u32);
+        }
+        SeedChainAligner { reference, index, use_seeds }
+    }
+
+    /// Align `query` against the stored reference.
+    /// Returns `(query_end, ref_end, cigar)` — same contract as `align_seq_to_ref_slice_local`.
+    /// Falls back to full-DP local alignment when too few seeds are found.
+    pub fn align(&self, query: &[u8], gaps: &Gaps) -> (usize, usize, Vec<OpLen>) {
+        if !self.use_seeds {
+            return align_seq_to_ref_slice_local(query, self.reference, gaps);
+        }
+
+        // --- Anchor lookup ---
+        let mut q_kmers: Vec<u64> = Vec::new();
+        let mut q_positions: Vec<u64> = Vec::new();
+        minimizer_seeds_positions(query, &mut q_kmers, &mut q_positions, SEED_W, SEED_K);
+
+        let mut anchors: Vec<(u32, u32)> = Vec::new();
+        for (hash, q_pos) in q_kmers.iter().zip(q_positions.iter()) {
+            if let Some(r_positions) = self.index.get(hash) {
+                if r_positions.len() <= MAX_HITS_PER_KMER {
+                    for &r_pos in r_positions {
+                        anchors.push((*q_pos as u32, r_pos));
+                    }
+                }
+            }
+        }
+
+        if anchors.len() < MIN_ANCHORS {
+            return align_seq_to_ref_slice_local(query, self.reference, gaps);
+        }
+
+        // --- Chain ---
+        let chain = chain_anchors_diagonal(&anchors, 50);
+        if chain.len() < MIN_ANCHORS {
+            return align_seq_to_ref_slice_local(query, self.reference, gaps);
+        }
+
+        // --- Left extend (reversed local, same as get_full_alignment) ---
+        let (q0, r0) = chain[0];
+        let r_left_start = if q0 > r0 { 0u32 } else { r0 - q0 };
+        let q_left_rev: Vec<u8> = query[..q0 as usize].iter().rev().copied().collect();
+        let r_left_rev: Vec<u8> =
+            self.reference[r_left_start as usize..r0 as usize].iter().rev().copied().collect();
+        let left_cigar_fwd = if q_left_rev.is_empty() || r_left_rev.is_empty() {
+            vec![]
+        } else {
+            align_seq_to_ref_slice(&r_left_rev, &q_left_rev, gaps, Some(10))
+        };
+        let (left_r_len, left_q_len) = get_length_from_cigar(&left_cigar_fwd);
+        let left_start_q = q0 as usize - left_q_len;
+        let left_start_r = r0 as usize - left_r_len;
+        let left_cigar: Vec<OpLen> = left_cigar_fwd.into_iter().rev().collect();
+
+        // --- Chain extend ---
+        let mut cigar_vec: Vec<OpLen> = left_cigar;
+        let first_anchor_op = OpLen { op: Operation::M, len: SEED_K };
+        if cigar_vec.is_empty() {
+            cigar_vec.push(first_anchor_op);
+        } else {
+            extend_cigar(&mut cigar_vec, vec![first_anchor_op]);
+        }
+
+        let mut prev_q = q0;
+        let mut prev_r = r0;
+        for &(q_pos, r_pos) in &chain[1..] {
+            // skip anchors that are too close (overlap with previous k-mer span)
+            if q_pos.saturating_sub(prev_q) <= SEED_K as u32
+                || r_pos.saturating_sub(prev_r) <= SEED_K as u32
+            {
+                continue;
+            }
+            let q_gap = &query[(prev_q + SEED_K as u32) as usize..q_pos as usize];
+            let r_gap =
+                &self.reference[(prev_r + SEED_K as u32) as usize..r_pos as usize];
+            if !q_gap.is_empty() && !r_gap.is_empty() {
+                let gap_cigar = align_seq_to_ref_slice(r_gap, q_gap, gaps, None);
+                extend_cigar(&mut cigar_vec, gap_cigar);
+            } else if !q_gap.is_empty() {
+                extend_cigar(&mut cigar_vec, vec![OpLen { op: Operation::I, len: q_gap.len() }]);
+            } else if !r_gap.is_empty() {
+                extend_cigar(&mut cigar_vec, vec![OpLen { op: Operation::D, len: r_gap.len() }]);
+            }
+            extend_cigar(&mut cigar_vec, vec![OpLen { op: Operation::M, len: SEED_K }]);
+            prev_q = q_pos;
+            prev_r = r_pos;
+        }
+
+        // --- Right extend ---
+        let after_q = (prev_q + SEED_K as u32) as usize;
+        let after_r = (prev_r + SEED_K as u32) as usize;
+        let right_gap = query.len().saturating_sub(after_q)
+            .min(self.reference.len().saturating_sub(after_r));
+        if right_gap > 0 {
+            let right_cigar = align_seq_to_ref_slice(
+                &self.reference[after_r..after_r + right_gap],
+                &query[after_q..after_q + right_gap],
+                gaps,
+                Some(10),
+            );
+            extend_cigar(&mut cigar_vec, right_cigar);
+        }
+
+        let (total_r, total_q) = get_length_from_cigar(&cigar_vec);
+        let ref_end = left_start_r + total_r;
+        let query_end = left_start_q + total_q;
+        (query_end, ref_end, cigar_vec)
+    }
+}
+
+/// Diagonal-based anchor chaining.
+/// Sorts anchors, finds the median diagonal, keeps anchors within `bw` bandwidth,
+/// then enforces monotone reference positions.
+fn chain_anchors_diagonal(anchors: &[(u32, u32)], bw: i64) -> Vec<(u32, u32)> {
+    let mut sorted = anchors.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+
+    let mut diags: Vec<i64> = sorted.iter()
+        .map(|&(q, r)| r as i64 - q as i64)
+        .collect();
+    diags.sort_unstable();
+    let median_diag = diags[diags.len() / 2];
+
+    let mut chained: Vec<(u32, u32)> = Vec::new();
+    let mut last_r: u32 = 0;
+    let mut last_score = i64::MAX;
+    let mut last_q: u32 = 0;
+    for &(q_pos, r_pos) in &sorted {
+        let diag = r_pos as i64 - q_pos as i64;
+        let score = (diag - median_diag).abs();
+        if score <= bw && r_pos >= last_r {
+            // Multiple anchors for the same k-mer
+            if q_pos == last_q{
+                if score > last_score {
+                    continue;
+                }
+            } else {
+                last_score = score;
+            }
+            last_r = r_pos + SEED_K as u32;
+            chained.push((q_pos, r_pos));
+        }
+    }
+    chained
 }

@@ -26,7 +26,7 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[0], hide = true)]
     pub nano_r9: bool,
 
-    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy
+    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy. Sets -c to 20 at minimum. 
     #[arg(long, help_heading = CLI_HEADINGS[0])]
     pub hifi: bool,
         
@@ -42,7 +42,7 @@ pub struct Cli {
     #[arg(long)]
     pub clean_dir: bool,
 
-    /// Compression ratio (1/c k-mers selected). Must be <= 15  
+    /// Compression ratio (1/c k-mers selected). 
     #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
     pub c: usize,
 
@@ -81,6 +81,10 @@ pub struct Cli {
     /// Experimental: homopolymer-compressed polishing. Compresses runs before POA, then expands using weighted-mode run lengths from read alignments.
     #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub hpc: bool,
+
+    /// Experimental: use abpoa instead of spoa for POA consensus.
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub abpoa: bool,
 
     /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex (> 150 Gbp) metagenomes. 
     #[arg(long, help_heading = CLI_HEADINGS[1])]
@@ -150,8 +154,8 @@ pub struct Cli {
     #[arg(long, default_value_t=0.00, help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_error_rate_strict: f64,
 
-    /// Relaxed compression ratio during containment; must be > c
-    #[arg(long, default_value_t=44, help_heading = CLI_HEADINGS[3], hide = true)]
+    /// Relaxed compression ratio during containment; k-mers are subsampled 0 mod this
+    #[arg(long, default_value_t=4, help_heading = CLI_HEADINGS[3], hide = true)]
     pub contain_subsample_rate: usize,
     
     /// Cut overlaps with > (c * this) number of bases between minimizers on average

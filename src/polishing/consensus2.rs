@@ -18,6 +18,7 @@ use rayon::prelude::*;
 use rust_lapper::Interval;
 use rust_spoa::poa_consensus;
 use std::sync::Mutex;
+use abpoa::{Aligner, AlignMode, OutputMode, Parameters, SequenceBatch, Scoring};
 
 #[derive(Debug, Default, Clone)]
 pub struct BaseConsensusSimple {
@@ -66,7 +67,7 @@ impl PoaConsensusBuilder {
             .for_each(|((i, seq), qual)| {
                 let mut seqs = seq.lock().unwrap();
                 let mut quals = qual.lock().unwrap();
-                let debug = i % 100 == 0;
+                let debug = i % 100 == 0 && false;
                 let start_time_everything = std::time::Instant::now();
 
                 assert!(seqs.len() == quals.len());
@@ -183,6 +184,7 @@ impl PoaConsensusBuilder {
                 }
 
                 let use_hpc = if max_run >= 10 { true } else { false };
+                let use_abpoa = seventy_five_length - twenty_five_length < 100;
 
                 let mut cons;
                 if seqs.len() == 0{
@@ -204,18 +206,16 @@ impl PoaConsensusBuilder {
                     let hpc = hpc_compress_all(&seqs, &quals);
 
                     let start_time = std::time::Instant::now();
-                    cons = poa_consensus(
-                        &hpc.seqs,
-                        &hpc.quals,
-                        consensus_max_length,
-                        alignment_type,
-                        match_score,
-                        mismatch_score,
-                        gap_open,
-                        gap_extend,
-                    );
+                    cons = if use_abpoa{
+                        abpoa_consensus_impl(&hpc.seqs, &hpc.quals, match_score, mismatch_score, gap_open, gap_extend)
+                    } else {
+                        poa_consensus(&hpc.seqs, &hpc.quals, consensus_max_length, alignment_type, match_score, mismatch_score, gap_open, gap_extend)
+                    };
+                    if cons.is_empty() && !hpc.seqs.is_empty() {
+                        cons = hpc.seqs[0][..hpc.seqs[0].len() - 1].to_vec();
+                    }
                     if debug {
-                        log::debug!("POA consensus time for block {} of contig {} with {} HPC seqs: {:?}", 
+                        log::debug!("POA consensus time for block {} of contig {} with {} HPC seqs: {:?}",
                         i, self.contig_name, hpc.seqs.len(), start_time.elapsed());
                     }
 
@@ -238,18 +238,16 @@ impl PoaConsensusBuilder {
                 }
                 else{
                     let start_time = std::time::Instant::now();
-                    cons = poa_consensus(
-                        &seqs,
-                        &quals,
-                        consensus_max_length,
-                        alignment_type,
-                        match_score,
-                        mismatch_score,
-                        gap_open,
-                        gap_extend,
-                    );
+                    cons = if use_abpoa{
+                        abpoa_consensus_impl(&seqs, &quals, match_score, mismatch_score, gap_open, gap_extend)
+                    } else {
+                        poa_consensus(&seqs, &quals, consensus_max_length, alignment_type, match_score, mismatch_score, gap_open, gap_extend)
+                    };
+                    if cons.is_empty() && !seqs.is_empty() {
+                        cons = seqs[0][..seqs[0].len() - 1].to_vec();
+                    }
                     if debug{
-                        log::debug!("POA consensus time for block {} of contig {} with {} seqs: {:?}", 
+                        log::debug!("POA consensus time for block {} of contig {} with {} seqs: {:?}",
                         i, self.contig_name, seqs.len(), start_time.elapsed());
                     }
 
@@ -316,6 +314,9 @@ impl PoaConsensusBuilder {
             }
             
         }
+
+        
+
         return consensuses;
     }
 
@@ -737,6 +738,7 @@ pub fn trim_consensus_by_coverage(consensus: &[u8], seqs: &[Vec<u8>]) -> Vec<u8>
 
     // Align each sequence to the consensus and collect coverage intervals
     let mut intervals: Vec<(usize, usize)> = Vec::with_capacity(seqs.len());
+    let aligner = alignment::SeedChainAligner::new(consensus);
 
     for seq in seqs {
         // Skip sequences that are too short
@@ -755,12 +757,8 @@ pub fn trim_consensus_by_coverage(consensus: &[u8], seqs: &[Vec<u8>]) -> Vec<u8>
             continue;
         }
 
-        // Align sequence to consensus using local alignment
-        let (_query_end, ref_end, cigar) = alignment::align_seq_to_ref_slice_local(
-            seq_clean,
-            consensus,
-            &GAPS,
-        );
+        // Align sequence to consensus (seed-chain-extend; falls back to full DP if needed)
+        let (_query_end, ref_end, cigar) = aligner.align(seq_clean, &GAPS);
 
         // If alignment failed or is too poor, skip this sequence
         if cigar.is_empty() {
@@ -870,6 +868,84 @@ fn find_trim_positions(intervals: &[(usize, usize)], consensus_len: usize) -> (u
     (trim_start, trim_end)
 }
 
+/// abpoa-based POA consensus using the same call convention as `poa_consensus`.
+///
+/// `seqs` and `quals` are null-terminated (stripped internally before passing to abpoa).
+/// `mismatch_score`, `gap_open`, and `gap_extend` follow the spoa sign convention (negative).
+/// A new `Aligner` is created per call; this is intentional because `Aligner` is `!Send+!Sync`
+/// and this function is called inside a rayon parallel closure.
+fn abpoa_consensus_impl(
+    seqs: &[Vec<u8>],
+    quals: &[Vec<u8>],
+    match_score: i32,
+    mismatch_score: i32,
+    gap_open: i32,
+    gap_extend: i32,
+) -> Vec<u8> {
+    // Strip null terminators — abpoa takes plain byte slices
+    let clean: Vec<&[u8]> = seqs.iter()
+        .map(|s| if s.last() == Some(&0) { &s[..s.len() - 1] } else { &s[..] })
+        .collect();
+
+    // Convert Phred+33 quality bytes to non-negative i32 weights
+    let weights: Vec<Vec<i32>> = quals.iter().zip(clean.iter())
+        .map(|(q, s)| {
+            let q_data = if q.last() == Some(&0) { &q[..q.len() - 1] } else { &q[..] };
+            (0..s.len())
+                .map(|i| if i < q_data.len() { (q_data[i] as i32 - 33).max(0) } else { 0 })
+                .collect()
+        })
+        .collect();
+    let weight_refs: Vec<&[i32]> = weights.iter().map(|w| w.as_slice()).collect();
+
+    // abpoa uses positive penalty magnitudes; negate spoa-convention values
+    let mismatch_pen = (-mismatch_score).max(1);
+    let gap_open_pen = (-gap_open).max(1);
+    let gap_ext_pen  = (-gap_extend).max(1);
+
+    let mut params = match Parameters::configure() {
+        Ok(p) => p,
+        Err(_) => return vec![],
+    };
+    params
+        .set_outputs(OutputMode::CONSENSUS)
+        .set_align_mode(AlignMode::Global)
+        .set_use_quality(true)
+        .set_use_read_ids(false)
+        .set_consensus(abpoa::ConsensusAlgorithm::HeaviestBundle, 1, 0.00);
+
+    if params.set_scoring_scheme(Scoring::affine(match_score, mismatch_pen, gap_open_pen, gap_ext_pen)).is_err() {
+        return vec![];
+    }
+
+    let mut aligner = match Aligner::with_params(params) {
+        Ok(a) => a,
+        Err(_) => return vec![],
+    };
+
+    let batch = match SequenceBatch::from_sequences(&clean)
+        .and_then(|b| b.with_quality_weights(&weight_refs))
+    {
+        Ok(b) => b,
+        Err(_) => return vec![],
+    };
+
+    match aligner.msa(batch) {
+        
+        Ok(result) => {
+            if result.clusters.is_empty(){
+                vec![]
+            }
+            else{
+                result.clusters[0].consensus.as_bytes().to_vec()
+            }
+        }
+        _ => {
+            vec![]
+        },
+    }
+}
+
 /// All homopolymer-compressed reads for one polishing window.
 /// `seqs` and `quals` are null-terminated and can be passed directly to `poa_consensus`
 /// and `trim_consensus_by_coverage` without any extra allocation.
@@ -942,12 +1018,12 @@ fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
     // votes[r] = (run_length, quality_weight) from reads that matched consensus position r
     let mut votes: Vec<Vec<(u32, u8)>> = vec![vec![]; hpc_cons.len()];
 
+    let aligner = alignment::SeedChainAligner::new(hpc_cons);
     for (read_idx, seq) in hpc.seqs.iter().enumerate() {
         let seq_data = if seq.last() == Some(&0) { &seq[..seq.len() - 1] } else { &seq[..] };
         if seq_data.is_empty() { continue; }
 
-        let (query_end, ref_end, cigar) =
-            alignment::align_seq_to_ref_slice_local(seq_data, hpc_cons, &GAPS);
+        let (query_end, ref_end, cigar) = aligner.align(seq_data, &GAPS);
         if cigar.is_empty() { continue; }
 
         // Derive alignment start positions from CIGAR totals
@@ -1715,6 +1791,66 @@ use super::*;
         assert_eq!(max_run, 3,
             "Expected poly-A of length 3, got {}. Expanded: {}",
             max_run, std::str::from_utf8(&expanded).unwrap_or("?"));
+    }
+
+    // Helper: build null-terminated seqs/quals from plain string slices
+    fn make_null_terminated(seqs_str: &[&str], qual_byte: u8) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let seqs: Vec<Vec<u8>> = seqs_str.iter()
+            .map(|s| { let mut v = s.as_bytes().to_vec(); v.push(0u8); v })
+            .collect();
+        let quals: Vec<Vec<u8>> = seqs.iter()
+            .map(|s| { let mut q = vec![qual_byte; s.len() - 1]; q.push(0u8); q })
+            .collect();
+        (seqs, quals)
+    }
+
+    #[test]
+    fn test_abpoa_basic() {
+        // Same 6-sequence set used in test_dna_consensus; expected consensus is "AATGCCCGTT"
+        let (seqs, quals) = make_null_terminated(
+            &["ATTGCCCGTT", "AATGCCGTT", "AATGCCCGAT", "AACGCCCGTC", "AGTGCTCGTT", "AATGCTCGTT"],
+            50,
+        );
+        let cons = abpoa_consensus_impl(&seqs, &quals, 5, -2, -2, -1);
+        assert_eq!(cons, b"AATGCCCGTT".to_vec(),
+            "abpoa basic consensus mismatch: got {}",
+            std::str::from_utf8(&cons).unwrap_or("?"));
+    }
+
+    #[test]
+    fn test_abpoa_homopolymer_distribution() {
+        // Triangular distribution of poly-A lengths centered at 10 (same as test_poa_homopolymer_distribution)
+        let left_flank  = "ACGTACGATCGCATGCTACGATCGA";
+        let right_flank = "TGCATCGATCGATCGTAGCATGCAT";
+        let distribution: &[(usize, usize)] = &[
+            (6, 2), (7, 4), (8, 6), (9, 8), (10, 10),
+            (11, 8), (12, 6), (13, 4), (14, 2),
+        ];
+
+        let mut seqs: Vec<Vec<u8>> = vec![];
+        let mut quals: Vec<Vec<u8>> = vec![];
+        for &(hp_len, count) in distribution {
+            let seq_str = format!("{}{}{}", left_flank, "A".repeat(hp_len), right_flank);
+            for _ in 0..count {
+                let mut s = seq_str.as_bytes().to_vec();
+                s.push(0u8);
+                let mut q = vec![50u8; s.len() - 1];
+                q.push(0u8);
+                seqs.push(s);
+                quals.push(q);
+            }
+        }
+
+        let cons = abpoa_consensus_impl(&seqs, &quals, 5, -2, -2, -1);
+
+        let mut max_run = 0usize;
+        let mut cur = 0usize;
+        for &b in &cons {
+            if b == b'A' { cur += 1; max_run = max_run.max(cur); } else { cur = 0; }
+        }
+        assert!(max_run >= 9 && max_run <= 11,
+            "Expected poly-A homopolymer length ~10, got {}. Consensus: {}",
+            max_run, std::str::from_utf8(&cons).unwrap_or("?"));
     }
 
 }

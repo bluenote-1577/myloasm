@@ -34,6 +34,7 @@ gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"
 rand = "0.8.5"
 ordered-float = { version = "4.0", default-features = false }
 rust-spoa = { path = "src/rust-spoa" }
+abpoa = { git = "https://github.com/bluenote-1577/abpoa-rs" }
 tikv-jemallocator = "0.4.0"
 skani = { path = "src/skani" }
 sysinfo = "0.34.2"

@@ -1105,7 +1105,6 @@ pub fn read_graph_from_overlaps_twin(overlaps: Vec<OverlapConfig>, twin_reads: &
 
 pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indices: Option<Vec<usize>>, twin_reads: &[TwinRead], first_iteration: bool, temp_dir: &PathBuf, debug_file_name: &str, args: &Cli) -> Vec<usize>{
     let start = std::time::Instant::now();
-    let downsample_factor = (args.contain_subsample_rate / args.c).max(1) as u64;
 
     let reads_to_index: Vec<usize> = if let Some(ref_indices) = ref_indices {
         ref_indices
@@ -1158,7 +1157,7 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
                 )
                 .fold(FxHashMap::default(), |mut acc, (i, x)| {
                     for y in x.minimizer_kmers().iter(){
-                        if hash64(y) > u64::MAX / downsample_factor {
+                        if hash64(y) % args.contain_subsample_rate as u64 != 0{
                             continue;
                         }
                         acc.entry(*y).or_insert(FxHashSet::default()).insert(i as u32);
@@ -1187,7 +1186,7 @@ pub fn remove_contained_reads_twin(query_indices: Option<Vec<usize>>, ref_indice
                 .collect()
         };
 
-        parallel_remove_contained(query_for_batch, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, downsample_factor, args);
+        parallel_remove_contained(query_for_batch, twin_reads, &inverted_index_hashmap, &bufwriter_dbg, &contained_reads, &outer_reads, args);
 
         log::info!("Batch {}/{} complete. {} contained so far", batch_idx + 1, num_batches, contained_reads.lock().unwrap().len());
         log_memory_usage(false, &format!("Memory usage after contained read removal batch {}", batch_idx + 1));
@@ -1215,7 +1214,6 @@ fn parallel_remove_contained<T>(
     bufwriter_dbg: &Mutex<T>,
     contained_reads: &Mutex<FxHashSet<usize>>,
     outer_reads: &Mutex<Vec<usize>>,
-    downsample_factor: u64,
     args: &Cli,
 ) where T : Write + Send
 {
@@ -1236,7 +1234,7 @@ fn parallel_remove_contained<T>(
 
         for y in comparison_options.read1_mininimizers.as_ref().unwrap().iter() {
             //Downsample to 100 compression factor
-            if hash64(&y.1.kmer()) > u64::MAX / downsample_factor{
+            if hash64(&y.1.kmer()) % args.contain_subsample_rate as u64 != 0{
                 continue;
             }
             if let Some(indices) = inverted_index_hashmap.get(&y.1.kmer()) {
@@ -1264,7 +1262,7 @@ fn parallel_remove_contained<T>(
         //top_indices.retain(|(_,count)| **count > read1.minimizers.len() as u32 / 10 && **count > 5);
         top_indices.retain(|(index,_)| {
             let range = index_range_map.get(&index).unwrap();
-            range[1] > range[0] && (range[1] - range[0]) as f64 + (20. * args.contain_subsample_rate as f64) > read1.base_length as f64 * 0.90
+            range[1] > range[0] && (range[1] - range[0]) as f64 + (20. * ((args.c * args.contain_subsample_rate) as f64)) > read1.base_length as f64 * 0.90
         });
 
         top_indices.truncate(500);

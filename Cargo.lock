@@ -3,6 +3,27 @@
 version = 4
 
 [[package]]
+name = "abpoa"
+version = "0.1.0"
+source = "git+https://github.com/bluenote-1577/abpoa-rs#212f7b867ab4d3293e3f5cfc0bd6ea01e8c43d3f"
+dependencies = [
+ "abpoa-ffi-sys",
+ "bitflags 2.9.3",
+ "libc",
+ "thiserror 2.0.16",
+]
+
+[[package]]
+name = "abpoa-ffi-sys"
+version = "0.1.0"
+source = "git+https://github.com/bluenote-1577/abpoa-rs#212f7b867ab4d3293e3f5cfc0bd6ea01e8c43d3f"
+dependencies = [
+ "cc",
+ "glob",
+ "libc",
+]
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -845,6 +866,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "glob"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+
+[[package]]
 name = "gzp"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1099,6 +1126,7 @@ dependencies = [
 name = "myloasm"
 version = "0.5.2"
 dependencies = [
+ "abpoa",
  "approx 0.4.0",
  "assert_cmd",
  "bincode",

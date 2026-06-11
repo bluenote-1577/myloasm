@@ -351,12 +351,24 @@ pub fn get_twin_read_syncmer(
     let marker_rev_mask = !(3 << (2 * marker_k - 2));
     let len = string.len();
     let mid_k = k / 2;
+    const MAX_C: usize = 11;
 
     // New syncmer-related variables
-    let s = k - c + 1;  // length of syncmers
+    let s = k - c.min(MAX_C) + 1;  // length of syncmers
     let s_mask = MarkerBits::MAX >> (std::mem::size_of::<MarkerBits>() * 8 - 2 * s);
     let s_rev_mask = !(3 << (2 * s - 2));
     let s_reverse_shift_dist = 2 * (s - 1);
+    let subsample_factor = (c as f64 / MAX_C as f64).max(1.0);
+    let do_subsample;
+    let u64_subsample_threshold;
+    if subsample_factor > 1.0{
+        do_subsample = true;
+        u64_subsample_threshold = (u64::MAX as f64 / subsample_factor) as u64;
+    }
+    else{
+        do_subsample = false;
+        u64_subsample_threshold = u64::MAX;
+    }
     
     let mut s_mer_hashes = VecDeque::with_capacity(k - s + 1);
     let mut rolling_s_mer_f: MarkerBits = 0;
@@ -469,7 +481,15 @@ pub fn get_twin_read_syncmer(
             }
 
             if syncmer{
-                minimizer_positions.push((i + 1 - k) as u32);
+                if do_subsample{
+                    let hash_kmer = mm_hash64(canonical_kmer_marker);
+                    if hash_kmer > u64_subsample_threshold{
+                        continue;
+                    }
+                }
+                else{
+                    minimizer_positions.push((i + 1 - k) as u32);
+                }
             }
         }
     }
@@ -769,15 +789,17 @@ pub fn estimate_sequence_identity(qualities: Option<&[u8]>) -> Option<Percentage
 }
 
 pub fn split_kmer_mid(
-    string: Vec<u8>,
-    qualities: Option<Vec<u8>>,
-    k: usize
-) -> Vec<u64>{
+    string: &[u8],
+    qualities: Option<&[u8]>,
+    k: usize,
+    buf: &mut Vec<u64>,
+) {
+    buf.clear();
     type MarkerBits = u64;
     if string.len() < k {
-        return vec![];
+        return;
     }
-    let mut split_kmers = Vec::with_capacity(string.len() - k + 3);
+    let split_kmers = &mut *buf;
 
     let marker_k = k;
     if marker_k % 2 != 1 || k > 31{
@@ -796,7 +818,7 @@ pub fn split_kmer_mid(
     let len = string.len();
     let mid_k = k / 2;
     let mut positions_to_skip = FxHashSet::default();
-    if let Some(qualities) = qualities.as_ref(){
+    if let Some(qualities) = qualities {
         //Ensure that not all qualities are the same value. If they are, possibly it is an old pacbio run... ignore them
         let mut q_iter = qualities.iter();
         let first_q = q_iter.next().unwrap();
@@ -808,7 +830,7 @@ pub fn split_kmer_mid(
                 }
             }
         }
-        
+
     }
 
     for i in 0..marker_k - 1 {
@@ -859,5 +881,4 @@ pub fn split_kmer_mid(
         split_kmers.push(final_marked_kmer);
     }
 
-    return split_kmers;
 }

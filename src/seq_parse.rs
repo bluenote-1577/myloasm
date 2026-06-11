@@ -8,10 +8,19 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use fxhash::FxHashMap;
+use fxhash::FxHasher64;
+use fxhash::FxBuildHasher;
 use crate::seeding;
 use crate::utils::*;
 use std::io::BufReader;
 use crossbeam_channel::bounded;
+
+#[inline]
+pub fn quickhash(kmer: u64) -> u64{
+    //fxhash
+    //return fxhash::hash64(&kmer);
+    return seeding::mm_hash64(kmer);
+}
 
 pub fn read_to_split_kmers(
     k: usize,
@@ -154,6 +163,8 @@ fn first_iteration(
             let clone_counter = Arc::clone(&counter);
             let clone_read_lengths = Arc::clone(&read_lengths);
             thread::spawn(move || {
+                let mut split_kmer_buf: Vec<u64> = Vec::new();
+                let mut vec_and_canon: Vec<Vec<u64>> = vec![Vec::new(); hm_size];
                 loop{
                     match rx_head.recv() {
                         Ok((seq, qualities)) => {
@@ -162,16 +173,19 @@ fn first_iteration(
                                 let mut read_lengths = clone_read_lengths.lock().unwrap();
                                 read_lengths.push(seq.len());
                             }
-                            let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
-                            let mut vec_and_canon = vec![vec![]; hm_size];
-                            for kmer_i_and_canon in split_kmer_info.into_iter() {
+                            seeding::split_kmer_mid(&seq, qualities.as_deref(), k, &mut split_kmer_buf);
+                            for &kmer_i_and_canon in split_kmer_buf.iter() {
                                 let kmer = kmer_i_and_canon & mask;
-                                let hash = kmer % threads as u64;
+                                let hash = quickhash(kmer) % hm_size as u64;
                                 vec_and_canon[hash as usize].push(kmer_i_and_canon);
                             }
 
-                            for (i, vec) in vec_and_canon.into_iter().enumerate(){
-                                txs[i].send(vec).unwrap();
+                            for (i, bucket) in vec_and_canon.iter_mut().enumerate() {
+                                if !bucket.is_empty() {
+                                    let cap = bucket.capacity();
+                                    let to_send = std::mem::replace(bucket, Vec::with_capacity(cap));
+                                    txs[i].send(to_send).unwrap();
+                                }
                             }
 
                             {
@@ -200,8 +214,12 @@ fn first_iteration(
         let mut handles = Vec::new();
         for rx in rxs.into_iter() {
             handles.push(thread::spawn(move || {
-                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
-                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).seed(&42).expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
+                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).
+                    hasher(FxBuildHasher::default()).
+                    expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
+                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).
+                    hasher(FxBuildHasher::default()).
+                    expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
                 let mut map: FxHashMap<u64,[u32;2]> = FxHashMap::default();
                 loop{
                     match rx.recv() {
@@ -328,19 +346,24 @@ fn second_iteration(
     for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()){
         let clone_counter = Arc::clone(&counter);
         thread::spawn(move || {
+            let mut split_kmer_buf: Vec<u64> = Vec::new();
+            let mut vec_and_canon: Vec<Vec<u64>> = vec![Vec::new(); threads];
             loop{
                 match rx_head.recv() {
                     Ok((seq,qualities)) => {
-                        let split_kmer_info = seeding::split_kmer_mid(seq, qualities, k);
-                        let mut vec_and_canon = vec![vec![]; threads];
-                        for kmer_i_and_canon in split_kmer_info.into_iter() {
+                        seeding::split_kmer_mid(&seq, qualities.as_deref(), k, &mut split_kmer_buf);
+                        for &kmer_i_and_canon in split_kmer_buf.iter() {
                             let kmer = kmer_i_and_canon & mask;
-                            let hash = kmer % threads as u64;
+                            let hash = quickhash(kmer) % threads as u64;
                             vec_and_canon[hash as usize].push(kmer_i_and_canon);
                         }
 
-                        for (i, vec) in vec_and_canon.into_iter().enumerate(){
-                            txs[i].send(vec).unwrap();
+                        for (i, bucket) in vec_and_canon.iter_mut().enumerate() {
+                            if !bucket.is_empty() {
+                                let cap = bucket.capacity();
+                                let to_send = std::mem::replace(bucket, Vec::with_capacity(cap));
+                                txs[i].send(to_send).unwrap();
+                            }
                         }
 
                         {
