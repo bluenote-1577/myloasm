@@ -7,7 +7,6 @@
 /// map is drained into the key/value vectors for MPHF construction.  This caps
 /// peak memory to roughly 1/NUM_PARTITIONS of what a single-pass build would
 /// require.
-
 use boomphf::hashmap::BoomHashMap;
 use fxhash::FxHashMap;
 
@@ -91,13 +90,17 @@ pub fn get_minimizer_index_mph(
 
         if let Some(twinreads) = tr_owned {
             fill_partition(
-                sorted_ids.iter().map(|&id| (id, twinreads[&id].minimizers_vec_strand())),
+                sorted_ids
+                    .iter()
+                    .map(|&id| (id, twinreads[&id].minimizers_vec_strand())),
                 partition,
                 &mut partial,
             );
         } else if let Some(twinreads) = tr_ref {
             fill_partition(
-                sorted_ids.iter().map(|&id| (id, twinreads[&id].minimizers_vec_strand())),
+                sorted_ids
+                    .iter()
+                    .map(|&id| (id, twinreads[&id].minimizers_vec_strand())),
                 partition,
                 &mut partial,
             );

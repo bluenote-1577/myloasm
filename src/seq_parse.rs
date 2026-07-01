@@ -1,88 +1,101 @@
 use crate::cli::Cli;
 use crate::kmc_reader::kmc::KmcReader;
-use crate::types::BYTE_TO_SEQ;
+use crate::seeding;
 use crate::types::Kmer48;
+use crate::types::BYTE_TO_SEQ;
+use crate::utils::*;
+use crossbeam_channel::bounded;
 use fastbloom::BloomFilter;
+use fxhash::FxBuildHasher;
+use fxhash::FxHashMap;
+use std::io::BufReader;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use fxhash::FxHashMap;
-use fxhash::FxHasher64;
-use fxhash::FxBuildHasher;
-use crate::seeding;
-use crate::utils::*;
-use std::io::BufReader;
-use crossbeam_channel::bounded;
 
 #[inline]
-pub fn quickhash(kmer: u64) -> u64{
+pub fn quickhash(kmer: u64) -> u64 {
     //fxhash
     //return fxhash::hash64(&kmer);
     return seeding::mm_hash64(kmer);
 }
 
-pub fn read_to_split_kmers(
-    k: usize,
-    threads: usize,
-    args: &Cli,
-) -> Vec<(u64,[u32;2])>{
- 
-
+pub fn read_to_split_kmers(k: usize, threads: usize, args: &Cli) -> Vec<(u64, [u32; 2])> {
     let start = std::time::Instant::now();
     let bf_vec_maps = first_iteration(k, threads, args);
-    log::info!("Finished with bloom filter processing in {:?}. Round 2 - Start k-mer counting...", start.elapsed());
+    log::info!(
+        "Finished with bloom filter processing in {:?}. Round 2 - Start k-mer counting...",
+        start.elapsed()
+    );
     log_memory_usage(true, "Memory usage after bloom filter processing");
 
     let start = std::time::Instant::now();
-    let vec_maps = second_iteration(k, threads, args, bf_vec_maps); 
+    let vec_maps = second_iteration(k, threads, args, bf_vec_maps);
     let map_size_raw = vec_maps.iter().map(|x| x.len()).sum::<usize>();
-    log::info!("Finished with k-mer counting in {:?}. Total kmers after bloom filter: {}", start.elapsed(), map_size_raw);
-    log_memory_usage(true, "Memory usage after second round of k-mer counting processing");
+    log::info!(
+        "Finished with k-mer counting in {:?}. Total kmers after bloom filter: {}",
+        start.elapsed(),
+        map_size_raw
+    );
+    log_memory_usage(
+        true,
+        "Memory usage after second round of k-mer counting processing",
+    );
 
     let mut vectorized_map = vec![];
-    for map in vec_maps.into_iter(){
-        for (kmer, counts) in map.into_iter(){
-            if counts[0] > 0 && counts[1] > 0 && counts[0] + counts[1] > 2{
+    for map in vec_maps.into_iter() {
+        for (kmer, counts) in map.into_iter() {
+            if counts[0] > 0 && counts[1] > 0 && counts[0] + counts[1] > 2 {
                 vectorized_map.push((kmer, counts));
             }
         }
     }
 
     let map_size_retain = vectorized_map.len();
-    log::info!("Removed {} kmers with counts < 1 in both strands and <= 3 multiplicity.", map_size_raw - map_size_retain);
+    log::info!(
+        "Removed {} kmers with counts < 1 in both strands and <= 3 multiplicity.",
+        map_size_raw - map_size_retain
+    );
     if map_size_retain < map_size_raw / 1000 {
         log::warn!("Less than 0.1% of kmers have counts > 1 in both strands and > 2 multiplicity. This may indicate a problem with the input data or very low coverage.");
     }
     log::debug!("Final Hashmap len after vectorization: {}", map_size_retain);
-    log_memory_usage(false, "Memory usage after second round of k-mer counting processing");
+    log_memory_usage(
+        false,
+        "Memory usage after second round of k-mer counting processing",
+    );
 
     return vectorized_map;
 }
 
-fn estimate_bf_size(
-    args: &Cli,
-) -> f64{
+fn estimate_bf_size(args: &Cli) -> f64 {
     let mut est_bases = 0.;
     let mut is_gzipped = false;
-    for fq_file in args.input_files.iter(){
+    for fq_file in args.input_files.iter() {
         if fq_file.contains(".gz") || fq_file.contains(".gzip") || fq_file.contains(".bz") {
             is_gzipped = true;
         }
 
         // Fail if file can not be read
         if Path::new(fq_file).metadata().is_err() {
-            log::error!("Unable to read file: {}. Please check the file path and permissions.", fq_file);
+            log::error!(
+                "Unable to read file: {}. Please check the file path and permissions.",
+                fq_file
+            );
             std::process::exit(1);
         }
 
         let metadata = std::fs::metadata(fq_file).expect("Unable to read file metadata");
-        log::debug!("File: {}, size (Gbytes): {}", fq_file, metadata.len() as f64 / 1_000_000_000.);
+        log::debug!(
+            "File: {}, size (Gbytes): {}",
+            fq_file,
+            metadata.len() as f64 / 1_000_000_000.
+        );
         est_bases += metadata.len() as f64 / 1_000_000_000.;
-        if is_gzipped{
+        if is_gzipped {
             est_bases *= 1.5; //rough estimate of compression ratio
-        }
-        else{
+        } else {
             est_bases /= 2.;
         }
     }
@@ -90,15 +103,10 @@ fn estimate_bf_size(
     return bf_size;
 }
 
-fn first_iteration(
-    k: usize,
-    threads: usize,
-    args: &Cli,
-) -> Vec<FxHashMap<u64,[u32;2]>>
-{
+fn first_iteration(k: usize, threads: usize, args: &Cli) -> Vec<FxHashMap<u64, [u32; 2]>> {
     //Topology is
     //      A-SEND: tx_head, , B-REC: rx_head1, rx_head2...
-    // |   |  ... 
+    // |   |  ...
     // B   B  ...  B-SEND: txs[0...], txs2[0...],... C-REC: rxs
     // | x | x | ...
     // C   C  ...
@@ -107,16 +115,15 @@ fn first_iteration(
     let bf_size;
     if let Some(bf_size_manual) = args.bloom_filter_size {
         bf_size = bf_size_manual;
-    }
-     else {
+    } else {
         bf_size = estimate_bf_size(args);
         log::info!("Using automatic bloom filter size: {:.2} Gbytes", bf_size);
     }
 
     let aggressive_bloom = args.aggressive_bloom;
-    let mut bf_vec_maps : Vec<FxHashMap<u64, [u32;2]>> = vec![FxHashMap::default(); hm_size];
-    if bf_size > 0.{
-        let num_b = threads/10 + 1;
+    let mut bf_vec_maps: Vec<FxHashMap<u64, [u32; 2]>> = vec![FxHashMap::default(); hm_size];
+    if bf_size > 0. {
+        let num_b = threads / 10 + 1;
         let counter = Arc::new(Mutex::new(0));
         let read_lengths = Arc::new(Mutex::new(vec![]));
         let mut rxs = vec![];
@@ -124,7 +131,7 @@ fn first_iteration(
         for _ in 0..threads {
             //let (tx, rx) = unbounded();
             let (tx, rx) = bounded(500);
-            for i in 1..num_b{
+            for i in 1..num_b {
                 txs_vecs[i].push(tx.clone());
             }
             txs_vecs[0].push(tx);
@@ -134,7 +141,7 @@ fn first_iteration(
         //let (tx_head, rx_head1) = unbounded();
         let (tx_head, rx_head1) = bounded(500);
         let mut rx_heads = vec![];
-        for _ in 1..num_b{
+        for _ in 1..num_b {
             let rx_head2 = rx_head1.clone();
             rx_heads.push(rx_head2);
         }
@@ -145,35 +152,39 @@ fn first_iteration(
         let fq_files = args.input_files.clone();
         //A: Get k-mers
         thread::spawn(move || {
-            for fq_file in fq_files{
+            for fq_file in fq_files {
                 let bufreader = BufReader::new(std::fs::File::open(fq_file).expect("valid path"));
                 let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
                 while let Some(record) = reader.next() {
                     let rec = record.expect("Error reading record");
                     let seq = rec.seq().to_vec();
                     let qualities = rec.qual().map(Vec::from);
-                    tx_head.send((seq,qualities)).unwrap();
+                    tx_head.send((seq, qualities)).unwrap();
                 }
             }
             drop(tx_head);
             log::debug!("Finished reading all reads.");
         });
         //B: Process kmers and send to hash maps
-        for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()){
+        for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()) {
             let clone_counter = Arc::clone(&counter);
             let clone_read_lengths = Arc::clone(&read_lengths);
             thread::spawn(move || {
                 let mut split_kmer_buf: Vec<u64> = Vec::new();
                 let mut vec_and_canon: Vec<Vec<u64>> = vec![Vec::new(); hm_size];
-                loop{
+                loop {
                     match rx_head.recv() {
                         Ok((seq, qualities)) => {
-
                             {
                                 let mut read_lengths = clone_read_lengths.lock().unwrap();
                                 read_lengths.push(seq.len());
                             }
-                            seeding::split_kmer_mid(&seq, qualities.as_deref(), k, &mut split_kmer_buf);
+                            seeding::split_kmer_mid(
+                                &seq,
+                                qualities.as_deref(),
+                                k,
+                                &mut split_kmer_buf,
+                            );
                             for &kmer_i_and_canon in split_kmer_buf.iter() {
                                 let kmer = kmer_i_and_canon & mask;
                                 let hash = quickhash(kmer) % hm_size as u64;
@@ -183,7 +194,8 @@ fn first_iteration(
                             for (i, bucket) in vec_and_canon.iter_mut().enumerate() {
                                 if !bucket.is_empty() {
                                     let cap = bucket.capacity();
-                                    let to_send = std::mem::replace(bucket, Vec::with_capacity(cap));
+                                    let to_send =
+                                        std::mem::replace(bucket, Vec::with_capacity(cap));
                                     txs[i].send(to_send).unwrap();
                                 }
                             }
@@ -191,11 +203,17 @@ fn first_iteration(
                             {
                                 let mut counter = clone_counter.lock().unwrap();
                                 *counter += 1;
-                                if *counter % 100000 == 0{
+                                if *counter % 100000 == 0 {
                                     log::info!("Processed {} reads.", counter);
                                 }
-                                if *counter % 1_000_000 == 0{
-                                    log_memory_usage(false, &format!("Processed {} reads for bloom filter stage", *counter));
+                                if *counter % 1_000_000 == 0 {
+                                    log_memory_usage(
+                                        false,
+                                        &format!(
+                                            "Processed {} reads for bloom filter stage",
+                                            *counter
+                                        ),
+                                    );
                                 }
                             }
                         }
@@ -204,7 +222,7 @@ fn first_iteration(
                         }
                     }
                 }
-                for tx in txs{
+                for tx in txs {
                     drop(tx);
                 }
             });
@@ -214,46 +232,51 @@ fn first_iteration(
         let mut handles = Vec::new();
         for rx in rxs.into_iter() {
             handles.push(thread::spawn(move || {
-                let mut filter_canonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).
-                    hasher(FxBuildHasher::default()).
-                    expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
-                let mut filter_noncanonical = BloomFilter::with_num_bits((bf_size * 4. * 1_000_000_000. / threads as f64) as usize).
-                    hasher(FxBuildHasher::default()).
-                    expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
-                let mut map: FxHashMap<u64,[u32;2]> = FxHashMap::default();
-                loop{
+                let mut filter_canonical = BloomFilter::with_num_bits(
+                    (bf_size * 4. * 1_000_000_000. / threads as f64) as usize,
+                )
+                .hasher(FxBuildHasher::default())
+                .expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
+                let mut filter_noncanonical = BloomFilter::with_num_bits(
+                    (bf_size * 4. * 1_000_000_000. / threads as f64) as usize,
+                )
+                .hasher(FxBuildHasher::default())
+                .expected_items((bf_size * 4. * 1_000_000_000. / 10. / threads as f64) as usize);
+                let mut map: FxHashMap<u64, [u32; 2]> = FxHashMap::default();
+                loop {
                     match rx.recv() {
                         Ok(msg) => {
                             let kmer_vecs = msg;
-                            for kmer_i_canon in kmer_vecs{
+                            for kmer_i_canon in kmer_vecs {
                                 let canonical = kmer_i_canon >> 63;
                                 let kmer = kmer_i_canon & mask;
                                 let kmer_canon = kmer | (1 << 63);
-                                if canonical == 1{
-                                    let already_present_canon = filter_canonical.insert(&kmer_canon);
-                                    let already_present_noncanon = filter_noncanonical.contains(&kmer);
-                                    if aggressive_bloom{
-                                        if already_present_noncanon && already_present_canon{
-                                            map.insert(kmer, [0,0]);
+                                if canonical == 1 {
+                                    let already_present_canon =
+                                        filter_canonical.insert(&kmer_canon);
+                                    let already_present_noncanon =
+                                        filter_noncanonical.contains(&kmer);
+                                    if aggressive_bloom {
+                                        if already_present_noncanon && already_present_canon {
+                                            map.insert(kmer, [0, 0]);
+                                        }
+                                    } else {
+                                        if already_present_noncanon {
+                                            map.insert(kmer, [0, 0]);
                                         }
                                     }
-                                    else{
-                                        if already_present_noncanon{
-                                            map.insert(kmer, [0,0]);
+                                } else {
+                                    let already_present_noncanon =
+                                        filter_noncanonical.insert(&kmer);
+                                    let already_present_canon =
+                                        filter_canonical.contains(&kmer_canon);
+                                    if aggressive_bloom {
+                                        if already_present_noncanon && already_present_canon {
+                                            map.insert(kmer, [0, 0]);
                                         }
-                                    }
-                                }
-                                else{
-                                    let already_present_noncanon = filter_noncanonical.insert(&kmer);
-                                    let already_present_canon = filter_canonical.contains(&kmer_canon);
-                                    if aggressive_bloom{
-                                        if already_present_noncanon && already_present_canon{
-                                            map.insert(kmer, [0,0]);
-                                        }
-                                    }
-                                    else{
-                                        if already_present_canon{
-                                            map.insert(kmer, [0,0]);
+                                    } else {
+                                        if already_present_canon {
+                                            map.insert(kmer, [0, 0]);
                                         }
                                     }
                                 }
@@ -265,8 +288,7 @@ fn first_iteration(
                         }
                     }
                 }
-                
-                
+
                 map.shrink_to_fit();
                 map
             }));
@@ -275,14 +297,19 @@ fn first_iteration(
         for (map_ind, handle) in handles.into_iter().enumerate() {
             bf_vec_maps[map_ind] = handle.join().unwrap();
             bf_vec_maps[map_ind].shrink_to_fit();
-        };
+        }
 
         let read_lengths = Arc::try_unwrap(read_lengths).unwrap().into_inner().unwrap();
-        log::info!("Read lengths - {}", get_nx_from_vec(&read_lengths, &[10,50,90]));
-        log::info!("Total bases - {} million bp", (read_lengths.iter().map(|x| *x as usize).sum::<usize>() as f64 / 1_000_000.).round());
-    
-    }  
-    
+        log::info!(
+            "Read lengths - {}",
+            get_nx_from_vec(&read_lengths, &[10, 50, 90])
+        );
+        log::info!(
+            "Total bases - {} million bp",
+            (read_lengths.iter().map(|x| *x as usize).sum::<usize>() as f64 / 1_000_000.).round()
+        );
+    }
+
     return bf_vec_maps;
 }
 
@@ -290,20 +317,20 @@ fn second_iteration(
     k: usize,
     threads: usize,
     args: &Cli,
-    bf_vec_maps: Vec<FxHashMap<u64, [u32;2]>>) -> Vec<FxHashMap<u64, [u32;2]>>{
-
+    bf_vec_maps: Vec<FxHashMap<u64, [u32; 2]>>,
+) -> Vec<FxHashMap<u64, [u32; 2]>> {
     let bf_size = args.bloom_filter_size;
     let mask = !(1 << 63);
-    let mut vec_maps : Vec<FxHashMap<u64, [u32;2]>> = vec![FxHashMap::default(); threads];
+    let mut vec_maps: Vec<FxHashMap<u64, [u32; 2]>> = vec![FxHashMap::default(); threads];
 
-    let num_b = threads/10 + 1;
+    let num_b = threads / 10 + 1;
     let counter = Arc::new(Mutex::new(0));
     let mut rxs = vec![];
     let mut txs_vecs = vec![vec![]; num_b];
     for _ in 0..threads {
         //let (tx, rx) = unbounded();
         let (tx, rx) = bounded(500);
-        for i in 1..num_b{
+        for i in 1..num_b {
             txs_vecs[i].push(tx.clone());
         }
         txs_vecs[0].push(tx);
@@ -313,7 +340,7 @@ fn second_iteration(
     //let (tx_head, rx_head1) = unbounded();
     let (tx_head, rx_head1) = bounded(500);
     let mut rx_heads = vec![];
-    for _ in 1..num_b{
+    for _ in 1..num_b {
         let rx_head2 = rx_head1.clone();
         rx_heads.push(rx_head2);
     }
@@ -328,14 +355,14 @@ fn second_iteration(
 
     let fq_files = args.input_files.clone();
     thread::spawn(move || {
-        for fq_file in fq_files{
+        for fq_file in fq_files {
             let bufreader = BufReader::new(std::fs::File::open(fq_file).expect("valid path"));
             let mut reader = needletail::parse_fastx_reader(bufreader).expect("valid path");
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
                 let seq = rec.seq().to_vec();
                 let qualities = rec.qual().map(Vec::from);
-                tx_head.send((seq,qualities)).unwrap();
+                tx_head.send((seq, qualities)).unwrap();
             }
         }
         drop(tx_head);
@@ -343,14 +370,14 @@ fn second_iteration(
     });
 
     //B: Process kmers and send to hash maps
-    for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()){
+    for (rx_head, txs) in rx_heads.into_iter().zip(txs_vecs.into_iter()) {
         let clone_counter = Arc::clone(&counter);
         thread::spawn(move || {
             let mut split_kmer_buf: Vec<u64> = Vec::new();
             let mut vec_and_canon: Vec<Vec<u64>> = vec![Vec::new(); threads];
-            loop{
+            loop {
                 match rx_head.recv() {
-                    Ok((seq,qualities)) => {
+                    Ok((seq, qualities)) => {
                         seeding::split_kmer_mid(&seq, qualities.as_deref(), k, &mut split_kmer_buf);
                         for &kmer_i_and_canon in split_kmer_buf.iter() {
                             let kmer = kmer_i_and_canon & mask;
@@ -369,7 +396,7 @@ fn second_iteration(
                         {
                             let mut counter = clone_counter.lock().unwrap();
                             *counter += 1;
-                            if *counter % 100000 == 0{
+                            if *counter % 100000 == 0 {
                                 log::debug!("Processed {} reads.", counter);
                             }
                         }
@@ -379,34 +406,33 @@ fn second_iteration(
                     }
                 }
             }
-            for tx in txs{
+            for tx in txs {
                 drop(tx);
             }
         });
     }
 
     let mut handles = Vec::new();
-    for (rx, my_map) in rxs.into_iter().zip(bf_vec_maps.into_iter()){
+    for (rx, my_map) in rxs.into_iter().zip(bf_vec_maps.into_iter()) {
         handles.push(thread::spawn(move || {
             let mut my_map = my_map;
-            loop{
+            loop {
                 match rx.recv() {
                     Ok(msg) => {
                         let vec_and_canon = msg;
-                        if bf_size > 0.{
-                            for kmer_and_canon in vec_and_canon.into_iter(){
+                        if bf_size > 0. {
+                            for kmer_and_canon in vec_and_canon.into_iter() {
                                 let kmer = kmer_and_canon & mask;
                                 let canon = kmer_and_canon >> 63;
-                                if let Some(val) = my_map.get_mut(&kmer){
+                                if let Some(val) = my_map.get_mut(&kmer) {
                                     val[canon as usize] += 1;
                                 }
                             }
-                        }
-                        else{
-                            for kmer_and_canon in vec_and_canon.into_iter(){
+                        } else {
+                            for kmer_and_canon in vec_and_canon.into_iter() {
                                 let kmer = kmer_and_canon & mask;
                                 let canon = kmer_and_canon >> 63;
-                                let val = my_map.entry(kmer).or_insert([0,0]);
+                                let val = my_map.entry(kmer).or_insert([0, 0]);
                                 val[canon as usize] += 1
                             }
                         }
@@ -422,28 +448,27 @@ fn second_iteration(
         }));
     }
 
-    for (i,handle) in handles.into_iter().enumerate() {
+    for (i, handle) in handles.into_iter().enumerate() {
         vec_maps[i] = handle.join().unwrap();
-    };
+    }
 
     return vec_maps;
 }
 
 // Intuitively I think this helps, not sure if we want to use it TODO
-pub fn quality_pool(qualities: Vec<u8>) -> Vec<u8>{
+pub fn quality_pool(qualities: Vec<u8>) -> Vec<u8> {
     let pool_width = 5;
     let mut pool = Vec::new();
-    for i in 0..qualities.len(){
-        if i > pool_width/2 && i < qualities.len() - pool_width/2{
+    for i in 0..qualities.len() {
+        if i > pool_width / 2 && i < qualities.len() - pool_width / 2 {
             let mut min = 255;
-            for j in i-pool_width/2..i+pool_width/2{
-                if qualities[j] < min{
+            for j in i - pool_width / 2..i + pool_width / 2 {
+                if qualities[j] < min {
                     min = qualities[j];
                 }
             }
             pool.push(min);
-        }
-        else{
+        } else {
             pool.push(qualities[i]);
         }
     }
@@ -466,13 +491,16 @@ pub fn read_kmers_from_kmc_db(
 ) -> Vec<(u64, [u32; 2])> {
     log::info!("Reading k-mers from KMC database: {}", kmc_db_path);
 
-    let reader = KmcReader::open(kmc_db_path).expect("Failed to open KMC database. Ensure the path is correct and the KMC database is valid.");
+    let reader = KmcReader::open(kmc_db_path).expect(
+        "Failed to open KMC database. Ensure the path is correct and the KMC database is valid.",
+    );
     let kmc_info = reader.info();
 
     if kmc_info.kmer_length as usize != k {
         log::error!(
             "KMC database k-mer length ({}) does not match expected k ({})",
-            kmc_info.kmer_length, k
+            kmc_info.kmer_length,
+            k
         );
         std::process::exit(1);
     }
@@ -484,7 +512,6 @@ pub fn read_kmers_from_kmc_db(
         kmc_info.both_strands
     );
 
-
     // Mask to remove middle base for split comparison
     let split_mask: u64 = !(3u64 << (k - 1));
     // Mask to keep only the k-mer bits
@@ -495,21 +522,21 @@ pub fn read_kmers_from_kmc_db(
     let mut skipped_low_count = 0u64;
     let mut skipped_palindrome = 0u64;
 
-
-    for bloom in [true, false]{
+    for bloom in [true, false] {
         processed_count = 0;
         let mut bloom_filter;
-        if bloom{
-            bloom_filter = BloomFilter::with_num_bits(kmc_info.total_kmers as usize * 8).seed(&42).expected_items(kmc_info.total_kmers as usize);
+        if bloom {
+            bloom_filter = BloomFilter::with_num_bits(kmc_info.total_kmers as usize * 8)
+                .seed(&42)
+                .expected_items(kmc_info.total_kmers as usize);
+        } else {
+            bloom_filter = BloomFilter::with_num_bits(1).seed(&42).expected_items(1);
+            //dummy
         }
-        else{
-            bloom_filter = BloomFilter::with_num_bits(1).seed(&42).expected_items(1); //dummy
-        }
-        
-        if bloom{
+
+        if bloom {
             log::info!("Starting bloom filter pass...");
-        }
-        else{
+        } else {
             log::info!("Starting k-mer counting pass...");
         }
         let mut reader = KmcReader::open(kmc_db_path).expect("Failed to open KMC database");
@@ -560,33 +587,30 @@ pub fn read_kmers_from_kmc_db(
                 reverse_kmer
             };
 
-            if bloom{
+            if bloom {
                 let already_present = bloom_filter.insert(&canonical_kmer);
-                if !already_present{
+                if !already_present {
                     continue;
+                } else {
+                    kmer_maps[canonical_kmer as usize % 50]
+                        .insert(Kmer48::from_u64(canonical_kmer), [0, 0]);
                 }
-                else{
-                    kmer_maps[canonical_kmer as usize % 50].insert(Kmer48::from_u64(canonical_kmer), [0,0]);
-                }
-            }
-
-            else{
-                if let Some(entry) = kmer_maps[canonical_kmer as usize % 50].get_mut(&Kmer48::from_u64(canonical_kmer)) {
+            } else {
+                if let Some(entry) = kmer_maps[canonical_kmer as usize % 50]
+                    .get_mut(&Kmer48::from_u64(canonical_kmer))
+                {
                     let count;
                     if kmc_count > u16::MAX as u32 {
                         count = u16::MAX;
-                    }
-                    else{
+                    } else {
                         count = kmc_count as u16;
                     }
                     if canonical {
                         entry[0] = count;
-                    }
-                    else{
+                    } else {
                         entry[1] = count;
                     }
-                }
-                else{
+                } else {
                     // This k-mer was not seen in bloom filter pass, skip
                     continue;
                 }
@@ -597,7 +621,14 @@ pub fn read_kmers_from_kmc_db(
                 log::info!("Processed {} k-mers from KMC database", processed_count);
             }
         }
-        log_memory_usage(true, if bloom{"Memory usage after KMC bloom filter pass"} else{"Memory usage after KMC k-mer counting pass"});
+        log_memory_usage(
+            true,
+            if bloom {
+                "Memory usage after KMC bloom filter pass"
+            } else {
+                "Memory usage after KMC k-mer counting pass"
+            },
+        );
     }
 
     log::info!(

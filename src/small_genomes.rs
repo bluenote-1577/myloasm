@@ -1,12 +1,11 @@
-use crate::unitig;
-use crate::types::*;
 use crate::cli;
 use crate::twin_graph;
-use crate::types;
-use std::path::PathBuf;
-use fxhash::FxHashMap;
 use crate::twin_graph::OverlapConfig;
-
+use crate::types;
+use crate::types::*;
+use crate::unitig;
+use fxhash::FxHashMap;
+use std::path::PathBuf;
 
 pub fn two_cycle_retrieval(
     unitig_graph: &mut unitig::UnitigGraph,
@@ -36,7 +35,6 @@ pub fn two_cycle_retrieval(
     let mut good_cycles: Vec<Vec<OverlapConfig>> = vec![];
 
     for component in component_to_nodes_map.values() {
-
         let mut read_ids = vec![];
 
         //Extract reads
@@ -53,16 +51,21 @@ pub fn two_cycle_retrieval(
             &read_ids
         );
 
-        if read_ids.len() == 1{
+        if read_ids.len() == 1 {
             continue;
         }
 
         //Extract overlaps over the component
-       // let file_pathbuf = format!("temp/{}.small_circular", component[0]);
+        // let file_pathbuf = format!("temp/{}.small_circular", component[0]);
         let mut relaxed_args = args.clone();
         relaxed_args.min_ol = args.min_ol / 2;
-        let component_overlaps =
-            twin_graph::get_overlaps_outer_reads_twin(&twin_reads, &read_ids, &relaxed_args, None, None);
+        let component_overlaps = twin_graph::get_overlaps_outer_reads_twin(
+            &twin_reads,
+            &read_ids,
+            &relaxed_args,
+            None,
+            None,
+        );
 
         // Find 2-cycle overlaps
         let adjacency_map = component_overlaps
@@ -98,7 +101,7 @@ pub fn two_cycle_retrieval(
             }
         }
 
-        if two_cycles.is_empty(){
+        if two_cycles.is_empty() {
             continue;
         }
 
@@ -160,12 +163,11 @@ pub fn two_cycle_retrieval(
                 }
             }
             if let Some(optimal_cycle_un) = optimal_cycle {
-                if cycle.hang_penalty < optimal_cycle_un.hang_penalty{
+                if cycle.hang_penalty < optimal_cycle_un.hang_penalty {
                     optimal_cycle = Some(cycle);
                     optimal_index = Some(i);
                 }
-            }
-            else{
+            } else {
                 optimal_cycle = Some(cycle);
                 optimal_index = Some(i);
             }
@@ -180,7 +182,7 @@ pub fn two_cycle_retrieval(
             good_cycles.push(cycle_stats[optimal_index.unwrap()].1.clone());
         }
 
-        if !good_cycles.is_empty(){
+        if !good_cycles.is_empty() {
             nodes_to_remove.extend(component.iter().map(|x| *x));
         }
     }
@@ -189,8 +191,8 @@ pub fn two_cycle_retrieval(
 
     log::debug!("Number of small cycles found: {}", good_cycles.len());
 
-    for ols in good_cycles.into_iter(){
-        let (new_graph, _) = unitig::UnitigGraph::from_overlaps(&twin_reads, ols, None, args);
+    for ols in good_cycles.into_iter() {
+        let (new_graph, _) = unitig::UnitigGraph::from_overlaps(&twin_reads, ols, None, None, args);
         unitig_graph.concatenate(new_graph);
     }
 

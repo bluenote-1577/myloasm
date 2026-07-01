@@ -1,24 +1,24 @@
+use crate::cli::Cli;
 use crate::constants::*;
-use std::io::Write;
-use std::fs::File;
-use std::io::BufWriter;
 use crate::mapping;
 use crate::polishing::alignment;
+use crate::seeding;
 use crate::seeding::estimate_sequence_identity;
 use crate::types::SmallTwinOl;
 use crate::types::*;
-use crate::cli::Cli;
-use crate::seeding;
-use std::path::Path;
+use abpoa::{AlignMode, Aligner, OutputMode, Parameters, Scoring, SequenceBatch};
 use bio_seq::prelude::*;
-use fxhash::FxHashSet;
 use block_aligner::cigar::*;
 use fxhash::FxHashMap;
+use fxhash::FxHashSet;
 use rayon::prelude::*;
 use rust_lapper::Interval;
 use rust_spoa::poa_consensus;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::Path;
 use std::sync::Mutex;
-use abpoa::{Aligner, AlignMode, OutputMode, Parameters, SequenceBatch, Scoring};
 
 #[derive(Debug, Default, Clone)]
 pub struct BaseConsensusSimple {
@@ -57,7 +57,6 @@ impl PoaConsensusBuilder {
 
         // let file = File::create("complete_consensus.txt").unwrap();
         // let complete_writer = Mutex::new(BufWriter::new(file));
-
 
         //parallel iter over seq and qual
         self.seq
@@ -277,14 +276,13 @@ impl PoaConsensusBuilder {
 
                 //writeln!(complete_writer.lock().unwrap(), "Block {} completed for {} with {} seqs", i, self.contig_name, seqs.len()).unwrap();
             });
-        
 
         log::trace!("Consensus building complete for {}", self.contig_name);
         let mut consensuses = consensuses.into_inner().unwrap();
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();
         // if log trace level
-        if log::log_enabled!(log::Level::Trace){
+        if log::log_enabled!(log::Level::Trace) {
             //mkdir cons/
             let cons_path = Path::new(&self.args.output_dir).join("cons");
             std::fs::create_dir_all(&cons_path).unwrap();
@@ -295,13 +293,16 @@ impl PoaConsensusBuilder {
                 writeln!(fasta_writer, ">contig_{}_block_{}", self.contig_name, i).unwrap();
                 writeln!(fasta_writer, "{}", std::str::from_utf8(cons).unwrap()).unwrap();
             }
-            
         }
 
-        let consensuses =
-            PoaConsensusBuilder::modify_join_consensus(consensuses, self.window_overlap_len, self.bp_len, &self.contig_name);
+        let consensuses = PoaConsensusBuilder::modify_join_consensus(
+            consensuses,
+            self.window_overlap_len,
+            self.bp_len,
+            &self.contig_name,
+        );
 
-        if log::log_enabled!(log::Level::Trace){
+        if log::log_enabled!(log::Level::Trace) {
             //mkdir cons/
             let cons_path = Path::new(&self.args.output_dir).join("cons");
             std::fs::create_dir_all(&cons_path).unwrap();
@@ -312,15 +313,17 @@ impl PoaConsensusBuilder {
                 writeln!(fasta_writer, ">contig_{}_block_{}", self.contig_name, i).unwrap();
                 writeln!(fasta_writer, "{}", std::str::from_utf8(cons).unwrap()).unwrap();
             }
-            
         }
-
-        
 
         return consensuses;
     }
 
-    pub fn modify_join_consensus(mut cons: Vec<Vec<u8>>, window_len: usize, bp_length: usize, contig_name: &str) -> Vec<Vec<u8>> {
+    pub fn modify_join_consensus(
+        mut cons: Vec<Vec<u8>>,
+        window_len: usize,
+        bp_length: usize,
+        contig_name: &str,
+    ) -> Vec<Vec<u8>> {
         if cons.len() == 0 {
             return vec![];
         }
@@ -332,7 +335,10 @@ impl PoaConsensusBuilder {
             if cons[i].len() == 0 || cons[i + 1].len() == 0 {
                 let false_bp1 = 0;
                 let false_bp2 = 0;
-                breakpoints.lock().unwrap().push((i, false_bp1, false_bp2, 0));
+                breakpoints
+                    .lock()
+                    .unwrap()
+                    .push((i, false_bp1, false_bp2, 0));
                 return;
             }
             let ol_len = cons[i].len().min(cons[i + 1].len().min(window_len));
@@ -343,47 +349,56 @@ impl PoaConsensusBuilder {
             // --------|-----|-->
             //     <--|-----|---------
             //     CUT ALIGN
-            let overhang_i = &cons[i][cons[i].len() - ol_len..][cut/2..ol_len - cut/2];
-            let overhang_j = &cons[i + 1][0..ol_len][cut/2..ol_len-cut/2];
+            let overhang_i = &cons[i][cons[i].len() - ol_len..][cut / 2..ol_len - cut / 2];
+            let overhang_j = &cons[i + 1][0..ol_len][cut / 2..ol_len - cut / 2];
 
             //dbg!(&overhang_i, &overhang_j);
 
             //i is query
             //log::trace!("Aligning overhangs for blocks {} and {}", i, i + 1);
-            let (i_end, j_end, _) = alignment::align_seq_to_ref_slice_local(overhang_i, overhang_j, &GAPS_LAX_INDEL);
+            let (i_end, j_end, _) =
+                alignment::align_seq_to_ref_slice_local(overhang_i, overhang_j, &GAPS_LAX_INDEL);
             //log::debug!("Alignment for block {} complete, i_end {} j_end {}", i);
-            log::trace!("Alignment for blocks {}, {} and contig {} complete, i_end {} j_end {}", i, i + 1, contig_name, i_end, j_end);
+            log::trace!(
+                "Alignment for blocks {}, {} and contig {} complete, i_end {} j_end {}",
+                i,
+                i + 1,
+                contig_name,
+                i_end,
+                j_end
+            );
 
             //breakpoints.push((query_pos, ref_pos));
             breakpoints.lock().unwrap().push((i, i_end, j_end, cut));
         });
         let mut breakpoints = breakpoints.into_inner().unwrap();
         breakpoints.sort_by_key(|x| x.0);
-        let breakpoints = breakpoints.into_iter().map(|x| (x.1, x.2, x.3)).collect::<Vec<_>>();
+        let breakpoints = breakpoints
+            .into_iter()
+            .map(|x| (x.1, x.2, x.3))
+            .collect::<Vec<_>>();
 
         let mut new_consensus = vec![];
         let mut new_cons_i = std::mem::take(&mut cons[0]);
         let num_bps = breakpoints.len();
         for (i, bp) in breakpoints.into_iter().enumerate() {
-
             let mut new_cons_j = std::mem::take(&mut cons[i + 1]);
             let ol_len = new_cons_i.len().min(new_cons_j.len().min(window_len));
             let hang;
 
             //I believe this happens when the overlap alignments are discordant or near the ends of contigs
-            if bp.0 > ol_len{
+            if bp.0 > ol_len {
                 if i != num_bps - 1 {
                     log::trace!("Potential error in consensus joining at block {} for contig {}. Iblock len {}, Jblock len {}", (i+1) * bp_length - window_len, contig_name, new_cons_i.len(), new_cons_j.len());
                 }
                 hang = 0;
-            }
-            else{
+            } else {
                 hang = ol_len - bp.0;
             }
 
             let cut = bp.2;
-            let break_pos_i = new_cons_i.len() - hang + cut/2;
-            let break_pos_j = bp.1 + cut/2;
+            let break_pos_i = new_cons_i.len() - hang + cut / 2;
+            let break_pos_j = bp.1 + cut / 2;
 
             new_cons_i.truncate(break_pos_i);
             new_cons_j = new_cons_j.split_off(break_pos_j);
@@ -395,7 +410,12 @@ impl PoaConsensusBuilder {
         return new_consensus;
     }
 
-    pub fn new(genome_length: usize, contig_name: String, genome_string_u8: Vec<u8>, args: &Cli) -> Self {
+    pub fn new(
+        genome_length: usize,
+        contig_name: String,
+        genome_string_u8: Vec<u8>,
+        args: &Cli,
+    ) -> Self {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
@@ -410,7 +430,7 @@ impl PoaConsensusBuilder {
     }
 
     #[cfg(test)]
-    fn new_test(genome_length: usize) -> Self{
+    fn new_test(genome_length: usize) -> Self {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
@@ -470,8 +490,19 @@ impl PoaConsensusBuilder {
         let total_seqs: usize = counts.iter().sum();
         let max_seqs = *counts.iter().max().unwrap_or(&0);
         counts.sort();
-        let median_seqs = if counts.is_empty() { 0 } else { counts[counts.len() / 2] };
-        (num_blocks_with_seqs, total_seqs, max_seqs, median_seqs, suspicious_blocks, max_length)
+        let median_seqs = if counts.is_empty() {
+            0
+        } else {
+            counts[counts.len() / 2]
+        };
+        (
+            num_blocks_with_seqs,
+            total_seqs,
+            max_seqs,
+            median_seqs,
+            suspicious_blocks,
+            max_length,
+        )
     }
 
     fn populate_block(
@@ -520,7 +551,6 @@ impl PoaConsensusBuilder {
         let mut window_breakpoint = self.breakpoints[bp_i] + self.window_overlap_len;
         let mut past_breakpoint = false;
         for (op, len) in cigar.iter() {
-
             match op {
                 Operation::M | Operation::Eq | Operation::X => {
                     for _ in 0..len {
@@ -545,7 +575,7 @@ impl PoaConsensusBuilder {
                                 &qual,
                                 &mut current_block_string,
                                 &mut current_block_qual,
-                                bp_i-1,
+                                bp_i - 1,
                                 current_position_q,
                                 breakpoint_q,
                             );
@@ -602,7 +632,7 @@ impl PoaConsensusBuilder {
                 &mut current_block_qual,
                 last_bp_i,
                 current_position_q,
-                current_position_q
+                current_position_q,
             );
         }
     }
@@ -625,8 +655,7 @@ impl PoaConsensusBuilder {
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
                     .collect();
-                } 
-            else {
+            } else {
                 query_seq_u8 = query_seq
                     .iter()
                     .map(|x| x.to_char().to_ascii_uppercase() as u8)
@@ -636,17 +665,17 @@ impl PoaConsensusBuilder {
             let query_quals_opt = &twin_reads[ol.query_id as usize].qual_seq;
             //query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
             let mut query_quals_u8: Vec<u8>;
-            if let Some(query_quals) = query_quals_opt{
+            if let Some(query_quals) = query_quals_opt {
                 let query_quals_u8_binned: Vec<u8>;
-                if ol.reverse{
+                if ol.reverse {
                     query_quals_u8_binned = query_quals
-                    .to_revcomp()
-                    .iter()
-                    .map(|x| (x as u8) * 3 + 33)
-                    .collect();
-                }
-                else{
-                    query_quals_u8_binned = query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
+                        .to_revcomp()
+                        .iter()
+                        .map(|x| (x as u8) * 3 + 33)
+                        .collect();
+                } else {
+                    query_quals_u8_binned =
+                        query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
                 }
 
                 let bin_size = QUALITY_SEQ_BIN;
@@ -657,13 +686,11 @@ impl PoaConsensusBuilder {
 
                 if query_quals_u8.len() > query_seq.len() {
                     query_quals_u8.truncate(query_seq.len());
-                }
-                else if query_quals_u8.len() < query_seq.len() {
+                } else if query_quals_u8.len() < query_seq.len() {
                     let last_qual = query_quals_u8[query_quals_u8.len() - 1];
                     query_quals_u8.extend(vec![last_qual; query_seq.len() - query_quals_u8.len()]);
                 }
-            }
-            else{
+            } else {
                 query_quals_u8 = vec![70; query_seq_u8.len()];
             }
 
@@ -678,31 +705,53 @@ impl PoaConsensusBuilder {
     }
 }
 
-pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, hang2: usize, contig_name: &str, args: &Cli) {
-
+pub fn join_circular_ends(
+    seq: &mut Vec<u8>,
+    overlap_len: usize,
+    hang1: usize,
+    hang2: usize,
+    contig_name: &str,
+    args: &Cli,
+) {
     let seq_len = seq.len();
-    if seq_len < 1000{
-        return
+    if seq_len < 1000 {
+        return;
     }
 
     //let overlap_length = edge.overlap.overlap_len_bases + edge.overlap.hang1 + edge.overlap.hang2 + 1000;
     let mut overlap_length = overlap_len + hang1 + hang2 + (seq.len() / 10).min(500);
 
-    if overlap_length > seq_len{
+    if overlap_length > seq_len {
         //log::debug!("Overlap length is greater than sequence length for contig {}; something went wrong during polishing -- unsuccessfully circularized.", contig_name);
         overlap_length = seq_len * 3 / 4;
     }
 
-    let overhang1 = seq[seq_len-overlap_length..seq_len].to_vec();
+    let overhang1 = seq[seq_len - overlap_length..seq_len].to_vec();
     let overhang2 = seq[0..overlap_length].to_vec();
 
-    let tr1 = seeding::get_twin_read_syncmer(overhang1, None, args.kmer_size, args.c, &FxHashSet::default(), String::new()).unwrap();
-    let tr2 = seeding::get_twin_read_syncmer(overhang2, None, args.kmer_size, args.c, &FxHashSet::default(), String::new()).unwrap();
+    let tr1 = seeding::get_twin_read_syncmer(
+        overhang1,
+        None,
+        args.kmer_size,
+        args.c,
+        &FxHashSet::default(),
+        String::new(),
+    )
+    .unwrap();
+    let tr2 = seeding::get_twin_read_syncmer(
+        overhang2,
+        None,
+        args.kmer_size,
+        args.c,
+        &FxHashSet::default(),
+        String::new(),
+    )
+    .unwrap();
 
     let mut lax_args = args.clone();
-    lax_args.min_ol = args.min_ol/2;
+    lax_args.min_ol = args.min_ol / 2;
 
-    let tr_options = CompareTwinReadOptions{
+    let tr_options = CompareTwinReadOptions {
         compare_snpmers: false,
         retain_chain: false,
         //force_one_to_one_alignments: true,
@@ -710,11 +759,15 @@ pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, h
         ..Default::default()
     };
 
-    let overlaps = mapping::compare_twin_reads(&tr1, &tr2, None, None, 0, 1, &tr_options, args);
+    let overlaps =
+        mapping::compare_twin_reads(&tr1, &tr2, None, None, None, 0, 1, &tr_options, args);
 
-    if overlaps.is_empty(){
-        log::debug!("Circular contig with hash id {} was not able to be end-polished correctly", &contig_name);
-        return
+    if overlaps.is_empty() {
+        log::debug!(
+            "Circular contig with hash id {} was not able to be end-polished correctly",
+            &contig_name
+        );
+        return;
     }
 
     let best_overlap = overlaps.iter().max_by_key(|x| x.end1 - x.start1).unwrap();
@@ -722,9 +775,20 @@ pub fn join_circular_ends(seq: &mut Vec<u8>, overlap_len: usize, hang1: usize, h
     //dbg!(&best_overlap);
     let end_trim = overlap_length - best_overlap.start1;
     let start_trim = best_overlap.start2;
-    log::trace!("Overlap length {}, end_trim {}, start_trim {}, contig {}", overlap_length, end_trim, start_trim, contig_name);
-    log::trace!("Best overlap for circular contig {}: {:?}. New length: {}", contig_name, best_overlap, seq_len - end_trim - start_trim);
-    let new_seq = seq[start_trim..seq_len-end_trim].to_vec();
+    log::trace!(
+        "Overlap length {}, end_trim {}, start_trim {}, contig {}",
+        overlap_length,
+        end_trim,
+        start_trim,
+        contig_name
+    );
+    log::trace!(
+        "Best overlap for circular contig {}: {:?}. New length: {}",
+        contig_name,
+        best_overlap,
+        seq_len - end_trim - start_trim
+    );
+    let new_seq = seq[start_trim..seq_len - end_trim].to_vec();
     *seq = new_seq;
 }
 
@@ -748,7 +812,7 @@ pub fn trim_consensus_by_coverage(consensus: &[u8], seqs: &[Vec<u8>]) -> Vec<u8>
 
         // Remove null terminator if present
         let seq_clean = if seq.last() == Some(&0) {
-            &seq[..seq.len()-1]
+            &seq[..seq.len() - 1]
         } else {
             &seq[..]
         };
@@ -883,16 +947,35 @@ fn abpoa_consensus_impl(
     gap_extend: i32,
 ) -> Vec<u8> {
     // Strip null terminators — abpoa takes plain byte slices
-    let clean: Vec<&[u8]> = seqs.iter()
-        .map(|s| if s.last() == Some(&0) { &s[..s.len() - 1] } else { &s[..] })
+    let clean: Vec<&[u8]> = seqs
+        .iter()
+        .map(|s| {
+            if s.last() == Some(&0) {
+                &s[..s.len() - 1]
+            } else {
+                &s[..]
+            }
+        })
         .collect();
 
     // Convert Phred+33 quality bytes to non-negative i32 weights
-    let weights: Vec<Vec<i32>> = quals.iter().zip(clean.iter())
+    let weights: Vec<Vec<i32>> = quals
+        .iter()
+        .zip(clean.iter())
         .map(|(q, s)| {
-            let q_data = if q.last() == Some(&0) { &q[..q.len() - 1] } else { &q[..] };
+            let q_data = if q.last() == Some(&0) {
+                &q[..q.len() - 1]
+            } else {
+                &q[..]
+            };
             (0..s.len())
-                .map(|i| if i < q_data.len() { (q_data[i] as i32 - 33).max(0) } else { 0 })
+                .map(|i| {
+                    if i < q_data.len() {
+                        (q_data[i] as i32 - 33).max(0)
+                    } else {
+                        0
+                    }
+                })
                 .collect()
         })
         .collect();
@@ -901,7 +984,7 @@ fn abpoa_consensus_impl(
     // abpoa uses positive penalty magnitudes; negate spoa-convention values
     let mismatch_pen = (-mismatch_score).max(1);
     let gap_open_pen = (-gap_open).max(1);
-    let gap_ext_pen  = (-gap_extend).max(1);
+    let gap_ext_pen = (-gap_extend).max(1);
 
     let mut params = match Parameters::configure() {
         Ok(p) => p,
@@ -912,9 +995,18 @@ fn abpoa_consensus_impl(
         .set_align_mode(AlignMode::Global)
         .set_use_quality(true)
         .set_use_read_ids(false)
-        .set_consensus(abpoa::ConsensusAlgorithm::HeaviestBundle, 1, 0.00);
+        .set_consensus(abpoa::ConsensusAlgorithm::HeaviestBundle, 1, 0.00)
+        .unwrap();
 
-    if params.set_scoring_scheme(Scoring::affine(match_score, mismatch_pen, gap_open_pen, gap_ext_pen)).is_err() {
+    if params
+        .set_scoring_scheme(Scoring::affine(
+            match_score,
+            mismatch_pen,
+            gap_open_pen,
+            gap_ext_pen,
+        ))
+        .is_err()
+    {
         return vec![];
     }
 
@@ -931,18 +1023,16 @@ fn abpoa_consensus_impl(
     };
 
     match aligner.msa(batch) {
-        
         Ok(result) => {
-            if result.clusters.is_empty(){
+            if result.clusters.is_empty() {
                 vec![]
-            }
-            else{
+            } else {
                 result.clusters[0].consensus.as_bytes().to_vec()
             }
         }
         _ => {
             vec![]
-        },
+        }
     }
 }
 
@@ -950,25 +1040,33 @@ fn abpoa_consensus_impl(
 /// `seqs` and `quals` are null-terminated and can be passed directly to `poa_consensus`
 /// and `trim_consensus_by_coverage` without any extra allocation.
 struct HpcSeqsCompressed {
-    seqs: Vec<Vec<u8>>,            // null-terminated HPC sequences
-    quals: Vec<Vec<u8>>,           // null-terminated median qualities (one per HPC base)
-    run_lengths: Vec<Vec<u32>>,    // [read][hpc_base] -> original run length
+    seqs: Vec<Vec<u8>>,         // null-terminated HPC sequences
+    quals: Vec<Vec<u8>>,        // null-terminated median qualities (one per HPC base)
+    run_lengths: Vec<Vec<u32>>, // [read][hpc_base] -> original run length
 }
 
 /// Compress all `seqs`/`quals` (both null-terminated) into an [`HpcSeqsCompressed`].
 fn hpc_compress_all(seqs: &[Vec<u8>], quals: &[Vec<u8>]) -> HpcSeqsCompressed {
-    let mut hpc_seqs  = Vec::with_capacity(seqs.len());
+    let mut hpc_seqs = Vec::with_capacity(seqs.len());
     let mut hpc_quals = Vec::with_capacity(quals.len());
-    let mut hpc_runs  = Vec::with_capacity(seqs.len());
+    let mut hpc_runs = Vec::with_capacity(seqs.len());
 
     for (seq, qual) in seqs.iter().zip(quals.iter()) {
-        let seq_data  = if seq.last()  == Some(&0) { &seq[..seq.len()  - 1] } else { seq };
-        let qual_data = if qual.last() == Some(&0) { &qual[..qual.len() - 1] } else { qual };
+        let seq_data = if seq.last() == Some(&0) {
+            &seq[..seq.len() - 1]
+        } else {
+            seq
+        };
+        let qual_data = if qual.last() == Some(&0) {
+            &qual[..qual.len() - 1]
+        } else {
+            qual
+        };
         let qual_data = &qual_data[..qual_data.len().min(seq_data.len())];
 
-        let mut hpc_seq  = Vec::new();
+        let mut hpc_seq = Vec::new();
         let mut hpc_qual = Vec::new();
-        let mut runs     = Vec::new();
+        let mut runs = Vec::new();
 
         let mut i = 0;
         while i < seq_data.len() {
@@ -1000,7 +1098,11 @@ fn hpc_compress_all(seqs: &[Vec<u8>], quals: &[Vec<u8>]) -> HpcSeqsCompressed {
         hpc_runs.push(runs);
     }
 
-    HpcSeqsCompressed { seqs: hpc_seqs, quals: hpc_quals, run_lengths: hpc_runs }
+    HpcSeqsCompressed {
+        seqs: hpc_seqs,
+        quals: hpc_quals,
+        run_lengths: hpc_runs,
+    }
 }
 
 /// Expand an HPC consensus back to full length by voting on run lengths from aligned reads.
@@ -1020,27 +1122,42 @@ fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
 
     let aligner = alignment::SeedChainAligner::new(hpc_cons);
     for (read_idx, seq) in hpc.seqs.iter().enumerate() {
-        let seq_data = if seq.last() == Some(&0) { &seq[..seq.len() - 1] } else { &seq[..] };
-        if seq_data.is_empty() { continue; }
+        let seq_data = if seq.last() == Some(&0) {
+            &seq[..seq.len() - 1]
+        } else {
+            &seq[..]
+        };
+        if seq_data.is_empty() {
+            continue;
+        }
 
         let (query_end, ref_end, cigar) = aligner.align(seq_data, &GAPS);
-        if cigar.is_empty() { continue; }
+        if cigar.is_empty() {
+            continue;
+        }
 
         // Derive alignment start positions from CIGAR totals
         let mut ref_consumed = 0usize;
-        let mut q_consumed   = 0usize;
+        let mut q_consumed = 0usize;
         for op in &cigar {
             match op.op {
-                Operation::M | Operation::X | Operation::Eq => { ref_consumed += op.len; q_consumed += op.len; }
-                Operation::D => { ref_consumed += op.len; }
-                Operation::I => { q_consumed   += op.len; }
+                Operation::M | Operation::X | Operation::Eq => {
+                    ref_consumed += op.len;
+                    q_consumed += op.len;
+                }
+                Operation::D => {
+                    ref_consumed += op.len;
+                }
+                Operation::I => {
+                    q_consumed += op.len;
+                }
                 _ => {}
             }
         }
         let mut r_pos = ref_end.saturating_sub(ref_consumed);
         let mut q_pos = query_end.saturating_sub(q_consumed);
 
-        let runs  = &hpc.run_lengths[read_idx];
+        let runs = &hpc.run_lengths[read_idx];
         let quals = &hpc.quals[read_idx]; // null at [runs.len()]; safe to index up to runs.len()-1
 
         for op in &cigar {
@@ -1054,8 +1171,12 @@ fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
                         r_pos += 1;
                     }
                 }
-                Operation::I => { q_pos += op.len; }
-                Operation::D => { r_pos += op.len; }
+                Operation::I => {
+                    q_pos += op.len;
+                }
+                Operation::D => {
+                    r_pos += op.len;
+                }
                 _ => {}
             }
         }
@@ -1071,7 +1192,11 @@ fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
             for &(rl, w) in &votes[r] {
                 *scores.entry(rl).or_insert(0) += w as u32;
             }
-            scores.into_iter().max_by_key(|(_, v)| *v).map(|(k, _)| k).unwrap_or(1)
+            scores
+                .into_iter()
+                .max_by_key(|(_, v)| *v)
+                .map(|(k, _)| k)
+                .unwrap_or(1)
         };
         for _ in 0..run_len {
             expanded.push(base);
@@ -1084,7 +1209,7 @@ fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
 
-use super::*;
+    use super::*;
 
     #[test]
     fn test_generate_breakpoints() {
@@ -1401,14 +1526,14 @@ use super::*;
             //dbg!(&builder.seq[1].lock().unwrap());
             let cons = builder.spoa_blocks();
             for cons in cons.iter() {
-                if cons.len() != 0{
+                if cons.len() != 0 {
                     println!("{:?}", String::from_utf8_lossy(&cons));
                 }
             }
 
             if window_length == 0 {
                 //insertion at border
-                assert!(cons[0].len() == 6);
+                assert!(cons[0].len() == 5);
             } else {
                 //no insertion
                 assert!(cons.iter().map(|x| x.len()).sum::<usize>() == 20);
@@ -1525,14 +1650,15 @@ use super::*;
 
         builder.generate_breakpoints(700, 50);
 
-        let seqs: Vec<Vec<u8>> = vec![b"CTGATAACTCTAAATCTTGCTGTCAGGCAT".to_vec(),
+        let seqs: Vec<Vec<u8>> = vec![
         b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGGAAAAGTACAATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
         b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAAGAAACAAGCAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
         b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTCTGTTGCTTGAATACGATGTCACTCAATATAGACTGGTCCAGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACAAGAAAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGAAAAATATTCCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
         b"CTGATAACTCAAACTGCTGTCAGGCATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATAAGAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTCAGCGCCACGGAAGCATGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCATTCTGCACTTTAAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
-        b"CATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATCAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTTCAGCGCCACAAAGTCCTGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCCATTCTGCACTTACAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),];
+        b"CATTGCCAGAACAGCAAGATAATGAATGCCAAATTCATCTATCTTATTGAATACGATGTCACTCAATATAGACTGGTCCAGGAAAGAAGAAGGAACCTGCTTATCGAAATCCTTCTTATGAAAATCACGAGAGAACAGACAGTTGGCACCATGATAAACATGCAAGTTCACAATATTATCATAATAAACATTGTCTACCTCAACACCATCATCATTATCAACTCTTGTAGACCTTATAACTTGTTGGGTTAACCTGTACATAGAGATGATATTTCCCATCGCCCCTTACAACAACCGTATCACGTTTAATCAGCGTATTCTGATTTCAGCGCCACAAAGTCCTGGTTGTGGATGAACTGCTGCAAATAAGACTTATCTTCCGTCTTCACCAGCTTAACCACATCCCCCATTCTGCACTTACAACTGGAAAATATGCTCAGCCTGTTTTACGATCGGATATTTTGCAATATTAGC".to_vec(),
+        b"CTGATAACTCTAAATCTTGCTGTCAGGCAT".to_vec(),
+        ];
         let mut quals = seqs.iter().map(|x| vec![50; x.len()]).collect::<Vec<_>>();
-        quals[0] = vec![100; 30];
 
         let cigars = seqs
             .iter()
@@ -1545,54 +1671,58 @@ use super::*;
             .collect::<Vec<_>>();
 
         for i in 0..6 {
-            builder.add_seq(seqs[i].clone(), quals[i].clone(), &OpLenVec::new(cigars[i].clone()), 0, 0);
+            builder.add_seq(
+                seqs[i].clone(),
+                quals[i].clone(),
+                &OpLenVec::new(cigars[i].clone()),
+                0,
+                0,
+            );
         }
 
         let consensuses = builder.spoa_blocks();
         println!("Consensuses: {:?}", consensuses[0]);
         assert!(consensuses[0].len() > 480 && consensuses[0].len() < 520);
     }
-    
+
     #[test]
-    fn test_modify_new(){
+    fn test_modify_new() {
         let consensuses = vec![
-            b"GCAACGTATGT".to_vec(), // last C is error
-            b"ACGTATGTGTGTGT".to_vec() // first T is errors
+            b"GCAACGTATGT".to_vec(),    // last C is error
+            b"ACGTATGTGTGTGT".to_vec(), // first T is errors
         ];
 
         let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 8, 20, "test");
 
         let mut final_consensus = vec![];
-        for cons in new_cons{
+        for cons in new_cons {
             println!("{:?}", String::from_utf8_lossy(&cons));
             final_consensus.extend(cons);
         }
 
         assert_eq!(final_consensus, b"GCAACGTATGTGTGTGT".to_vec());
-
     }
 
     #[test]
-    fn test_modify_new_del(){
+    fn test_modify_new_del() {
         let consensuses = vec![
             b"AAAAATTTA".to_vec(), // last A is error
-            b"CTTTGGGG".to_vec() // first T is errors
+            b"CTTTGGGG".to_vec(),  // first T is errors
         ];
 
         let new_cons = PoaConsensusBuilder::modify_join_consensus(consensuses, 5, 20, "test");
 
         let mut final_consensus = vec![];
-        for cons in new_cons{
+        for cons in new_cons {
             println!("{:?}", String::from_utf8_lossy(&cons));
             final_consensus.extend(cons);
         }
 
         assert_eq!(final_consensus, b"AAAAATTTGGGG".to_vec());
-
     }
 
     #[test]
-    fn circular_join_basic_test(){
+    fn circular_join_basic_test() {
         let mut args = Cli::default();
         args.c = 5;
         args.kmer_size = 17;
@@ -1614,7 +1744,7 @@ use super::*;
     }
 
     #[test]
-    fn circular_join_basic_test_fuzzy(){
+    fn circular_join_basic_test_fuzzy() {
         let mut args = Cli::default();
         args.c = 5;
         args.kmer_size = 17;
@@ -1641,7 +1771,7 @@ use super::*;
     //#[test]
     fn _test_poa_homopolymer_distribution() {
         // 25-base high-entropy flanks surrounding a poly-A homopolymer
-        let left_flank  = b"ACGTACGATCGCATGCTACGATCGA"; // 25 bases
+        let left_flank = b"ACGTACGATCGCATGCTACGATCGA"; // 25 bases
         let right_flank = b"TGCATCGATCGATCGTAGCATGCAT"; // 25 bases
 
         // Triangular distribution of homopolymer lengths centered at 10.
@@ -1649,8 +1779,15 @@ use super::*;
         //   len:   6   7   8   9  10  11  12  13  14
         //   count: 2   4   6   8  10   8   6   4   2
         let distribution: &[(usize, usize)] = &[
-            (6, 2), (7, 4), (8, 6), (9, 8), (10, 10),
-            (11, 8), (12, 6), (13, 4), (14, 2),
+            (6, 2),
+            (7, 4),
+            (8, 6),
+            (9, 8),
+            (10, 10),
+            (11, 8),
+            (12, 6),
+            (13, 4),
+            (14, 2),
         ];
 
         let mut seqs: Vec<Vec<u8>> = vec![];
@@ -1706,7 +1843,6 @@ use super::*;
         let quals = seqs.iter().map(|x| vec![33; x.len()]).collect::<Vec<_>>();
         //quals[0][5] = 50;
 
-
         let cigars = seqs
             .iter()
             .map(|x| {
@@ -1718,7 +1854,13 @@ use super::*;
             .collect::<Vec<_>>();
 
         for i in 0..seqs.len() {
-            builder.add_seq(seqs[i].clone(), quals[i].clone(), &OpLenVec::new(cigars[i].clone()), 0, 0);
+            builder.add_seq(
+                seqs[i].clone(),
+                quals[i].clone(),
+                &OpLenVec::new(cigars[i].clone()),
+                0,
+                0,
+            );
         }
 
         let consensuses = builder.spoa_blocks();
@@ -1728,16 +1870,16 @@ use super::*;
     #[test]
     fn test_hpc_compress_all() {
         // Two reads: one with a 3-base poly-A, one with a 2-base poly-A
-        let seqs = vec![
-            b"GCAAATGC\0".to_vec(),
-            b"GCAATGC\0".to_vec(),
-        ];
+        let seqs = vec![b"GCAAATGC\0".to_vec(), b"GCAATGC\0".to_vec()];
         // Qualities: 50 for every real base, null at end
-        let quals: Vec<Vec<u8>> = seqs.iter().map(|s| {
-            let mut q = vec![50u8; s.len() - 1];
-            q.push(0u8);
-            q
-        }).collect();
+        let quals: Vec<Vec<u8>> = seqs
+            .iter()
+            .map(|s| {
+                let mut q = vec![50u8; s.len() - 1];
+                q.push(0u8);
+                q
+            })
+            .collect();
 
         let hpc = hpc_compress_all(&seqs, &quals);
 
@@ -1766,12 +1908,18 @@ use super::*;
             s
         };
 
-        let seqs: Vec<Vec<u8>> = [1, 2, 3, 4, 5, 6, 7, 3, 4, 2, 3].iter().map(|&n| make_seq(n)).collect();
-        let quals: Vec<Vec<u8>> = seqs.iter().map(|s| {
-            let mut q = vec![50u8; s.len() - 1];
-            q.push(0u8);
-            q
-        }).collect();
+        let seqs: Vec<Vec<u8>> = [1, 2, 3, 4, 5, 6, 7, 3, 4, 2, 3]
+            .iter()
+            .map(|&n| make_seq(n))
+            .collect();
+        let quals: Vec<Vec<u8>> = seqs
+            .iter()
+            .map(|s| {
+                let mut q = vec![50u8; s.len() - 1];
+                q.push(0u8);
+                q
+            })
+            .collect();
 
         let consensus_without_hpc = poa_consensus(&seqs, &quals, 50, 1, 5, -2, -2, -1);
         // There will be 5 As in the consensus...
@@ -1786,20 +1934,39 @@ use super::*;
         let mut max_run = 0usize;
         let mut cur = 0usize;
         for &b in &expanded {
-            if b == b'A' { cur += 1; max_run = max_run.max(cur); } else { cur = 0; }
+            if b == b'A' {
+                cur += 1;
+                max_run = max_run.max(cur);
+            } else {
+                cur = 0;
+            }
         }
-        assert_eq!(max_run, 3,
+        assert_eq!(
+            max_run,
+            3,
             "Expected poly-A of length 3, got {}. Expanded: {}",
-            max_run, std::str::from_utf8(&expanded).unwrap_or("?"));
+            max_run,
+            std::str::from_utf8(&expanded).unwrap_or("?")
+        );
     }
 
     // Helper: build null-terminated seqs/quals from plain string slices
     fn make_null_terminated(seqs_str: &[&str], qual_byte: u8) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
-        let seqs: Vec<Vec<u8>> = seqs_str.iter()
-            .map(|s| { let mut v = s.as_bytes().to_vec(); v.push(0u8); v })
+        let seqs: Vec<Vec<u8>> = seqs_str
+            .iter()
+            .map(|s| {
+                let mut v = s.as_bytes().to_vec();
+                v.push(0u8);
+                v
+            })
             .collect();
-        let quals: Vec<Vec<u8>> = seqs.iter()
-            .map(|s| { let mut q = vec![qual_byte; s.len() - 1]; q.push(0u8); q })
+        let quals: Vec<Vec<u8>> = seqs
+            .iter()
+            .map(|s| {
+                let mut q = vec![qual_byte; s.len() - 1];
+                q.push(0u8);
+                q
+            })
             .collect();
         (seqs, quals)
     }
@@ -1808,23 +1975,40 @@ use super::*;
     fn test_abpoa_basic() {
         // Same 6-sequence set used in test_dna_consensus; expected consensus is "AATGCCCGTT"
         let (seqs, quals) = make_null_terminated(
-            &["ATTGCCCGTT", "AATGCCGTT", "AATGCCCGAT", "AACGCCCGTC", "AGTGCTCGTT", "AATGCTCGTT"],
+            &[
+                "ATTGCCCGTT",
+                "AATGCCGTT",
+                "AATGCCCGAT",
+                "AACGCCCGTC",
+                "AGTGCTCGTT",
+                "AATGCTCGTT",
+            ],
             50,
         );
         let cons = abpoa_consensus_impl(&seqs, &quals, 5, -2, -2, -1);
-        assert_eq!(cons, b"AATGCCCGTT".to_vec(),
+        assert_eq!(
+            cons,
+            b"AATGCCCGTT".to_vec(),
             "abpoa basic consensus mismatch: got {}",
-            std::str::from_utf8(&cons).unwrap_or("?"));
+            std::str::from_utf8(&cons).unwrap_or("?")
+        );
     }
 
     #[test]
     fn test_abpoa_homopolymer_distribution() {
         // Triangular distribution of poly-A lengths centered at 10 (same as test_poa_homopolymer_distribution)
-        let left_flank  = "ACGTACGATCGCATGCTACGATCGA";
+        let left_flank = "ACGTACGATCGCATGCTACGATCGA";
         let right_flank = "TGCATCGATCGATCGTAGCATGCAT";
         let distribution: &[(usize, usize)] = &[
-            (6, 2), (7, 4), (8, 6), (9, 8), (10, 10),
-            (11, 8), (12, 6), (13, 4), (14, 2),
+            (6, 2),
+            (7, 4),
+            (8, 6),
+            (9, 8),
+            (10, 10),
+            (11, 8),
+            (12, 6),
+            (13, 4),
+            (14, 2),
         ];
 
         let mut seqs: Vec<Vec<u8>> = vec![];
@@ -1846,11 +2030,18 @@ use super::*;
         let mut max_run = 0usize;
         let mut cur = 0usize;
         for &b in &cons {
-            if b == b'A' { cur += 1; max_run = max_run.max(cur); } else { cur = 0; }
+            if b == b'A' {
+                cur += 1;
+                max_run = max_run.max(cur);
+            } else {
+                cur = 0;
+            }
         }
-        assert!(max_run >= 9 && max_run <= 11,
+        assert!(
+            max_run >= 9 && max_run <= 11,
             "Expected poly-A homopolymer length ~10, got {}. Consensus: {}",
-            max_run, std::str::from_utf8(&cons).unwrap_or("?"));
+            max_run,
+            std::str::from_utf8(&cons).unwrap_or("?")
+        );
     }
-
 }

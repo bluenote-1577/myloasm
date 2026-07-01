@@ -1,11 +1,11 @@
 use crate::cli::Cli;
 use crate::constants::GAPS;
 use crate::constants::SUB_MATRIX;
+use crate::seeding::minimizer_seeds_positions;
 use crate::types::*;
 use bio_seq::prelude::*;
 use block_aligner::{cigar::*, scan_block::*, scores::*};
 use fxhash::FxHashMap;
-use crate::seeding::minimizer_seeds_positions;
 
 fn get_length_from_cigar(cigar: &Vec<OpLen>) -> (usize, usize) {
     let mut add_length_ref = 0;
@@ -34,7 +34,7 @@ pub fn extend_ends_chain(
     r_seq: &Seq<Dna>,
     overlap: &TwinOverlap,
     args: &Cli,
-) -> (usize, usize, usize, usize){
+) -> (usize, usize, usize, usize) {
     let k = args.kmer_size as u32;
     let chain = overlap.minimizer_chain.as_ref().unwrap();
     let q_seq;
@@ -62,8 +62,7 @@ pub fn extend_ends_chain(
         chain[0].pos2
     };
 
-
-    // ----- LEFT EXTEND ---- 
+    // ----- LEFT EXTEND ----
     let left_ref = if prev_q_pos > prev_r_pos {
         0
     } else {
@@ -106,7 +105,7 @@ pub fn extend_ends_chain(
     };
 
     let end_r_pos = if overlap.chain_reverse {
-        chain[0].pos2 
+        chain[0].pos2
     } else {
         chain[end_ind].pos2
     };
@@ -119,7 +118,8 @@ pub fn extend_ends_chain(
     let r_right_slice = &r_seq[prpos..prpos + right_gap];
     let q_right_slice_u8 = dna_slice_to_u8(q_right_slice);
     let r_right_slice_u8 = dna_slice_to_u8(r_right_slice);
-    let right_cigar = align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(100));
+    let right_cigar =
+        align_seq_to_ref_slice(&r_right_slice_u8, &q_right_slice_u8, &GAPS, Some(100));
     let (add_length_ref_r, add_length_q_r) = get_length_from_cigar(&right_cigar);
 
     let q_end = pqpos + add_length_q_r;
@@ -137,7 +137,11 @@ pub fn get_full_alignment(
     args: &Cli,
 ) -> Option<AlignmentResult> {
     //TODO
-    log::trace!("Getting alignment between r{} and r{}", overlap.i1, overlap.i2);
+    log::trace!(
+        "Getting alignment between r{} and r{}",
+        overlap.i1,
+        overlap.i2
+    );
     let k = args.kmer_size as u32;
     let chain = overlap.minimizer_chain.as_ref().unwrap();
     let q_seq;
@@ -167,7 +171,7 @@ pub fn get_full_alignment(
 
     let mut cigar_vec;
 
-    // ----- LEFT EXTEND ---- 
+    // ----- LEFT EXTEND ----
     let left_ref = if prev_q_pos > prev_r_pos {
         0
     } else {
@@ -201,14 +205,13 @@ pub fn get_full_alignment(
     //TODO
     //log::trace!("Left cigar: {}", fmt(&cigar_vec));
 
-    // --- CHAIN + EXTEND ---- 
+    // --- CHAIN + EXTEND ----
     cigar_vec.push(OpLen {
         op: Operation::M,
         len: k as usize,
     });
 
     for i in 1..chain.len() {
-        
         let q_pos = if overlap.chain_reverse {
             qlen - chain[end_ind - i].pos1 - k
         } else {
@@ -241,17 +244,20 @@ pub fn get_full_alignment(
         let r_slice_u8 = dna_slice_to_u8(&r_seq[r2]);
         let cigar = align_seq_to_ref_slice(&r_slice_u8, &q_slice_u8, &GAPS, None);
         extend_cigar(&mut cigar_vec, cigar);
-        extend_cigar(&mut cigar_vec, vec![OpLen {
-            op: Operation::M,
-            len: k as usize,
-        }]);
+        extend_cigar(
+            &mut cigar_vec,
+            vec![OpLen {
+                op: Operation::M,
+                len: k as usize,
+            }],
+        );
         prev_q_pos = q_pos;
         prev_r_pos = r_pos;
     }
 
     //TODO
     //log::trace!("Chain cigar: {}", fmt(&cigar_vec));
-    
+
     // --- RIGHT EXTEND ----
     // qlen = 3, end = 1, k = 2, gap = 0
     let right_gap = (qlen - prev_q_pos - k).min(r_seq.len() as u32 - prev_r_pos - k) as usize;
@@ -296,7 +302,7 @@ pub fn get_full_alignment(
     assert!(cigar_length_r == (r_end - r_start));
     assert!(cigar_length_q == (q_end - q_start));
 
-        //Seed-chain-extend implementation
+    //Seed-chain-extend implementation
 
     return Some(AlignmentResult {
         cigar: OpLenVec::new(cigar_vec),
@@ -307,14 +313,12 @@ pub fn get_full_alignment(
     });
 }
 
-
 #[inline]
 fn extend_cigar(cigar: &mut Vec<OpLen>, new_cigar: Vec<OpLen>) {
     for op_len in new_cigar {
         if cigar.last().unwrap().op == op_len.op {
             cigar.last_mut().unwrap().len += op_len.len;
-        } 
-        else {
+        } else {
             cigar.push(op_len);
         }
     }
@@ -342,9 +346,9 @@ pub fn align_seq_to_ref_slice(
     gaps: &Gaps,
     xdrop: Option<i32>,
 ) -> Vec<OpLen> {
-    let mut cigar; 
+    let mut cigar;
     let bs = 16;
-    if xdrop.is_some(){
+    if xdrop.is_some() {
         let mut a = Block::<true, true>::new(query_sliced.len(), reference_sliced.len(), bs);
         let score_mat = SUB_MATRIX;
         let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, bs);
@@ -367,9 +371,7 @@ pub fn align_seq_to_ref_slice(
             res.reference_idx,
             &mut cigar,
         );
-
-    }
-    else{
+    } else {
         let max_bs = block_size_from_seq(query_sliced.len());
         let min_bs = 4;
         let mut a = Block::<true, false>::new(query_sliced.len(), reference_sliced.len(), max_bs);
@@ -387,17 +389,16 @@ pub fn align_seq_to_ref_slice(
         let res = a.res();
         cigar = Cigar::new(res.query_idx, res.reference_idx);
         a.trace().cigar_eq(
-        &query_pad,
-        &reference_pad,
-        res.query_idx,
-        res.reference_idx,
-        &mut cigar,
-    );
-
+            &query_pad,
+            &reference_pad,
+            res.query_idx,
+            res.reference_idx,
+            &mut cigar,
+        );
     }
     let mut cig = cigar.to_vec();
     //xdrop for blockaligner is weird because its fuzzy; remove this.
-    if xdrop.is_some(){
+    if xdrop.is_some() {
         while cig.len() > 1 && cig.last().unwrap().op != Operation::M {
             cig.pop();
         }
@@ -415,27 +416,24 @@ pub fn align_seq_to_ref_slice(
 pub fn block_size_from_seq(seq_length: usize) -> usize {
     let mut block_size = 16;
 
-
-    if seq_length > 100{
+    if seq_length > 100 {
         block_size = 32;
-    }
-    else if seq_length > 500{
+    } else if seq_length > 500 {
         block_size = 128;
     }
-    
+
     return block_size;
 }
-
-
 
 pub fn align_seq_to_ref_slice_local(
     query_sliced: &[u8],
     reference_sliced: &[u8],
     gaps: &Gaps,
 ) -> (usize, usize, Vec<OpLen>) {
-    let mut cigar; 
+    let mut cigar;
     let max_block = 256;
-    let mut a = Block::<true, true, true>::new(query_sliced.len(), reference_sliced.len(), max_block);
+    let mut a =
+        Block::<true, true, true>::new(query_sliced.len(), reference_sliced.len(), max_block);
     let score_mat = SUB_MATRIX;
     let reference_pad = PaddedBytes::from_bytes::<NucMatrix>(&reference_sliced, max_block);
     let query_pad = PaddedBytes::from_bytes::<NucMatrix>(&query_sliced, max_block);
@@ -457,17 +455,17 @@ pub fn align_seq_to_ref_slice_local(
         &mut cigar,
     );
 
-    // log::trace!("cig:{}, queryend:{}, refend:{}, score:{}", fmt(&cigar.to_vec()), 
-    //     res.query_idx, 
+    // log::trace!("cig:{}, queryend:{}, refend:{}, score:{}", fmt(&cigar.to_vec()),
+    //     res.query_idx,
     //     res.reference_idx,
     //     res.score,
     // );
 
-    //Unlikely, very low score indicates that we should not trust these alignments, just concatenate instead. 
+    //Unlikely, very low score indicates that we should not trust these alignments, just concatenate instead.
     if res.score < 10 && query_sliced.len().min(reference_sliced.len()) > 100 {
         return (query_sliced.len(), 1, vec![]);
     }
-    
+
     return (res.query_idx, res.reference_idx, cigar.to_vec());
 }
 
@@ -487,14 +485,24 @@ impl<'a> SeedChainAligner<'a> {
     pub fn new(reference: &'a [u8]) -> Self {
         let mut ref_kmers: Vec<u64> = Vec::new();
         let mut ref_positions: Vec<u64> = Vec::new();
-        minimizer_seeds_positions(reference, &mut ref_kmers, &mut ref_positions, SEED_W, SEED_K);
+        minimizer_seeds_positions(
+            reference,
+            &mut ref_kmers,
+            &mut ref_positions,
+            SEED_W,
+            SEED_K,
+        );
 
         let use_seeds = ref_kmers.len() >= MIN_ANCHORS;
         let mut index: FxHashMap<u64, Vec<u32>> = FxHashMap::default();
         for (hash, pos) in ref_kmers.iter().zip(ref_positions.iter()) {
             index.entry(*hash).or_default().push(*pos as u32);
         }
-        SeedChainAligner { reference, index, use_seeds }
+        SeedChainAligner {
+            reference,
+            index,
+            use_seeds,
+        }
     }
 
     /// Align `query` against the stored reference.
@@ -535,8 +543,11 @@ impl<'a> SeedChainAligner<'a> {
         let (q0, r0) = chain[0];
         let r_left_start = if q0 > r0 { 0u32 } else { r0 - q0 };
         let q_left_rev: Vec<u8> = query[..q0 as usize].iter().rev().copied().collect();
-        let r_left_rev: Vec<u8> =
-            self.reference[r_left_start as usize..r0 as usize].iter().rev().copied().collect();
+        let r_left_rev: Vec<u8> = self.reference[r_left_start as usize..r0 as usize]
+            .iter()
+            .rev()
+            .copied()
+            .collect();
         let left_cigar_fwd = if q_left_rev.is_empty() || r_left_rev.is_empty() {
             vec![]
         } else {
@@ -549,7 +560,10 @@ impl<'a> SeedChainAligner<'a> {
 
         // --- Chain extend ---
         let mut cigar_vec: Vec<OpLen> = left_cigar;
-        let first_anchor_op = OpLen { op: Operation::M, len: SEED_K };
+        let first_anchor_op = OpLen {
+            op: Operation::M,
+            len: SEED_K,
+        };
         if cigar_vec.is_empty() {
             cigar_vec.push(first_anchor_op);
         } else {
@@ -566,17 +580,34 @@ impl<'a> SeedChainAligner<'a> {
                 continue;
             }
             let q_gap = &query[(prev_q + SEED_K as u32) as usize..q_pos as usize];
-            let r_gap =
-                &self.reference[(prev_r + SEED_K as u32) as usize..r_pos as usize];
+            let r_gap = &self.reference[(prev_r + SEED_K as u32) as usize..r_pos as usize];
             if !q_gap.is_empty() && !r_gap.is_empty() {
                 let gap_cigar = align_seq_to_ref_slice(r_gap, q_gap, gaps, None);
                 extend_cigar(&mut cigar_vec, gap_cigar);
             } else if !q_gap.is_empty() {
-                extend_cigar(&mut cigar_vec, vec![OpLen { op: Operation::I, len: q_gap.len() }]);
+                extend_cigar(
+                    &mut cigar_vec,
+                    vec![OpLen {
+                        op: Operation::I,
+                        len: q_gap.len(),
+                    }],
+                );
             } else if !r_gap.is_empty() {
-                extend_cigar(&mut cigar_vec, vec![OpLen { op: Operation::D, len: r_gap.len() }]);
+                extend_cigar(
+                    &mut cigar_vec,
+                    vec![OpLen {
+                        op: Operation::D,
+                        len: r_gap.len(),
+                    }],
+                );
             }
-            extend_cigar(&mut cigar_vec, vec![OpLen { op: Operation::M, len: SEED_K }]);
+            extend_cigar(
+                &mut cigar_vec,
+                vec![OpLen {
+                    op: Operation::M,
+                    len: SEED_K,
+                }],
+            );
             prev_q = q_pos;
             prev_r = r_pos;
         }
@@ -584,7 +615,9 @@ impl<'a> SeedChainAligner<'a> {
         // --- Right extend ---
         let after_q = (prev_q + SEED_K as u32) as usize;
         let after_r = (prev_r + SEED_K as u32) as usize;
-        let right_gap = query.len().saturating_sub(after_q)
+        let right_gap = query
+            .len()
+            .saturating_sub(after_q)
             .min(self.reference.len().saturating_sub(after_r));
         if right_gap > 0 {
             let right_cigar = align_seq_to_ref_slice(
@@ -611,28 +644,16 @@ fn chain_anchors_diagonal(anchors: &[(u32, u32)], bw: i64) -> Vec<(u32, u32)> {
     sorted.sort_unstable();
     sorted.dedup();
 
-    let mut diags: Vec<i64> = sorted.iter()
-        .map(|&(q, r)| r as i64 - q as i64)
-        .collect();
+    let mut diags: Vec<i64> = sorted.iter().map(|&(q, r)| r as i64 - q as i64).collect();
     diags.sort_unstable();
     let median_diag = diags[diags.len() / 2];
 
     let mut chained: Vec<(u32, u32)> = Vec::new();
     let mut last_r: u32 = 0;
-    let mut last_score = i64::MAX;
-    let mut last_q: u32 = 0;
     for &(q_pos, r_pos) in &sorted {
         let diag = r_pos as i64 - q_pos as i64;
         let score = (diag - median_diag).abs();
         if score <= bw && r_pos >= last_r {
-            // Multiple anchors for the same k-mer
-            if q_pos == last_q{
-                if score > last_score {
-                    continue;
-                }
-            } else {
-                last_score = score;
-            }
             last_r = r_pos + SEED_K as u32;
             chained.push((q_pos, r_pos));
         }

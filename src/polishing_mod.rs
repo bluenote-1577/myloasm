@@ -6,9 +6,9 @@ use crate::graph::GraphNode;
 use crate::polishing::consensus2::join_circular_ends;
 use crate::polishing::consensus2::PoaConsensusBuilder;
 //use crate::small_genomes;
+use crate::seeding::*;
 use crate::types::*;
 use crate::unitig::*;
-use crate::seeding::*;
 use fxhash::FxHashMap;
 //use rust_htslib::bam::header::HeaderRecord;
 //use rust_htslib::bam::{Header, HeaderView};
@@ -48,7 +48,14 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
         if contig.mapping_info.max_alignment_boundaries.is_none() {
             return;
         }
-        if contig.mapping_info.max_alignment_boundaries.as_ref().unwrap().len() == 1 {
+        if contig
+            .mapping_info
+            .max_alignment_boundaries
+            .as_ref()
+            .unwrap()
+            .len()
+            == 1
+        {
             return;
         }
         let mapping_boundaries = contig
@@ -60,7 +67,14 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             .collect::<Vec<&Interval<u32, SmallTwinOl>>>();
 
         poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
-        let (_blocks_filled, _total_seqs, _max_seqs, _median_seqs, _suspicious_blocks, _max_length_seq) = poa_cons_builder.get_block_stats();
+        let (
+            _blocks_filled,
+            _total_seqs,
+            _max_seqs,
+            _median_seqs,
+            _suspicious_blocks,
+            _max_length_seq,
+        ) = poa_cons_builder.get_block_stats();
         log::trace!("Starting POA consensus for u{} ...", contig.node_id);
 
         let cons = poa_cons_builder.spoa_blocks();
@@ -83,13 +97,17 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
                 &format!("u{}", &contig.node_id),
                 args,
             );
-            let avg_cov = contig.min_read_depth_multi
-                .unwrap_or([0.; ID_THRESHOLD_ITERS]).iter()
-                .map(|x| *x).sum::<f64>() / ID_THRESHOLD_ITERS as f64;
+            let avg_cov = contig
+                .min_read_depth_multi
+                .unwrap_or([0.; ID_THRESHOLD_ITERS])
+                .iter()
+                .map(|x| *x)
+                .sum::<f64>()
+                / ID_THRESHOLD_ITERS as f64;
 
             if contig.is_circular_strict() && (avg_cov > 5.5 || final_seq.len() > 1_000_000) {
                 circ_string = CIRC_STRICT_STRING.to_string();
-            } else if contig.has_circular_walk()  {
+            } else if contig.has_circular_walk() {
                 circ_string = "circular-possibly".to_string();
             }
         }
@@ -149,21 +167,24 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
 }
 
 pub fn kmer_multiplicity(seq: &[u8]) -> f64 {
-
     if seq.len() < 1000 {
         return 0.;
     }
-    
+
     let mut kmer_vec = vec![];
     fmh_seeds(seq, &mut kmer_vec, 15, 21);
     let mut kmer_multiplicity_map = FxHashMap::default();
-    for kmer in kmer_vec.iter(){
+    for kmer in kmer_vec.iter() {
         *kmer_multiplicity_map.entry(kmer).or_insert(0) += 1;
     }
     let mut sorted_multiplicities = kmer_multiplicity_map.values().collect::<Vec<_>>();
     sorted_multiplicities.sort();
-    let robust_mean = sorted_multiplicities[sorted_multiplicities.len()/10..sorted_multiplicities.len()*9/10].
-    iter().map(|x| *x).sum::<usize>() as f64 / (sorted_multiplicities.len() * 8 / 10) as f64;
+    let robust_mean = sorted_multiplicities
+        [sorted_multiplicities.len() / 10..sorted_multiplicities.len() * 9 / 10]
+        .iter()
+        .map(|x| *x)
+        .sum::<usize>() as f64
+        / (sorted_multiplicities.len() * 8 / 10) as f64;
     return robust_mean;
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "myloasm"
-version = "0.5.2"
+version = "0.6.0-only-hangchange-hific15"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 #build = "build.rs"

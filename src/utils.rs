@@ -2,22 +2,20 @@ use memory_stats::memory_stats;
 
 pub fn log_memory_usage(info: bool, message: &str) {
     if let Some(usage) = memory_stats() {
-        if info{
+        if info {
             log::info!(
                 "{} --- Memory usage: {:.2} GB",
                 message,
                 usage.physical_mem as f64 / 1_000_000_000.
             );
-        }
-        else{
+        } else {
             log::debug!(
                 "{} --- Memory usage: {:.2} GB",
                 message,
                 usage.physical_mem as f64 / 1_000_000_000.
             );
         }
-    }
-    else{
+    } else {
         log::info!("Memory usage: unknown (WARNING)");
     }
 }
@@ -27,13 +25,11 @@ pub fn div_rounded(a: usize, b: usize) -> usize {
     (a + b / 2) / b
 }
 
-
-
-pub fn first_word(s: &str) -> String{
+pub fn first_word(s: &str) -> String {
     s.split_whitespace().next().unwrap_or(s).to_string()
 }
 
-pub fn get_nx_from_vec(vec: &[usize], n_vec: &[usize]) -> String{
+pub fn get_nx_from_vec(vec: &[usize], n_vec: &[usize]) -> String {
     let mut sorted_vec = vec.to_vec();
     sorted_vec.sort_unstable_by(|a, b| b.cmp(a)); // Sort in descending order
     let total: usize = sorted_vec.iter().map(|x| *x as usize).sum();
@@ -51,5 +47,8 @@ pub fn get_nx_from_vec(vec: &[usize], n_vec: &[usize]) -> String{
         }
     }
 
-    format!("N{}: {}, N{}: {}, N{}: {}", n_vec[0], nx_values[0], n_vec[1], nx_values[1], n_vec[2], nx_values[2])
+    format!(
+        "N{}: {}, N{}: {}, N{}: {}",
+        n_vec[0], nx_values[0], n_vec[1], nx_values[1], n_vec[2], nx_values[2]
+    )
 }
