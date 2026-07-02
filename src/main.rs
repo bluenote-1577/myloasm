@@ -399,9 +399,6 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     }
 
     if args.hifi {
-        if args.compression.is_none() {
-            args.c = 15;
-        }
         log::info!("HiFi mode enabled. Setting -c to {}.", args.c);
     }
 
