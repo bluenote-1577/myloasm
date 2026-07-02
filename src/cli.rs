@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[0], hide = true)]
     pub nano_r9: bool,
 
-    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy. Sets -c to 20 at minimum.
+    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy. 
     #[arg(long, help_heading = CLI_HEADINGS[0])]
     pub hifi: bool,
 
@@ -44,7 +44,7 @@ pub struct Cli {
     #[arg(long, default_value = "11", help_heading = CLI_HEADINGS[1], hide = true)]
     pub c: usize,
 
-    /// Compression ratio (1/c k-mers selected). Default is -c 11 for nanopore data, -c 20 for --hifi. 
+    /// Compression ratio (1/c k-mers selected). Default is -c 11. 
     #[arg(short, long, default_value = None, help_heading = CLI_HEADINGS[1])]
     pub compression: Option<usize>,
 
@@ -73,7 +73,7 @@ pub struct Cli {
     #[arg(short, long, help_heading = CLI_HEADINGS[1])]
     pub bloom_filter_size: Option<f64>,
 
-    /// More aggressive filtering of low-abundance k-mers. May be non-deterministic
+    /// More aggressive filtering of low-abundance k-mers. May save some memory, but lead to non-deterministic results.
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub aggressive_bloom: bool,
 
@@ -90,7 +90,7 @@ pub struct Cli {
     pub abpoa: bool,
 
     /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex (> 150 Gbp) metagenomes.
-    #[arg(long, help_heading = CLI_HEADINGS[1])]
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
     pub parallel_graph_bridging: bool,
 
     /// Remove highest frequency k-mers (1 / this).
