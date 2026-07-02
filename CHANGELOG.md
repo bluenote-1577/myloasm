@@ -7,6 +7,8 @@
 - Slightly strict on containment and overlapping criterion. 
 - Allow higher -c values by FracMinHash 
 - Ran rustfmt on code. 
+- Changed to output * in GFA when no sequence is present. (thanks dwpeng at https://github.com/bluenote-1577/myloasm/issues/24). 
+- Fixed log outputs when redirecting from STDERR so it doesn't show weird outputs due to colors. 
 
 # v0.5.1 (4-5-2026) - Extra checkpoints, faster graph cleaning + bugfix
 

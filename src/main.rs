@@ -28,6 +28,7 @@ use myloasm::utils::*;
 use rayon::prelude::*;
 use std::fs::File;
 use std::io::BufReader;
+use std::io::IsTerminal;
 use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
@@ -353,14 +354,28 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     let filespec = FileSpec::default()
         .directory(output_dir)
         .basename("myloasm");
-    flexi_logger::Logger::try_with_str(log_spec)
-        .expect("Something went wrong with logging")
-        .log_to_file(filespec) // write logs to file
-        .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
-        .format(my_own_format_colored) // use a simple colored format
-        .format_for_files(my_own_format)
-        .start()
-        .expect("Something went wrong with creating log file");
+
+    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+        flexi_logger::Logger::try_with_str(log_spec)
+            .expect("Something went wrong with logging")
+            .log_to_file(filespec) // write logs to file
+            .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
+            .format(my_own_format_colored) // use a simple colored format
+            .format_for_files(my_own_format)
+            .start()
+            .expect("Something went wrong with creating log file");
+    }
+
+    else{
+        flexi_logger::Logger::try_with_str(log_spec)
+            .expect("Something went wrong with logging")
+            .log_to_file(filespec) // write logs to file
+            .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
+            .format(my_own_format) // use a simple colored format
+            .format_for_files(my_own_format)
+            .start()
+            .expect("Something went wrong with creating log file");
+    }
 
     let cli_args: Vec<String> = std::env::args().collect();
     log::info!("COMMAND: {}", cli_args.join(" "));

@@ -19,7 +19,6 @@ use std::collections::VecDeque;
 use std::io::BufWriter;
 use std::io::Write;
 use std::panic;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -775,6 +774,12 @@ impl UnitigGraph {
                 base_seq = &empty_seq;
             }
 
+            let base_string = if base_seq.len() > 0 {
+                base_seq.to_string()
+            } else {
+                String::from_str("*").unwrap()
+            };
+
             let median_read_depth = unitig.median_read_depth.unwrap_or(-1.);
             let min_read_depth_multi = unitig
                 .min_read_depth_multi
@@ -784,7 +789,7 @@ impl UnitigGraph {
                 "S\tu{}ctg\t{}\tLN:i:{}\tDP:f:{:.1}\tDP2:f:{:.1}\tDP3:f:{:.1}\tMEDIAN_DP1:f:{:.1}\n",
                 unitig.read_indices_ori[0].0,
                 //String::from_utf8(unitig.raw_consensus()).unwrap(),
-                base_seq,
+                base_string,
                 unitig.cut_length(),
                 min_read_depth_multi[0],
                 min_read_depth_multi[1],
@@ -2565,8 +2570,6 @@ impl UnitigGraph {
                 let mut dominated_from = false;
                 let mut dominated_to = false;
 
-                let mut is_best_edge_from = true;
-                let mut is_best_edge_to = true;
 
                 let mut ratio: f64 = 0.0;
 
@@ -2591,9 +2594,9 @@ impl UnitigGraph {
 
                     // Is probably not the best edge if 2/3 of max overlpa length and
                     // and smaller fsv.
-                    if edge_vals2.0 > edge_vals.0 * 1 / 2 {
-                        is_best_edge_from = false;
-                    }
+                    // if edge_vals2.0 > edge_vals.0 * 1 / 2 {
+                    //     is_best_edge_from = false;
+                    // }
                 }
 
                 for edge_id_2 in edges_to.iter() {
@@ -2615,9 +2618,9 @@ impl UnitigGraph {
                         ratio = ratio.max(edge_vals.0 as f64 / edge_vals2.0 as f64);
                     }
 
-                    if edge_vals2.0 > edge_vals.0 * 1 / 2 {
-                        is_best_edge_to = false;
-                    }
+                    // if edge_vals2.0 > edge_vals.0 * 1 / 2 {
+                    //     is_best_edge_to = false;
+                    // }
                 }
 
                 //if (dominated_from && !is_best_edge_to) || (dominated_to && !is_best_edge_from) {

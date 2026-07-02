@@ -16,7 +16,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use statrs::distribution::{Binomial, DiscreteCDF};
 use std::fs::File;
-use std::io::ErrorKind::AddrInUse;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;

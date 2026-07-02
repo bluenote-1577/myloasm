@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "myloasm"
-version = "0.6.0-only-hangchange-hific15"
+version = "0.6.0"
 dependencies = [
  "abpoa",
  "approx 0.4.0",
