@@ -1,3 +1,15 @@
+# v0.6.0 (7-1-2026) - Fixing homopolymer issues, parameter tweaking, abPOA implementation, and slight fix for highly recombinant + high-cov genomes
+
+- Added homopolymer compression during polishing for stretches with > 10 homopolymers. This fixes some issues during eukaryotic polishing. 
+- Using abPOA instead of SPOA in most cases to speed up polishing.
+- Added heuristic for filtering highly heterogeneous / recombining genomic reads
+- Output timing information for each step in myloasm 
+- Slightly strict on containment and overlapping criterion. 
+- Allow higher -c values by FracMinHash 
+- Ran rustfmt on code. 
+- Changed to output * in GFA when no sequence is present. (thanks dwpeng at https://github.com/bluenote-1577/myloasm/issues/24). 
+- Fixed log outputs when redirecting from STDERR so it doesn't show weird outputs due to colors. 
+
 # v0.5.1 (4-5-2026) - Extra checkpoints, faster graph cleaning + bugfix
 
 Major changes

@@ -1,6 +1,9 @@
+mod timing;
+use timing::PipelineTimer;
+
 use bincode;
-use flexi_logger::style;
 use clap::Parser;
+use flexi_logger::style;
 use flexi_logger::{DeferredNow, Duplicate, FileSpec, Record};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
@@ -12,25 +15,26 @@ use myloasm::map_processing;
 use myloasm::mapping;
 use myloasm::polishing_mod;
 use myloasm::seq_parse;
+use myloasm::skani_dereplicate;
+use myloasm::small_genomes;
 use myloasm::twin_graph;
 use myloasm::twin_graph::OverlapConfig;
-use myloasm::small_genomes;
 use myloasm::types;
 use myloasm::types::HeavyCutOptions;
 use myloasm::types::OverlapAdjMap;
 use myloasm::unitig;
 use myloasm::unitig::NodeSequence;
-use myloasm::skani_dereplicate;
 use myloasm::utils::*;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::BufReader;
+use std::io::IsTerminal;
 use std::io::BufWriter;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
-use tikv_jemallocator::Jemalloc;
 use sysinfo::System;
-use rayon::prelude::*;
+use tikv_jemallocator::Jemalloc;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -42,15 +46,21 @@ fn main() {
     let output_dir = initialize_setup(&mut args);
 
     log::info!("Starting assembly...");
+    let mut timer = PipelineTimer::new();
 
     // Step 1: Process k-mers, count k-mers, and get SNPmers
-    let mut kmer_info = get_kmers_and_snpmers(&args, &output_dir);
+    let mut kmer_info = timer.measure("Step 1: get_kmers_and_snpmers", || {
+        get_kmers_and_snpmers(&args, &output_dir)
+    });
     log_memory_usage(true, "STAGE 1: Obtained SNPmers");
 
     // Step 2: Get twin reads using k-mer information
     let cleaning_unitig_temp = Path::new(&args.output_dir).join("0-cleaning_and_unitigs");
-    std::fs::create_dir_all(&cleaning_unitig_temp).expect("Could not create temp directory for cleaning and unitigs");
-    let twin_read_container = get_twin_reads_from_kmer_info(&mut kmer_info, &args, &output_dir, &cleaning_unitig_temp);
+    std::fs::create_dir_all(&cleaning_unitig_temp)
+        .expect("Could not create temp directory for cleaning and unitigs");
+    let twin_read_container = timer.measure("Step 2: get_twin_reads", || {
+        get_twin_reads_from_kmer_info(&mut kmer_info, &args, &output_dir, &cleaning_unitig_temp)
+    });
 
     let twin_reads = &twin_read_container.twin_reads;
     log_memory_usage(true, "STAGE 3: Obtained clean twin reads");
@@ -63,18 +73,32 @@ fn main() {
     let contig_graph_bin_path = output_dir.join("binary_temp").join("contig_graph.bin");
     let mut contig_graph;
     if args.input_files == [MAGIC_EXIST_STRING] && contig_graph_bin_path.exists() {
-        contig_graph = bincode::deserialize_from(BufReader::new(
-            File::open(&contig_graph_bin_path).unwrap(),
-        ))
-        .unwrap();
+        contig_graph = timer.measure("Steps 3-7 (loaded from cache)", || {
+            bincode::deserialize_from(BufReader::new(File::open(&contig_graph_bin_path).unwrap()))
+                .unwrap()
+        });
         log::info!("Loaded contig graph from file.");
     } else {
         // Step 3: Get overlaps between outer twin reads and construct raw unitig graph
-        let overlaps = get_overlaps_from_twin_reads(&twin_read_container, &args, &cleaning_unitig_temp, &output_dir);
+        let overlaps = timer.measure("Step 3: get_overlaps", || {
+            get_overlaps_from_twin_reads(
+                &twin_read_container,
+                &args,
+                &cleaning_unitig_temp,
+                &output_dir,
+            )
+        });
 
         // Step 4: Construct raw unitig graph
-        let (mut unitig_graph, overlap_adj_map) =
-            unitig::UnitigGraph::from_overlaps(&twin_read_container.twin_reads, overlaps, Some(&twin_read_container.outer_indices), &args);
+        let (mut unitig_graph, overlap_adj_map) = timer.measure("Step 4: build_graph", || {
+            unitig::UnitigGraph::from_overlaps(
+                &twin_read_container.twin_reads,
+                overlaps,
+                Some(&twin_read_container.outer_indices),
+                Some(&cleaning_unitig_temp),
+                &args,
+            )
+        });
         log_memory_usage(true, "Obtained unitig graph from overlaps");
 
         let out_file = graph_dir.join("unitig_graph-0.gfa");
@@ -82,41 +106,69 @@ fn main() {
 
         // Step 5: First round of cleaning. Progressive cleaning: tips, bubbles, bridged repeats
         let light_cleaning_temp_dir = Path::new(&args.output_dir).join("1-light_resolve");
-        std::fs::create_dir_all(&light_cleaning_temp_dir).expect("Could not create temp directory for light cleaning");
-        light_progressive_cleaning(&mut unitig_graph, &twin_reads, &args, &light_cleaning_temp_dir, &graph_dir, true);
+        std::fs::create_dir_all(&light_cleaning_temp_dir)
+            .expect("Could not create temp directory for light cleaning");
+        timer.measure("Step 5: light_cleaning", || {
+            light_progressive_cleaning(
+                &mut unitig_graph,
+                &twin_reads,
+                &args,
+                &light_cleaning_temp_dir,
+                &graph_dir,
+                true,
+            );
+        });
 
         // Step 6: Second round of progressive cleaning; more aggressive.
         let heavy_cleaning_temp_dir = Path::new(&args.output_dir).join("2-heavy_path_resolve");
-        std::fs::create_dir_all(&heavy_cleaning_temp_dir).expect("Could not create temp directory for heavy cleaning");
+        std::fs::create_dir_all(&heavy_cleaning_temp_dir)
+            .expect("Could not create temp directory for heavy cleaning");
 
-        heavy_clean_with_walk(
-            &mut unitig_graph,
-            &twin_reads,
-            &overlap_adj_map,
-            &args,
-            &heavy_cleaning_temp_dir,
-            &graph_dir,
-        );
+        timer.measure("Step 6: heavy_cleaning", || {
+            heavy_clean_with_walk(
+                &mut unitig_graph,
+                &twin_reads,
+                &overlap_adj_map,
+                &args,
+                &heavy_cleaning_temp_dir,
+                &graph_dir,
+            );
+        });
 
-        walk_tip_bubble(&mut unitig_graph,
-            twin_reads,
-            args.tip_length_cutoff * 30,
-            args.tip_read_cutoff * 30,
-            1_000_000,
-            usize::MAX,
-            Some(5),
-            &heavy_cleaning_temp_dir,
-            true,
-            &args
-        );
-
-        // Step 6.5: Small circular contig retrieval
-        small_genomes::two_cycle_retrieval(&mut unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir);
+        // Step 6.5: Walk tip/bubble cleanup + small circular contig retrieval
+        timer.measure("Step 6.5: walk_tip_bubble + small_genomes", || {
+            walk_tip_bubble(
+                &mut unitig_graph,
+                twin_reads,
+                args.tip_length_cutoff * 30,
+                args.tip_read_cutoff * 30,
+                1_000_000,
+                usize::MAX,
+                Some(5),
+                &heavy_cleaning_temp_dir,
+                true,
+                &args,
+            );
+            small_genomes::two_cycle_retrieval(
+                &mut unitig_graph,
+                &twin_reads,
+                &args,
+                &heavy_cleaning_temp_dir,
+            );
+        });
         let out_file = graph_dir.join("small_and_tip_bubble-3.gfa");
         unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);
 
         // Step 7: Progressive coverage filter
-        contig_graph = progressive_coverage_contigs_circular(unitig_graph, &twin_reads, &args, &heavy_cleaning_temp_dir, &output_dir);
+        contig_graph = timer.measure("Step 7: progressive_coverage_contigs", || {
+            progressive_coverage_contigs_circular(
+                unitig_graph,
+                &twin_reads,
+                &args,
+                &heavy_cleaning_temp_dir,
+                &output_dir,
+            )
+        });
 
         if !args.clean_dir {
             bincode::serialize_into(
@@ -140,7 +192,15 @@ fn main() {
     let mapping_dir = Path::new(&args.output_dir).join("3-mapping");
     std::fs::create_dir_all(&mapping_dir).expect("Could not create temp directory for mapping");
 
-    mapping::map_to_dereplicate(&mut contig_graph, &kmer_info, &twin_reads, &mapping_dir, &args);
+    timer.measure("Step 8.5: map_to_dereplicate", || {
+        mapping::map_to_dereplicate(
+            &mut contig_graph,
+            &kmer_info,
+            &twin_reads,
+            &mapping_dir,
+            &args,
+        );
+    });
     contig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
     log_memory_usage(true, "STAGE 4.5: Dereplicated spurious contigs");
@@ -152,6 +212,7 @@ fn main() {
 
     if args.no_polish {
         log::warn!("No polishing requested. This is not recommended.");
+        timer.write_tsv(&output_dir.join("timing_steps.tsv"));
         log::info!("Total time elapsed is {:?}", total_start_time.elapsed());
         return;
     }
@@ -163,11 +224,19 @@ fn main() {
         &twin_reads,
         &args,
     );
-    
+
     // Step 9: Align reads back to graph and take consensuses
     log::info!("Beginning final alignment of reads to graph...");
     let start = Instant::now();
-    mapping::map_reads_to_unitigs(&mut contig_graph, &kmer_info, &twin_reads, &mapping_dir, &args);
+    timer.measure("Step 9: map_reads_to_unitigs", || {
+        mapping::map_reads_to_unitigs(
+            &mut contig_graph,
+            &kmer_info,
+            &twin_reads,
+            &mapping_dir,
+            &args,
+        );
+    });
     log_memory_usage(true, "STAGE 5: Mapped reads to contigs");
 
     log::info!(
@@ -178,20 +247,31 @@ fn main() {
     // Step 9.5: Analyze coverage and filter low-quality unitigs
     log::info!("Analyzing coverage and filtering low-quality unitigs...");
     let coverage_start = Instant::now();
-    map_processing::filter_low_coverage_unitigs(&mut contig_graph, &mapping_dir, &args);
+    timer.measure("Step 9.5: filter_low_coverage_unitigs", || {
+        map_processing::filter_low_coverage_unitigs(&mut contig_graph, &mapping_dir, &args);
+    });
     log::info!(
         "Time elapsed for coverage filtering is {:?}",
         coverage_start.elapsed()
     );
 
     log::info!("Polishing final contigs...");
-    polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
+    timer.measure("Step 10: polish_assembly", || {
+        polishing_mod::polish_assembly(contig_graph, twin_read_container.twin_reads, &args);
+    });
     log::info!("Time elapsed for polishing is {:?}", start.elapsed());
 
     log::info!("Dereplicating polished contigs with skani...");
     skani_dereplicate::dereplicate_with_skani(POLISHED_CONTIGS_NAME, &args);
 
-    log::info!("Assembly completed. Total time elapsed is {:?}", total_start_time.elapsed());
+    let etc_dir = Path::new(&args.output_dir).join("misc");
+    std::fs::create_dir_all(&etc_dir).expect("Could not create temp directory for misc files");
+    timer.write_tsv(&etc_dir.join("timing_steps.tsv"));
+
+    log::info!(
+        "Assembly completed. Total time elapsed is {:?}",
+        total_start_time.elapsed()
+    );
 }
 
 fn my_own_format_colored(
@@ -229,7 +309,6 @@ fn my_own_format(
 }
 
 fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
-
     if args.markdown_help {
         let markdown_options = clap_markdown::MarkdownOptions::default();
         markdown_options.show_table_of_contents(true);
@@ -238,7 +317,7 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     }
 
     for file in &args.input_files {
-        if !Path::new(file).exists() && file != MAGIC_EXIST_STRING{
+        if !Path::new(file).exists() && file != MAGIC_EXIST_STRING {
             eprintln!(
                 "ERROR [myloasm] Input file {} does not exist. Exiting.",
                 file
@@ -261,8 +340,9 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     }
 
     let binary_temp_dir = output_dir.join("binary_temp");
-    if !binary_temp_dir.exists(){
-        std::fs::create_dir_all(&binary_temp_dir).expect("Could not create temp directory for binary files");
+    if !binary_temp_dir.exists() {
+        std::fs::create_dir_all(&binary_temp_dir)
+            .expect("Could not create temp directory for binary files");
     } else {
         if !binary_temp_dir.is_dir() {
             panic!("Could not create temp directory for binary files. Exiting.");
@@ -274,22 +354,42 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
     let filespec = FileSpec::default()
         .directory(output_dir)
         .basename("myloasm");
-    flexi_logger::Logger::try_with_str(log_spec)
-        .expect("Something went wrong with logging")
-        .log_to_file(filespec) // write logs to file
-        .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
-        .format(my_own_format_colored) // use a simple colored format
-        .format_for_files(my_own_format)
-        .start()
-        .expect("Something went wrong with creating log file");
+
+    if std::io::stdout().is_terminal() && std::io::stderr().is_terminal() {
+        flexi_logger::Logger::try_with_str(log_spec)
+            .expect("Something went wrong with logging")
+            .log_to_file(filespec) // write logs to file
+            .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
+            .format(my_own_format_colored) // use a simple colored format
+            .format_for_files(my_own_format)
+            .start()
+            .expect("Something went wrong with creating log file");
+    }
+
+    else{
+        flexi_logger::Logger::try_with_str(log_spec)
+            .expect("Something went wrong with logging")
+            .log_to_file(filespec) // write logs to file
+            .duplicate_to_stderr(Duplicate::Info) // print warnings and errors also to the console
+            .format(my_own_format) // use a simple colored format
+            .format_for_files(my_own_format)
+            .start()
+            .expect("Something went wrong with creating log file");
+    }
 
     let cli_args: Vec<String> = std::env::args().collect();
     log::info!("COMMAND: {}", cli_args.join(" "));
     log::info!("VERSION: {}", env!("CARGO_PKG_VERSION"));
-    log::info!("SYSTEM NAME: {}", System::name().unwrap_or(format!("Unknown")));
-    log::info!("SYSTEM HOST NAME: {}", System::host_name().unwrap_or(format!("Unknown")));
+    log::info!(
+        "SYSTEM NAME: {}",
+        System::name().unwrap_or(format!("Unknown"))
+    );
+    log::info!(
+        "SYSTEM HOST NAME: {}",
+        System::host_name().unwrap_or(format!("Unknown"))
+    );
     //log::debug!("BINARY BUILD DATE: {}",  built_info::BUILT_TIME_UTC);
-        // The built info is available in the `built` module
+    // The built info is available in the `built` module
 
     // Validate k-mer size
     if args.kmer_size % 2 == 0 {
@@ -305,12 +405,20 @@ fn initialize_setup(args: &mut cli::Cli) -> PathBuf {
 
     if args.nano_r9 {
         args.snpmer_error_rate_lax = 0.05;
-        args.contain_subsample_rate = 21;
+        args.contain_subsample_rate = 2;
         args.kmer_size = 17;
         args.c = 7;
         args.absolute_minimizer_cut_ratio = 50.;
         args.relative_minimizer_cut_ratio = 10.;
         args.min_reads_contig = 2;
+    }
+
+    if args.hifi {
+        log::info!("HiFi mode enabled. Setting -c to {}.", args.c);
+    }
+
+    if let Some(compression) = args.compression{
+        args.c = compression;
     }
 
     return output_dir.to_path_buf();
@@ -331,24 +439,25 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
     }
 
     if saved_input && snpmer_info_path.exists() {
-        kmer_info = bincode::deserialize_from(BufReader::new(
-            File::open(snpmer_info_path).unwrap(),
-        ))
-        .unwrap();
+        kmer_info =
+            bincode::deserialize_from(BufReader::new(File::open(snpmer_info_path).unwrap()))
+                .unwrap();
         log::info!("Loaded snpmer info from file.");
     } else {
         let start = Instant::now();
         let big_kmer_map;
         if args.kmc_db.is_some() {
-            log::info!("Using precomputed KMC database at {}", args.kmc_db.as_ref().unwrap());
+            log::info!(
+                "Using precomputed KMC database at {}",
+                args.kmc_db.as_ref().unwrap()
+            );
             big_kmer_map = seq_parse::read_kmers_from_kmc_db(
                 args.kmer_size,
                 args.threads,
                 args.kmc_db.as_ref().unwrap(),
                 &args,
             );
-        }
-        else{
+        } else {
             big_kmer_map = seq_parse::read_to_split_kmers(args.kmer_size, args.threads, &args);
         }
         log::info!(
@@ -364,7 +473,7 @@ fn get_kmers_and_snpmers(args: &cli::Cli, output_dir: &PathBuf) -> types::KmerGl
             start.elapsed()
         );
 
-        if !args.clean_dir{
+        if !args.clean_dir {
             bincode::serialize_into(
                 BufWriter::new(File::create(snpmer_info_path).unwrap()),
                 &kmer_info,
@@ -393,10 +502,9 @@ fn get_twin_reads_from_kmer_info(
     }
 
     if saved_input && twin_read_bin_path.exists() {
-        twin_read_container = bincode::deserialize_from(BufReader::new(
-            File::open(twin_read_bin_path).unwrap(),
-        ))
-        .unwrap();
+        twin_read_container =
+            bincode::deserialize_from(BufReader::new(File::open(twin_read_bin_path).unwrap()))
+                .unwrap();
         log::info!("Loaded twin reads from file.");
     } else {
         // (1) read file, get twin reads
@@ -407,7 +515,7 @@ fn get_twin_reads_from_kmer_info(
             let twin_reads_raw_temp = kmer_comp::twin_reads_from_snpmers(kmer_info, &args);
             // Dump the raw twin reads to disk before cleaning for possible reruns
 
-            if !args.clean_dir{
+            if !args.clean_dir {
                 bincode::serialize_into(
                     BufWriter::new(File::create(&twin_read_raw_path).unwrap()),
                     &twin_reads_raw_temp,
@@ -419,11 +527,10 @@ fn get_twin_reads_from_kmer_info(
             }
             twin_reads_raw = twin_reads_raw_temp;
             log::info!("Finished getting twin reads from snpmers and saved temporarily to disk.");
-        }
-        else{
-            twin_reads_raw = bincode::deserialize_from(BufReader::new(
-                File::open(&twin_read_raw_path).unwrap(),
-            )).unwrap();
+        } else {
+            twin_reads_raw =
+                bincode::deserialize_from(BufReader::new(File::open(&twin_read_raw_path).unwrap()))
+                    .unwrap();
         }
 
         let num_reads = twin_reads_raw.len();
@@ -431,14 +538,25 @@ fn get_twin_reads_from_kmer_info(
 
         // (2): removed contained reads
         log::info!("Removing contained reads - round 1...");
-        let outer_read_indices_raw =
-            twin_graph::remove_contained_reads_twin(None, None, &twin_reads_raw, true, cleaning_temp_dir, &args);
+        let outer_read_indices_raw = twin_graph::remove_contained_reads_twin(
+            None,
+            None,
+            &twin_reads_raw,
+            true,
+            cleaning_temp_dir,
+            "all-cont-r1.txt.gz",
+            &args,
+        );
 
         // (3): map all reads to the outer (non-contained) reads and compute split plans
         log::info!("Mapping reads to non-contained (outer) reads - round 1...");
         let start = Instant::now();
-        let split_plans =
-            mapping::map_reads_to_outer_reads_efficient(&outer_read_indices_raw, &twin_reads_raw, &args, true);
+        let split_plans = mapping::map_reads_to_outer_reads_efficient(
+            &outer_read_indices_raw,
+            &twin_reads_raw,
+            &args,
+            true,
+        );
         log_memory_usage(true, "STAGE 2: Finished mapping reads to outer reads");
 
         // (4): split chimeric twin reads based on pre-computed split plans
@@ -470,8 +588,9 @@ fn get_twin_reads_from_kmer_info(
             None,
             None,
             &split_twin_reads,
-            false, 
+            false,
             cleaning_temp_dir,
+            "all-cont-r2.txt.gz",
             &args,
         );
 
@@ -486,16 +605,25 @@ fn get_twin_reads_from_kmer_info(
             "Round 2: Mapping reads to {} candidate outer reads...",
             remap_indices.len()
         );
-        let split_plans_round2 =
-            mapping::map_reads_to_outer_reads_efficient(&remap_indices, &split_twin_reads, &args, true);
+        let split_plans_round2 = mapping::map_reads_to_outer_reads_efficient(
+            &remap_indices,
+            &split_twin_reads,
+            &args,
+            true,
+        );
 
         // (7): split the remapped reads again -- some of them may still be chimeric...
         let second_round_temp_dir = cleaning_temp_dir.join("remap_temp");
-        std::fs::create_dir_all(&second_round_temp_dir).expect("Could not create temp directory for remapping");
+        std::fs::create_dir_all(&second_round_temp_dir)
+            .expect("Could not create temp directory for remapping");
         log::info!("Round 2: Processing mappings...");
         let num_reads_after_split = split_twin_reads.len();
         let (mut split_twin_reads_final, split_outer_read_indices_semifinal) =
-            map_processing::apply_split_plans(split_twin_reads, split_plans_round2, &second_round_temp_dir);
+            map_processing::apply_split_plans(
+                split_twin_reads,
+                split_plans_round2,
+                &second_round_temp_dir,
+            );
 
         log::info!(
             "Round 2: Gained {} reads after splitting chimeras and mapping to outer reads in {:?}",
@@ -503,16 +631,15 @@ fn get_twin_reads_from_kmer_info(
             start.elapsed()
         );
 
-
-
         // (8): remove contained reads one last time
         log::info!("Round 2: Removing contained reads after splitting ...");
         let outer_read_indices = twin_graph::remove_contained_reads_twin(
             Some(split_outer_read_indices_semifinal.clone()),
             Some(split_outer_read_indices_semifinal),
             &split_twin_reads_final,
-            false, 
+            false,
             &second_round_temp_dir,
+            "all-cont-r3.txt.gz",
             &args,
         );
 
@@ -528,8 +655,12 @@ fn get_twin_reads_from_kmer_info(
         );
 
         // Set break_chimeras to false to avoid over-splitting in the final round
-        let split_plans_final =
-            mapping::map_reads_to_outer_reads_efficient(&remap_indices_final, &split_twin_reads_final, &args, false);
+        let split_plans_final = mapping::map_reads_to_outer_reads_efficient(
+            &remap_indices_final,
+            &split_twin_reads_final,
+            &args,
+            false,
+        );
 
         // (10): fix the depths of the chimeric reads using pre-computed coverage stats
         for split_plan in split_plans_final.iter() {
@@ -569,7 +700,7 @@ fn get_twin_reads_from_kmer_info(
             tig_reads: vec![],
         };
 
-        if !args.clean_dir{
+        if !args.clean_dir {
             bincode::serialize_into(
                 BufWriter::new(File::create(twin_read_bin_path).unwrap()),
                 &twin_read_container,
@@ -578,7 +709,8 @@ fn get_twin_reads_from_kmer_info(
 
             // Remove twin_read_raw_path TODO
             if twin_read_raw_path.exists() {
-                std::fs::remove_file(&twin_read_raw_path).expect("Could not remove raw twin reads file");
+                std::fs::remove_file(&twin_read_raw_path)
+                    .expect("Could not remove raw twin reads file");
             }
 
             // Save Huffman tables alongside twin reads for reload
@@ -604,15 +736,13 @@ fn get_overlaps_from_twin_reads(
 
     let overlaps;
     if args.input_files == [MAGIC_EXIST_STRING] && overlap_bin_path.exists() {
-        overlaps = bincode::deserialize_from(BufReader::new(
-            File::open(overlap_bin_path).unwrap(),
-        ))
-        .unwrap();
+        overlaps = bincode::deserialize_from(BufReader::new(File::open(overlap_bin_path).unwrap()))
+            .unwrap();
         log::info!("Loaded overlaps from file.");
     } else {
         log::info!("Getting overlaps between outer reads...");
         let overlaps_file_path = temp_dir.join("overlaps.txt.gz");
-        let contained_file_path = temp_dir.join("contained_r2.txt.gz");
+        let contained_file_path = temp_dir.join("contained_during_overlaps.txt.gz");
         let start = Instant::now();
         overlaps = twin_graph::get_overlaps_outer_reads_twin(
             &twin_reads,
@@ -625,8 +755,11 @@ fn get_overlaps_from_twin_reads(
             "Time elapsed for getting overlaps is: {:?}",
             start.elapsed()
         );
-        log_memory_usage(true, &format!("Obtained {} overlaps between outer reads", overlaps.len()));
-        if !args.clean_dir{
+        log_memory_usage(
+            true,
+            &format!("Obtained {} overlaps between outer reads", overlaps.len()),
+        );
+        if !args.clean_dir {
             bincode::serialize_into(
                 BufWriter::new(File::create(overlap_bin_path).unwrap()),
                 &overlaps,
@@ -688,7 +821,7 @@ fn light_progressive_cleaning(
 
         // Remove tips
         loop {
-            log::debug!("Loop {} of tip/bubble removal...", {counter});
+            log::debug!("Loop {} of tip/bubble removal...", { counter });
             unitig_graph.remove_tips(tip_length_cutoff, read_cutoff, false);
             unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
             //unitig_graph.remove_caps();
@@ -723,7 +856,7 @@ fn light_progressive_cleaning(
         unitig_graph.pop_bubbles(bubble_length_cutoff, None, false);
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
         if output_temp {
-            if log::log_enabled!(log::Level::Trace){
+            if log::log_enabled!(log::Level::Trace) {
                 unitig_graph.to_gfa(
                     temp_dir.join(format!("{}-bubble_unitig_graph.gfa", iteration)),
                     true,
@@ -795,9 +928,8 @@ fn light_progressive_cleaning(
 
 fn get_contigs_from_progressive_coverage_circular(
     mut base_graph: unitig::UnitigGraph,
-    mut graph_per_coverage: FxHashMap<usize, unitig::UnitigGraph>
+    mut graph_per_coverage: FxHashMap<usize, unitig::UnitigGraph>,
 ) -> unitig::UnitigGraph {
-
     let mut used_reads = FxHashSet::default();
     let mut covs = graph_per_coverage.keys().cloned().collect::<Vec<_>>();
     let mut newly_added_contigs = FxHashSet::default();
@@ -844,8 +976,6 @@ fn get_contigs_from_progressive_coverage_circular(
             }
         }
 
-
-
         // Second pass: remove nodes and non-circ edges from new graph
         let edges_to_remove = graph_per_coverage[&cov]
             .edges
@@ -864,7 +994,10 @@ fn get_contigs_from_progressive_coverage_circular(
             .map(|x| x.0)
             .collect::<FxHashSet<_>>();
 
-        graph_per_coverage.get_mut(&cov).unwrap().remove_edges(edges_to_remove);
+        graph_per_coverage
+            .get_mut(&cov)
+            .unwrap()
+            .remove_edges(edges_to_remove);
 
         let contigs_to_remove: Vec<_> = graph_per_coverage[&cov]
             .nodes
@@ -919,7 +1052,7 @@ fn get_contigs_from_progressive_coverage_circular(
         ));
 
         for (_, node) in std::mem::take(&mut graph_per_coverage.get_mut(&cov).unwrap().nodes) {
-            if !newly_added_contigs.insert(node.node_hash_id){
+            if !newly_added_contigs.insert(node.node_hash_id) {
                 panic!("Duplicate node hash id found");
             }
             base_graph.nodes.insert(node.node_hash_id, node);
@@ -930,7 +1063,7 @@ fn get_contigs_from_progressive_coverage_circular(
     let contigs_to_remove_base: Vec<_> = base_graph
         .nodes
         .iter()
-        .filter(|(_,v)| {
+        .filter(|(_, v)| {
             if newly_added_contigs.contains(&v.node_hash_id) {
                 return false;
             }
@@ -944,7 +1077,6 @@ fn get_contigs_from_progressive_coverage_circular(
         .map(|x| x.0)
         .cloned()
         .collect();
-
 
     for contig in newly_added_contigs.iter() {
         let node = base_graph.nodes.get(contig).unwrap();
@@ -972,7 +1104,7 @@ fn get_contigs_from_progressive_coverage_circular(
     base_graph.remove_nodes(&contigs_to_remove_base, false);
 
     base_graph.re_unitig();
-    return base_graph
+    return base_graph;
 }
 
 fn _get_contigs_from_progressive_coverage_old(
@@ -1086,10 +1218,10 @@ fn _get_contigs_from_progressive_coverage_old(
             continue;
         }
         let edge = edge.as_ref().unwrap();
-        if edge.from_unitig != edge.to_unitig{
+        if edge.from_unitig != edge.to_unitig {
             remove_edge_set.insert(id);
         }
-        //Old implementation, required perfect circularization. 
+        //Old implementation, required perfect circularization.
         // if !final_unitig_graph.nodes[&edge.from_unitig].is_circular()
         //     || !final_unitig_graph.nodes[&edge.to_unitig].is_circular()
         // {
@@ -1112,7 +1244,8 @@ fn heavy_clean_with_walk(
 ) {
     log::info!("Heavy graph cleaning...");
     let walk_edge_dir = temp_dir.join("walk_edges");
-    std::fs::create_dir_all(&walk_edge_dir).expect("Could not create temp directory for heavy cleaning");
+    std::fs::create_dir_all(&walk_edge_dir)
+        .expect("Could not create temp directory for heavy cleaning");
     let mut save_removed;
     let temperatures = [2., 1.5, 1.0, 0.5];
     let ol_thresholds = [0.125, 0.25, 0.5];
@@ -1132,11 +1265,10 @@ fn heavy_clean_with_walk(
     for temperature in temperatures {
         for (aggressive_i, &multiplier) in aggressive_multipliers.iter().enumerate() {
             let steps = steps_sizes[aggressive_i];
-            //TODO 
+            //TODO
             if multiplier > 0 {
                 save_removed = true;
-            }
-            else{
+            } else {
                 save_removed = false;
             }
 
@@ -1184,7 +1316,7 @@ fn heavy_clean_with_walk(
 
                 let strain_repeats = unitig_graph.get_strain_repeats(&overlap_adj_map, &args);
 
-                let heavy_cut_options = HeavyCutOptions{
+                let heavy_cut_options = HeavyCutOptions {
                     samples: samples,
                     temperature: temperature,
                     steps: steps,
@@ -1199,15 +1331,19 @@ fn heavy_clean_with_walk(
                     require_safety: true,
                     only_tips: false,
                     cut_tips: true,
-                    debug: false
+                    debug: false,
                 };
 
                 let length_before_cut = unitig_graph.nodes.len();
                 unitig_graph.random_walk_over_graph_and_cut(
-                    args, 
-                    walk_edge_dir.join(format!("walk-edge-G{}-m{}-t{}-r{}.txt", global_counter, multiplier, temperature, ol_threshold)), 
-                    heavy_cut_options);
-                
+                    args,
+                    walk_edge_dir.join(format!(
+                        "walk-edge-G{}-m{}-t{}-r{}.txt",
+                        global_counter, multiplier, temperature, ol_threshold
+                    )),
+                    heavy_cut_options,
+                );
+
                 let length_after_cut = unitig_graph.nodes.len();
                 log::debug!(
                     "WALK-CLEAN: Cut {} nodes at multiplier {}, temperature {}, and threshold {}",
@@ -1343,28 +1479,29 @@ fn walk_tip_bubble(
                 break;
             }
         }
-            let heavy_cut_options = HeavyCutOptions{
-                samples: SAMPLES,
-                temperature: 0.5,
-                steps: 2,
-                max_forward: walk_tip_length_cutoff,
-                max_reads_forward: walk_tip_read_cutoff,
-                safe_length_back: SAFE_LENGTH_BACK,
-                ol_thresh: 0.99,
-                tip_threshold: walk_tip_length_cutoff,
-                strain_repeat_map: None,
-                special_small: false,
-                max_length_search: 200_000,
-                require_safety: true,
-                only_tips: true, // ONLY TIPS
-                cut_tips: true,
-                debug: true
-            };
+        let heavy_cut_options = HeavyCutOptions {
+            samples: SAMPLES,
+            temperature: 0.5,
+            steps: 2,
+            max_forward: walk_tip_length_cutoff,
+            max_reads_forward: walk_tip_read_cutoff,
+            safe_length_back: SAFE_LENGTH_BACK,
+            ol_thresh: 0.99,
+            tip_threshold: walk_tip_length_cutoff,
+            strain_repeat_map: None,
+            special_small: false,
+            max_length_search: 200_000,
+            require_safety: true,
+            only_tips: true, // ONLY TIPS
+            cut_tips: true,
+            debug: true,
+        };
 
         unitig_graph.random_walk_over_graph_and_cut(
-                args, 
-                temp_dir.join(format!("walk_for_tip_clean-{}.txt", counter)), 
-                heavy_cut_options);
+            args,
+            temp_dir.join(format!("walk_for_tip_clean-{}.txt", counter)),
+            heavy_cut_options,
+        );
         unitig_graph.get_sequence_info(&twin_reads, &get_seq_config);
 
         unitig_graph.pop_bubbles(max_bubble_threshold, Some(max_bubble_tigs), save_tips);
@@ -1440,7 +1577,7 @@ fn progressive_coverage_contigs_circular(
 
     let mut cov_to_graph_map = FxHashMap::default();
     let mut unitig_graph_with_threshold = unitig_graph.clone();
-    
+
     let up_to_30 = (0..30).collect::<Vec<_>>();
     let after_30 = (30..=max_cov as usize).step_by(2).collect::<Vec<_>>();
     let all_covs = up_to_30.iter().chain(after_30.iter());
@@ -1491,10 +1628,8 @@ fn progressive_coverage_contigs_circular(
     // Includes end and beginning node.
     let mut unitig_graph =
         get_contigs_from_progressive_coverage_circular(unitig_graph, cov_to_graph_map);
-        //get_contigs_from_progressive_coverage_old(cov_to_graph_map, &args, &temp_dir);
+    //get_contigs_from_progressive_coverage_old(cov_to_graph_map, &args, &temp_dir);
     unitig_graph.get_sequence_info(&twin_reads, &types::GetSequenceInfoConfig::default());
-    
+
     return unitig_graph;
 }
-
-

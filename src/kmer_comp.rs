@@ -1,23 +1,22 @@
-use std::collections::HashSet;
-use smallvec::SmallVec;
 use crate::cli::Cli;
+use crate::constants::HUFFMAN_SAMPLE_MAX;
 use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
-use crate::constants::HUFFMAN_SAMPLE_MAX;
+use crate::seeding;
 use crate::twin_graph;
+use crate::types::*;
 use crate::utils;
-use rayon::prelude::*;
+use fishers_exact::fishers_exact;
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
+use rayon::prelude::*;
+use smallvec::SmallVec;
+use std::collections::HashSet;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use crate::types::*;
-use crate::seeding;
-use fishers_exact::fishers_exact;
-use std::path::Path;
-
 
 pub fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     let mut compressed_seq = vec![];
@@ -35,17 +34,15 @@ pub fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     return compressed_seq;
 }
 
-
-pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Vec<TwinRead>{
-
+pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Vec<TwinRead> {
     let start = std::time::Instant::now();
 
     let fastq_files = &kmer_info.read_files;
     let mut snpmer_set = HashSet::default();
-    for snpmer_i in kmer_info.snpmer_info.iter(){
+    for snpmer_i in kmer_info.snpmer_info.iter() {
         let k = args.kmer_size as usize;
-        let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k-1) );
-        let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k-1) );
+        let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
+        let snpmer2 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[1] as u64) << (k - 1));
         snpmer_set.insert(snpmer1);
         snpmer_set.insert(snpmer2);
     }
@@ -61,7 +58,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let arc_number_seen_reads = Arc::new(Mutex::new(0usize));
     let num_reads_removed_repetitive = Arc::new(Mutex::new(0));
 
-    for fastq_file in files_owned{
+    for fastq_file in files_owned {
         let (mut tx, rx) = spmc::channel();
         thread::spawn(move || {
             let mut reader = needletail::parse_fastx_file(fastq_file).expect("valid path");
@@ -69,14 +66,13 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                 let rec = record.expect("Error reading record");
                 let seq;
                 seq = rec.seq().to_vec();
-                if seq.len() < MIN_READ_LENGTH{
+                if seq.len() < MIN_READ_LENGTH {
                     continue;
                 }
                 let id = String::from_utf8_lossy(rec.id()).to_string();
-                if let Some(qualities) = rec.qual(){
+                if let Some(qualities) = rec.qual() {
                     tx.send((seq, Some(qualities.to_vec()), id)).unwrap();
-                }
-                else{
+                } else {
                     tx.send((seq, None, id)).unwrap();
                 }
             }
@@ -85,7 +81,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
         let mut handles = Vec::new();
         let k = args.kmer_size;
         let c = args.c;
-        for _ in 0..args.threads{
+        for _ in 0..args.threads {
             let rx = rx.clone();
             let set = Arc::clone(&snpmer_set);
             let solid = Arc::clone(&arc_solid);
@@ -94,7 +90,7 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
             let num_repetitive = Arc::clone(&num_reads_removed_repetitive);
             let num_seen_reads = Arc::clone(&arc_number_seen_reads);
             handles.push(thread::spawn(move || {
-                loop{
+                loop {
                     match rx.recv() {
                         Ok(msg) => {
                             let seq = msg.0;
@@ -102,61 +98,87 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
                             let qualities = msg.1;
                             let id = msg.2;
 
-                            // This branch is done before any operations on twin read is done. 
+                            // This branch is done before any operations on twin read is done.
                             // This is crucial because building huffman changes global state, which
                             // invalidates intermediate twin reads.
                             {
                                 let mut nsr = num_seen_reads.lock().unwrap();
                                 *nsr += 1;
                                 if *nsr == HUFFMAN_SAMPLE_MAX {
-                                    log::info!("Reached {} reads, building Huffman coding...", HUFFMAN_SAMPLE_MAX);
+                                    log::info!(
+                                        "Reached {} reads, building Huffman coding...",
+                                        HUFFMAN_SAMPLE_MAX
+                                    );
                                     if huffman_initialized() == false {
                                         let mut vec = twrv.lock().unwrap();
-                                        log::info!("Building Huffman coding from first {} reads...", vec.len());
+                                        log::info!(
+                                            "Building Huffman coding from first {} reads...",
+                                            vec.len()
+                                        );
                                         build_and_set_huffman_coding(&vec, vec.len());
                                         reencode_reads_huffman(&mut vec);
-                                        log::info!("Huffman coding built and {} reads re-encoded.", vec.len());
+                                        log::info!(
+                                            "Huffman coding built and {} reads re-encoded.",
+                                            vec.len()
+                                        );
                                     }
                                 }
                             }
-                            let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, set.as_ref(), id);
-                            if twin_read.is_some(){
+                            let twin_read = seeding::get_twin_read_syncmer(
+                                seq,
+                                qualities,
+                                k,
+                                c,
+                                set.as_ref(),
+                                id,
+                            );
+                            if twin_read.is_some() {
                                 let mut kmer_counter_map = FxHashMap::default();
-                                for mini in twin_read.as_ref().unwrap().minimizer_kmers().iter(){
+                                for mini in twin_read.as_ref().unwrap().minimizer_kmers().iter() {
                                     *kmer_counter_map.entry(*mini).or_insert(0) += 1;
                                 }
 
                                 let mut solid_mini_indices = FxHashSet::default();
-                                for (i, mini) in twin_read.as_ref().unwrap().minimizer_kmers().iter().enumerate(){
-                                    if kmer_counter_map[mini] > MAX_KMER_COUNT_IN_READ{
+                                for (i, mini) in twin_read
+                                    .as_ref()
+                                    .unwrap()
+                                    .minimizer_kmers()
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    if kmer_counter_map[mini] > MAX_KMER_COUNT_IN_READ {
                                         continue;
                                     }
                                     if USE_SOLID_KMERS {
-                                        if solid.contains(&mini){
+                                        if solid.contains(&mini) {
                                             solid_mini_indices.insert(i);
                                         }
-                                    }
-                                    else{
+                                    } else {
                                         if !highfreq.contains(&mini) {
                                             solid_mini_indices.insert(i);
                                         }
                                     }
                                 }
-                                //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff. 
-                                if solid_mini_indices.len() < seqlen / c / 20{
+                                //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff.
+                                if solid_mini_indices.len() < seqlen / c / 20 {
                                     *num_repetitive.lock().unwrap() += 1;
                                     continue;
                                 }
 
                                 let mut solid_snpmer_indices = FxHashSet::default();
-                                for (i, snpmer) in twin_read.as_ref().unwrap().snpmer_kmers().iter().enumerate(){
-                                    if USE_SOLID_KMERS{
-                                        if solid.contains(&snpmer){
+                                for (i, snpmer) in twin_read
+                                    .as_ref()
+                                    .unwrap()
+                                    .snpmer_kmers()
+                                    .iter()
+                                    .enumerate()
+                                {
+                                    if USE_SOLID_KMERS {
+                                        if solid.contains(&snpmer) {
                                             solid_snpmer_indices.insert(i);
                                         }
-                                    }
-                                    else{
-                                        if !highfreq.contains(&snpmer){
+                                    } else {
+                                        if !highfreq.contains(&snpmer) {
                                             solid_snpmer_indices.insert(i);
                                         }
                                     }
@@ -195,64 +217,99 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
 
     kmer_info.solid_kmers = Arc::try_unwrap(arc_solid).unwrap();
     kmer_info.high_freq_kmers = Arc::try_unwrap(arc_high_freq).unwrap();
-    let mut twin_reads = Arc::try_unwrap(twin_read_vec).unwrap().into_inner().unwrap();
-    twin_reads.sort_by(|a,b| a.id.cmp(&b.id));
+    let mut twin_reads = Arc::try_unwrap(twin_read_vec)
+        .unwrap()
+        .into_inner()
+        .unwrap();
+    twin_reads.sort_by(|a, b| a.id.cmp(&b.id));
     twin_reads.par_iter_mut().for_each(|x| x.compact());
 
     //This is for hefty debugging purposes only; too verbose.
-    if log::log_enabled!(log::Level::Trace) && false{
-        for twin_read in twin_reads.iter(){
-            let decoded_snpmers = twin_read.snpmers_vec().into_iter().map(|x| (x.0, decode_kmer48(x.1, twin_read.k))).collect::<Vec<_>>();
+    if log::log_enabled!(log::Level::Trace) && false {
+        for twin_read in twin_reads.iter() {
+            let decoded_snpmers = twin_read
+                .snpmers_vec()
+                .into_iter()
+                .map(|x| (x.0, decode_kmer48(x.1, twin_read.k)))
+                .collect::<Vec<_>>();
             log::trace!("{} {:?}", twin_read.id, decoded_snpmers);
         }
     }
 
-    log::debug!("Number of reads filtered due to repetitiveness: {}", num_reads_removed_repetitive.lock().unwrap());
-    let number_reads_below_threshold = twin_reads.iter().filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff).count();
-    log::info!("Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.", twin_reads.len(), number_reads_below_threshold);
-    let snpmer_densities = twin_reads.iter().map(|x| x.snpmer_count() as f64 / x.base_length as f64).collect::<Vec<_>>();
+    log::debug!(
+        "Number of reads filtered due to repetitiveness: {}",
+        num_reads_removed_repetitive.lock().unwrap()
+    );
+    let number_reads_below_threshold = twin_reads
+        .iter()
+        .filter(|x| x.est_id.is_some() && x.est_id.unwrap() < args.quality_value_cutoff)
+        .count();
+    log::info!(
+        "Number of valid reads with >= 1kb - {}. Number of reads below quality threshold - {}.",
+        twin_reads.len(),
+        number_reads_below_threshold
+    );
+    let snpmer_densities = twin_reads
+        .iter()
+        .map(|x| x.snpmer_count() as f64 / x.base_length as f64)
+        .collect::<Vec<_>>();
     let mean_snpmer_density = snpmer_densities.iter().sum::<f64>() / snpmer_densities.len() as f64;
     log::info!("Mean SNPmer density: {:.2}%", mean_snpmer_density * 100.);
-    log::info!("Time elapsed for obtaining twin reads is: {:?}", start.elapsed());
+    log::info!(
+        "Time elapsed for obtaining twin reads is: {:?}",
+        start.elapsed()
+    );
 
     return twin_reads;
 }
 
 #[inline]
-pub fn retrieve_masked_kmer(kmer: u64, k: usize) -> u64{
-    let split_mask_extract = 3 << (k-1);
+pub fn retrieve_masked_kmer(kmer: u64, k: usize) -> u64 {
+    let split_mask_extract = 3 << (k - 1);
     return kmer & !split_mask_extract;
 }
 
 #[inline]
-pub fn split_kmer(kmer: u64, k: usize) -> (u64, u8){
-    let split_mask_extract = 3 << (k-1);
-    let mid_base = (kmer & split_mask_extract) >> (k-1);
+pub fn split_kmer(kmer: u64, k: usize) -> (u64, u8) {
+    let split_mask_extract = 3 << (k - 1);
+    let mid_base = (kmer & split_mask_extract) >> (k - 1);
     let masked_kmer = kmer & !split_mask_extract;
     return (masked_kmer, mid_base as u8);
 }
 
-pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -> KmerGlobalInfo{
-
+pub fn get_snpmers_inplace_sort(
+    mut big_kmer_map: Vec<(Kmer64, [u32; 2])>,
+    k: usize,
+    args: &Cli,
+) -> KmerGlobalInfo {
     assert!(!USE_SOLID_KMERS);
 
-    log::debug!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
+    log::debug!(
+        "Number of k-mers passing thresholds: {}",
+        big_kmer_map.len()
+    );
     let mut kmer_counts = vec![];
     let high_freq_kmers = Arc::new(Mutex::new(HashSet::default()));
-    let paths_to_files = args.input_files.iter().map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap()).collect::<Vec<_>>();
+    let paths_to_files = args
+        .input_files
+        .iter()
+        .map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap())
+        .collect::<Vec<_>>();
 
-    for pair in big_kmer_map.iter(){
+    for pair in big_kmer_map.iter() {
         let counts = pair.1;
         kmer_counts.push(counts[0] + counts[1]);
     }
 
     kmer_counts.par_sort_unstable();
-    if kmer_counts.len() == 0{
+    if kmer_counts.len() == 0 {
         log::error!("No k-mers found. Exiting.");
         std::process::exit(1);
     }
 
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / args.high_freq_kmer_threshold) - 1].max(100);
+    let high_freq_thresh = kmer_counts
+        [kmer_counts.len() - (kmer_counts.len() / args.high_freq_kmer_threshold) - 1]
+        .max(100);
     log::debug!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
@@ -267,15 +324,17 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
     thread::spawn(move || {
         let mut current_split_kmer = None;
         let mut kmer_pairs = vec![];
-        for pair in big_kmer_map.into_iter(){
-
+        for pair in big_kmer_map.into_iter() {
             let counts = pair.1;
 
-            if counts[0] + counts[1] > high_freq_thresh{ 
-                high_freq_kmers_arc.lock().unwrap().insert(Kmer48::from_u64(pair.0));
+            if counts[0] + counts[1] > high_freq_thresh {
+                high_freq_kmers_arc
+                    .lock()
+                    .unwrap()
+                    .insert(Kmer48::from_u64(pair.0));
             }
 
-            if counts[0] == 0 || counts[1] == 0{
+            if counts[0] == 0 || counts[1] == 0 {
                 continue;
             }
 
@@ -283,7 +342,7 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
             let split_kmer = retrieve_masked_kmer(kmer, k);
 
             if current_split_kmer != Some(split_kmer) {
-                if kmer_pairs.len() > 1{
+                if kmer_pairs.len() > 1 {
                     tx.send(kmer_pairs).unwrap();
                 }
                 kmer_pairs = vec![];
@@ -292,23 +351,25 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
             kmer_pairs.push(pair);
         }
 
-        if kmer_pairs.len() > 1{
+        if kmer_pairs.len() > 1 {
             tx.send(kmer_pairs).unwrap();
         }
     });
 
-
     utils::log_memory_usage(false, "Memory usage during snpmer detection");
 
-    if args.no_snpmers{
+    if args.no_snpmers {
         log::info!("Skipping snpmer detection.");
-        return KmerGlobalInfo{
+        return KmerGlobalInfo {
             snpmer_info: vec![],
             solid_kmers: HashSet::default(),
-            high_freq_kmers: Arc::try_unwrap(high_freq_kmers).unwrap().into_inner().unwrap(),
+            high_freq_kmers: Arc::try_unwrap(high_freq_kmers)
+                .unwrap()
+                .into_inner()
+                .unwrap(),
             use_solid_kmers: USE_SOLID_KMERS,
             high_freq_thresh: high_freq_thresh as f64,
-            read_files: paths_to_files
+            read_files: paths_to_files,
         };
     }
 
@@ -318,29 +379,37 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
     let mut handles = Vec::new();
     let k = args.kmer_size;
 
-    for _ in 0..args.threads{
+    for _ in 0..args.threads {
         let rx = rx.clone();
         let potential_snps = Arc::clone(&potential_snps);
         let snpmers = Arc::clone(&snpmers);
         handles.push(thread::spawn(move || {
-            loop{
+            loop {
                 match rx.recv() {
                     Ok(msg) => {
                         // SNPmers (not split) and counts
                         let mut pairsvec = msg;
-                        pairsvec.sort_unstable_by(|a,b| (b.1[0] + b.1[1]).cmp(&(a.1[0] + a.1[1])));
+                        pairsvec.sort_unstable_by(|a, b| (b.1[0] + b.1[1]).cmp(&(a.1[0] + a.1[1])));
                         let n = pairsvec[0].1[0] + pairsvec[0].1[1];
                         let succ = pairsvec[1].1[0] + pairsvec[1].1[1];
-                        let right_p_val_thresh1 = twin_graph::binomial_test(n as u64, succ as u64, 0.025);
-                        let right_p_val_thresh2 = twin_graph::binomial_test(n as u64, succ as u64, 0.050);
+                        let right_p_val_thresh1 =
+                            twin_graph::binomial_test(n as u64, succ as u64, 0.025);
+                        let right_p_val_thresh2 =
+                            twin_graph::binomial_test(n as u64, succ as u64, 0.050);
                         let cond1 = right_p_val_thresh1 > 0.05;
                         let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
 
-                        if cond1 || cond2{
+                        if cond1 || cond2 {
                             if log::log_enabled!(log::Level::Trace) {
                                 let snpmer1 = pairsvec[0].0;
                                 let snpmer2 = pairsvec[1].0;
-                                log::trace!("NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}", decode_kmer64(snpmer1, k as u8), decode_kmer64(snpmer2, k as u8), pairsvec[0].1, pairsvec[1].1);
+                                log::trace!(
+                                    "NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}",
+                                    decode_kmer64(snpmer1, k as u8),
+                                    decode_kmer64(snpmer2, k as u8),
+                                    pairsvec[0].1,
+                                    pairsvec[1].1
+                                );
                             }
                             continue;
                         }
@@ -349,39 +418,60 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
                         let b = pairsvec[1].1[0];
                         let c = pairsvec[0].1[1];
                         let d = pairsvec[1].1[1];
-                        let contingency_table = [
-                            a.max(c), b.max(d),
-                            c.min(a), d.min(b)
-                        ];
+                        let contingency_table = [a.max(c), b.max(d), c.min(a), d.min(b)];
                         let p_value = fishers_exact(&contingency_table).unwrap().two_tail_pvalue;
                         let odds;
-                        if contingency_table[0] == 0 || contingency_table[1] == 0 || contingency_table[2] == 0 || contingency_table[3] == 0 {
+                        if contingency_table[0] == 0
+                            || contingency_table[1] == 0
+                            || contingency_table[2] == 0
+                            || contingency_table[3] == 0
+                        {
                             odds = 0.0;
                         } else {
-                            odds = (contingency_table[0] as f64 * contingency_table[3] as f64) / (contingency_table[1] as f64 * contingency_table[2] as f64);
+                            odds = (contingency_table[0] as f64 * contingency_table[3] as f64)
+                                / (contingency_table[1] as f64 * contingency_table[2] as f64);
                         }
-                        if odds == 0.{
+                        if odds == 0. {
                             continue;
                         }
 
                         //Is snpmer
-                        if p_value > 0.005 || (odds < 1.5 && odds > 1./1.5){
+                        if p_value > 0.005 || (odds < 1.5 && odds > 1. / 1.5) {
                             let splitmer = retrieve_masked_kmer(pairsvec[0].0, k);
-                            let mid_bases = pairsvec.iter().map(|x| split_kmer(x.0, k).1).collect::<Vec<_>>();
-                            let snpmer = SnpmerInfo{
+                            let mid_bases = pairsvec
+                                .iter()
+                                .map(|x| split_kmer(x.0, k).1)
+                                .collect::<Vec<_>>();
+                            let snpmer = SnpmerInfo {
                                 split_kmer: splitmer,
                                 mid_bases: [mid_bases[0] as u8, mid_bases[1] as u8],
-                                counts: [pairsvec[0].1[0] + pairsvec[0].1[1], pairsvec[1].1[0] + pairsvec[1].1[1]],
+                                counts: [
+                                    pairsvec[0].1[0] + pairsvec[0].1[1],
+                                    pairsvec[1].1[0] + pairsvec[1].1[1],
+                                ],
                             };
                             snpmers.lock().unwrap().push(snpmer);
 
-                            let snpmer1 = splitmer as u64 | ((mid_bases[0] as u64) << (k-1));
-                            let snpmer2 = splitmer as u64 | ((mid_bases[1] as u64) << (k-1));
-                            log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer64(snpmer1, k as u8), pairsvec[0].1, decode_kmer64(snpmer2, k as u8), pairsvec[1].1, p_value, odds);
+                            let snpmer1 = splitmer as u64 | ((mid_bases[0] as u64) << (k - 1));
+                            let snpmer2 = splitmer as u64 | ((mid_bases[1] as u64) << (k - 1));
+                            log::trace!(
+                                "{} c:{:?} {} c:{:?}, p:{}, odds:{}",
+                                decode_kmer64(snpmer1, k as u8),
+                                pairsvec[0].1,
+                                decode_kmer64(snpmer2, k as u8),
+                                pairsvec[1].1,
+                                p_value,
+                                odds
+                            );
                             *potential_snps.lock().unwrap() += 1;
-                        }
-                        else{
-                            log::trace!("NOT SNPMER c:{:?} c:{:?}, p:{}, odds:{}",  pairsvec[0].1, pairsvec[1].1, p_value, odds);
+                        } else {
+                            log::trace!(
+                                "NOT SNPMER c:{:?} c:{:?}, p:{}, odds:{}",
+                                pairsvec[0].1,
+                                pairsvec[1].1,
+                                p_value,
+                                odds
+                            );
                         }
                     }
                     Err(_) => {
@@ -397,58 +487,71 @@ pub fn get_snpmers_inplace_sort(mut big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usi
         handle.join().unwrap();
     }
 
-
     let mut snpmers = Arc::try_unwrap(snpmers).unwrap().into_inner().unwrap();
     snpmers.sort();
     log::debug!("Number of snpmers: {}. ", potential_snps.lock().unwrap());
-    return KmerGlobalInfo{
+    return KmerGlobalInfo {
         snpmer_info: snpmers,
         solid_kmers: HashSet::default(),
-        high_freq_kmers: Arc::try_unwrap(high_freq_kmers).unwrap().into_inner().unwrap(),
+        high_freq_kmers: Arc::try_unwrap(high_freq_kmers)
+            .unwrap()
+            .into_inner()
+            .unwrap(),
         use_solid_kmers: USE_SOLID_KMERS,
         high_freq_thresh: high_freq_thresh as f64,
-        read_files: paths_to_files
+        read_files: paths_to_files,
     };
 }
 
-pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -> KmerGlobalInfo{
-
-    log::debug!("Number of k-mers passing thresholds: {}", big_kmer_map.len());
-    let mut new_map_counts_bases : FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
+pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32; 2])>, k: usize, args: &Cli) -> KmerGlobalInfo {
+    log::debug!(
+        "Number of k-mers passing thresholds: {}",
+        big_kmer_map.len()
+    );
+    let mut new_map_counts_bases: FxHashMap<Kmer64, CountsAndBases> = FxHashMap::default();
     let mut kmer_counts = vec![];
     let mut solid_kmers = HashSet::default();
     let mut high_freq_kmers = HashSet::default();
-    let paths_to_files = args.input_files.iter().map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap()).collect::<Vec<_>>();
+    let paths_to_files = args
+        .input_files
+        .iter()
+        .map(|x| std::fs::canonicalize(Path::new(x).to_path_buf()).unwrap())
+        .collect::<Vec<_>>();
 
-    for pair in big_kmer_map.iter(){
+    for pair in big_kmer_map.iter() {
         let counts = pair.1;
         kmer_counts.push(counts[0] + counts[1]);
     }
 
     kmer_counts.par_sort_unstable();
-    if kmer_counts.len() == 0{
+    if kmer_counts.len() == 0 {
         log::error!("No k-mers found. Exiting.");
         std::process::exit(1);
     }
-    let high_freq_thresh = kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
+    let high_freq_thresh =
+        kmer_counts[kmer_counts.len() - (kmer_counts.len() / 100000) - 1].max(100);
     log::debug!("High frequency k-mer threshold: {}", high_freq_thresh);
     drop(kmer_counts);
 
     log::info!("Finding snpmers...");
     //Should be able to parallelize this, TODO
-    for pair in big_kmer_map.into_iter(){
+    for pair in big_kmer_map.into_iter() {
         let kmer = pair.0;
         let (split_kmer, mid_base) = split_kmer(kmer, k);
         let counts = pair.1;
-        if counts[0] > 0 && counts[1] > 0{
+        if counts[0] > 0 && counts[1] > 0 {
             let count = counts[0] + counts[1];
-            if count < high_freq_thresh{
+            if count < high_freq_thresh {
                 solid_kmers.insert(Kmer48::from_u64(kmer));
-                let v = new_map_counts_bases.entry(split_kmer).or_insert(CountsAndBases{counts: SmallVec::new(), bases: SmallVec::new()});
+                let v = new_map_counts_bases
+                    .entry(split_kmer)
+                    .or_insert(CountsAndBases {
+                        counts: SmallVec::new(),
+                        bases: SmallVec::new(),
+                    });
                 v.counts.push(counts);
                 v.bases.push(mid_base);
-            }
-            else {
+            } else {
                 high_freq_kmers.insert(Kmer48::from_u64(kmer));
             }
         }
@@ -456,100 +559,125 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32;2])>, k: usize, args: &Cli) -
 
     utils::log_memory_usage(false, "Memory usage during snpmer detection");
 
-    if args.no_snpmers{
+    if args.no_snpmers {
         log::info!("Skipping snpmer detection.");
-        return KmerGlobalInfo{
+        return KmerGlobalInfo {
             snpmer_info: vec![],
             solid_kmers: solid_kmers,
             high_freq_kmers: high_freq_kmers,
             use_solid_kmers: USE_SOLID_KMERS,
             high_freq_thresh: high_freq_thresh as f64,
-            read_files: paths_to_files
+            read_files: paths_to_files,
         };
     }
 
     let potential_snps = Mutex::new(0);
     let snpmers = Mutex::new(vec![]);
-    new_map_counts_bases.into_par_iter().for_each(|(split_kmer, c_and_b)|{
-        let mut counts = c_and_b.counts;
-        let bases = c_and_b.bases;
-        if counts.len() > 1{
-            counts.sort_unstable_by(|a, b| (b[0] + b[1]).cmp(&(a[0] + a[1])));
+    new_map_counts_bases
+        .into_par_iter()
+        .for_each(|(split_kmer, c_and_b)| {
+            let mut counts = c_and_b.counts;
+            let bases = c_and_b.bases;
+            if counts.len() > 1 {
+                counts.sort_unstable_by(|a, b| (b[0] + b[1]).cmp(&(a[0] + a[1])));
 
-            //Errors are differentiated because they will have > 2 alleles
-            //and the smallest alleles will have a low count. 
-            let n = counts[0][0] + counts[0][1];
-            let succ = counts[1][0] + counts[1][1];
-            let right_p_val_thresh1 = twin_graph::binomial_test(n as u64, succ as u64, 0.025);
-            let right_p_val_thresh2 = twin_graph::binomial_test(n as u64, succ as u64, 0.050);
-            let cond1 = right_p_val_thresh1 > 0.05;
-            let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
-            if cond1 || cond2 {
-                if log::log_enabled!(log::Level::Trace) {
-                    let mid_bases = bases;
-                    let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
-                    let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
-                    log::trace!("NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}", decode_kmer64(snpmer1, k as u8), decode_kmer64(snpmer2, k as u8), counts[0], counts[1]);
+                //Errors are differentiated because they will have > 2 alleles
+                //and the smallest alleles will have a low count.
+                let n = counts[0][0] + counts[0][1];
+                let succ = counts[1][0] + counts[1][1];
+                let right_p_val_thresh1 = twin_graph::binomial_test(n as u64, succ as u64, 0.025);
+                let right_p_val_thresh2 = twin_graph::binomial_test(n as u64, succ as u64, 0.050);
+                let cond1 = right_p_val_thresh1 > 0.05;
+                let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
+                if cond1 || cond2 {
+                    if log::log_enabled!(log::Level::Trace) {
+                        let mid_bases = bases;
+                        let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k - 1));
+                        let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k - 1));
+                        log::trace!(
+                            "NOT SNPMER BINOMIAL {} {} c:{:?} c:{:?}",
+                            decode_kmer64(snpmer1, k as u8),
+                            decode_kmer64(snpmer2, k as u8),
+                            counts[0],
+                            counts[1]
+                        );
+                    }
+                    return;
                 }
-                return;
-            }
 
-            //Add pseudocount... especially when all reads are 
-            //already in forward strand (happens when debugging or manipulation via samtools)
-            let a = counts[0][0];
-            let b = counts[1][0];
-            let c = counts[0][1];
-            let d = counts[1][1];
-            let contingency_table = [
-                a.max(c), b.max(d),
-                c.min(a), d.min(b)
-            ];
-            let p_value = fishers_exact(&contingency_table).unwrap().two_tail_pvalue;
-            let odds;
-            if contingency_table[0] == 0 || contingency_table[1] == 0 || contingency_table[2] == 0 || contingency_table[3] == 0 {
-                odds = 0.0;
-            } else {
-                odds = (contingency_table[0] as f64 * contingency_table[3] as f64) / (contingency_table[1] as f64 * contingency_table[2] as f64);
-            }
+                //Add pseudocount... especially when all reads are
+                //already in forward strand (happens when debugging or manipulation via samtools)
+                let a = counts[0][0];
+                let b = counts[1][0];
+                let c = counts[0][1];
+                let d = counts[1][1];
+                let contingency_table = [a.max(c), b.max(d), c.min(a), d.min(b)];
+                let p_value = fishers_exact(&contingency_table).unwrap().two_tail_pvalue;
+                let odds;
+                if contingency_table[0] == 0
+                    || contingency_table[1] == 0
+                    || contingency_table[2] == 0
+                    || contingency_table[3] == 0
+                {
+                    odds = 0.0;
+                } else {
+                    odds = (contingency_table[0] as f64 * contingency_table[3] as f64)
+                        / (contingency_table[1] as f64 * contingency_table[2] as f64);
+                }
 
-            if odds == 0.{
-                return;
-            }
+                if odds == 0. {
+                    return;
+                }
 
-            //Is snpmer
-            if p_value > 0.005 || (odds < 1.5 && odds > 1./1.5){
-                let mid_bases = bases;
-                let snpmer = SnpmerInfo{
-                    split_kmer: split_kmer,
-                    mid_bases: [mid_bases[0], mid_bases[1]],
-                    counts: [counts[0][0] + counts[0][1], counts[1][0] + counts[1][1]],
-                };
-                snpmers.lock().unwrap().push(snpmer);
+                //Is snpmer
+                if p_value > 0.005 || (odds < 1.5 && odds > 1. / 1.5) {
+                    let mid_bases = bases;
+                    let snpmer = SnpmerInfo {
+                        split_kmer: split_kmer,
+                        mid_bases: [mid_bases[0], mid_bases[1]],
+                        counts: [counts[0][0] + counts[0][1], counts[1][0] + counts[1][1]],
+                    };
+                    snpmers.lock().unwrap().push(snpmer);
 
-                let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k-1));
-                let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k-1));
-                log::trace!("{} c:{:?} {} c:{:?}, p:{}, odds:{}", decode_kmer64(snpmer1, k as u8), counts[0], decode_kmer64(snpmer2, k as u8), counts[1], p_value, odds);
-                *potential_snps.lock().unwrap() += 1;
-
+                    let snpmer1 = split_kmer as u64 | ((mid_bases[0] as u64) << (k - 1));
+                    let snpmer2 = split_kmer as u64 | ((mid_bases[1] as u64) << (k - 1));
+                    log::trace!(
+                        "{} c:{:?} {} c:{:?}, p:{}, odds:{}",
+                        decode_kmer64(snpmer1, k as u8),
+                        counts[0],
+                        decode_kmer64(snpmer2, k as u8),
+                        counts[1],
+                        p_value,
+                        odds
+                    );
+                    *potential_snps.lock().unwrap() += 1;
+                } else {
+                    log::trace!(
+                        "NOT SNPMER c:{:?} c:{:?}, p:{}, odds:{}",
+                        counts[0],
+                        counts[1],
+                        p_value,
+                        odds
+                    );
+                }
             }
-            else{
-                log::trace!("NOT SNPMER c:{:?} c:{:?}, p:{}, odds:{}",  counts[0], counts[1], p_value, odds);
-            }
-        }
-    });
+        });
 
     let mut snpmers = snpmers.into_inner().unwrap();
     snpmers.sort();
     solid_kmers.shrink_to_fit();
-    log::debug!("Number of snpmers: {}. ", potential_snps.into_inner().unwrap());
+    log::debug!(
+        "Number of snpmers: {}. ",
+        potential_snps.into_inner().unwrap()
+    );
     log::debug!("Number of solid k-mers: {}.", solid_kmers.len());
-    return KmerGlobalInfo{
+    return KmerGlobalInfo {
         snpmer_info: snpmers,
         solid_kmers: solid_kmers,
         high_freq_kmers: high_freq_kmers,
         use_solid_kmers: USE_SOLID_KMERS,
         high_freq_thresh: high_freq_thresh as f64,
-        read_files: paths_to_files
+        read_files: paths_to_files,
     };
 }
 

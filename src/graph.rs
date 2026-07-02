@@ -29,32 +29,33 @@ pub trait GraphNode {
     fn out_edges_mut(&mut self) -> &mut Vec<EdgeIndex>;
 
     //Can break if in_edges[0] is a non-circular edge...
-    fn is_circular_strict(&self) -> bool{
-        self.in_edges().len() == 1 && self.out_edges().len() == 1 && self.in_edges()[0] == self.out_edges()[0]
+    fn is_circular_strict(&self) -> bool {
+        self.in_edges().len() == 1
+            && self.out_edges().len() == 1
+            && self.in_edges()[0] == self.out_edges()[0]
     }
 
-
-    fn has_circular_walk(&self) -> bool{
+    fn has_circular_walk(&self) -> bool {
         let mut edges = FxHashSet::default();
-        for edge in self.in_edges(){
+        for edge in self.in_edges() {
             edges.insert(*edge);
         }
-        for edge in self.out_edges(){
-            if edges.contains(edge){
-                return true
+        for edge in self.out_edges() {
+            if edges.contains(edge) {
+                return true;
             }
         }
         return false;
     }
 
-    fn get_circular_edge(&self) -> Option<EdgeIndex>{
+    fn get_circular_edge(&self) -> Option<EdgeIndex> {
         let mut edges = FxHashSet::default();
-        for edge in self.in_edges(){
+        for edge in self.in_edges() {
             edges.insert(*edge);
         }
-        for edge in self.out_edges(){
-            if edges.contains(edge){
-                return Some(*edge)
+        for edge in self.out_edges() {
+            if edges.contains(edge) {
+                return Some(*edge);
             }
         }
         return None;
@@ -76,14 +77,12 @@ pub trait GraphEdge {
             panic!("Node not in edge");
         }
     }
-    fn get_orientation(&self, node1: NodeIndex, node2: NodeIndex) -> (bool, bool){
-        if self.node1() == node1 && self.node2() == node2{
+    fn get_orientation(&self, node1: NodeIndex, node2: NodeIndex) -> (bool, bool) {
+        if self.node1() == node1 && self.node2() == node2 {
             (self.orientation1(), self.orientation2())
-        }
-        else if self.node1() == node2 && self.node2() == node1{
+        } else if self.node1() == node2 && self.node2() == node1 {
             (!self.orientation2(), !self.orientation1())
-        }
-        else{
+        } else {
             panic!("Nodes do not match edge")
         }
     }
@@ -109,8 +108,8 @@ pub trait GraphEdge {
     }
 
     fn node_edge_direction_fallback(&self, node: &NodeIndex, dir: Direction) -> Direction {
-        if self.node1() == *node && self.node2() == *node{
-            return dir
+        if self.node1() == *node && self.node2() == *node {
+            return dir;
         }
         if self.node1() == *node {
             if self.orientation1() {
@@ -141,7 +140,6 @@ pub struct BidirectedGraph<N, E> {
 }
 
 impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedGraph<N, E> {
-
     pub fn remove_edges_2(&mut self, edges: FxHashSet<EdgeIndex>) {
         for node in self.nodes.values_mut() {
             node.in_edges_mut().retain(|x| !edges.contains(x));
@@ -173,7 +171,7 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
 
     pub fn remove_edges(&mut self, edges: FxHashSet<EdgeIndex>) {
         let mut touched_nodes = FxHashSet::default();
-        
+
         for &edge_id in edges.iter() {
             if let Some(edge_to_delete) = &self.edges[edge_id] {
                 touched_nodes.insert(edge_to_delete.node1());
@@ -220,7 +218,11 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
         }
     }
 
-    fn traverse_inout_nonbranch(&self, node_idx: NodeIndex, previous_node: Option<NodeIndex>) -> Vec<EdgeIndex> {
+    fn traverse_inout_nonbranch(
+        &self,
+        node_idx: NodeIndex,
+        previous_node: Option<NodeIndex>,
+    ) -> Vec<EdgeIndex> {
         let node = self.nodes.get(&node_idx).unwrap();
         let in_deg = node.in_edges().len();
         let out_deg = node.out_edges().len();
@@ -230,19 +232,28 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
             } else {
                 for &edge_idx in node.both_edges() {
                     let edge = self.edges.get(edge_idx).unwrap().as_ref().unwrap();
-                    if edge.node1() != previous_node.unwrap() && edge.node2() != previous_node.unwrap() {
+                    if edge.node1() != previous_node.unwrap()
+                        && edge.node2() != previous_node.unwrap()
+                    {
                         return vec![edge_idx];
                     }
                 }
                 //Circular o --> x
-                //          ^  // 
+                //          ^  //
                 if log::log_enabled!(log::Level::Trace) {
                     log::trace!("{} Circular path detected", node_idx);
                     for &edge in node.both_edges() {
                         let edge = self.edges.get(edge).unwrap().as_ref().unwrap();
-                        log::trace!("{:?}",&edge);
+                        log::trace!("{:?}", &edge);
                     }
-                    log::trace!("{}, {}, {:?}, {:?}, {:?}", in_deg, out_deg, node.in_edges(), node.out_edges(), previous_node);
+                    log::trace!(
+                        "{}, {}, {:?}, {:?}, {:?}",
+                        in_deg,
+                        out_deg,
+                        node.in_edges(),
+                        node.out_edges(),
+                        previous_node
+                    );
                 }
                 return vec![];
             }
@@ -346,13 +357,13 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
                     }
                 }
                 // Remove edges
-                for &edge_idx in node.both_edges(){
+                for &edge_idx in node.both_edges() {
                     remove_edges.insert(edge_idx);
                 }
             }
             self.remove_edges(remove_edges);
         }
-        for node_idx in touched_nodes{
+        for node_idx in touched_nodes {
             let node = self.nodes.get_mut(&node_idx).unwrap();
             node.in_edges_mut().retain(|&edge| {
                 if let Some(Some(edge)) = self.edges.get(edge) {
@@ -371,12 +382,11 @@ impl<N: GraphNode + std::fmt::Debug, E: GraphEdge + std::fmt::Debug> BidirectedG
         }
 
         // Remove nodes
-        if !keep_as_output{
+        if !keep_as_output {
             for node_idx in nodes_to_remove {
                 self.nodes.remove(node_idx);
             }
-        }
-        else{
+        } else {
             for node_idx in nodes_to_remove {
                 let node = self.nodes.get_mut(node_idx).unwrap();
                 node.in_edges_mut().clear();
@@ -390,22 +400,19 @@ pub fn orientation_list<E: GraphEdge>(node_indices: &[NodeIndex], edges: &[E]) -
     let mut orientations = Vec::new();
     if node_indices.len() == 0 {
         panic!("No reads in a graph node; something went wrong.");
-    }
-    else if node_indices.len() == 1{
+    } else if node_indices.len() == 1 {
         return vec![true];
-    }
-    else {
-        for i in 0..node_indices.len() - 1{
+    } else {
+        for i in 0..node_indices.len() - 1 {
             let node = &node_indices[i];
             let next_node = &node_indices[i + 1];
             let edge = &edges[i];
             let orientation = edge.get_orientation(*node, *next_node);
-            if i == 0{
+            if i == 0 {
                 orientations.push(orientation.0);
             }
             orientations.push(orientation.1);
         }
     }
-    return orientations
+    return orientations;
 }
-

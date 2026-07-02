@@ -79,13 +79,19 @@ impl KmcReader {
         let mut marker = [0u8; 4];
         pre_file.read_exact(&mut marker)?;
         if &marker != b"KMCP" {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid KMCP header"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid KMCP header",
+            ));
         }
 
         pre_file.seek(SeekFrom::End(-4))?;
         pre_file.read_exact(&mut marker)?;
         if &marker != b"KMCP" {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid KMCP trailer"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid KMCP trailer",
+            ));
         }
 
         // Read KMC version
@@ -150,13 +156,19 @@ impl KmcReader {
         // Verify suffix file markers
         suf_file.read_exact(&mut marker)?;
         if &marker != b"KMCS" {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid KMCS header"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid KMCS header",
+            ));
         }
 
         suf_file.seek(SeekFrom::End(-4))?;
         suf_file.read_exact(&mut marker)?;
         if &marker != b"KMCS" {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid KMCS trailer"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid KMCS trailer",
+            ));
         }
 
         // Position at start of suffix data
@@ -278,7 +290,10 @@ impl KmcReader {
         })
     }
 
-    fn read_kmc1_lut(file: &mut File, info: &KmcFileInfo) -> io::Result<(Vec<u64>, Option<Vec<u32>>)> {
+    fn read_kmc1_lut(
+        file: &mut File,
+        info: &KmcFileInfo,
+    ) -> io::Result<(Vec<u64>, Option<Vec<u32>>)> {
         let lut_size = (1u64 << (2 * info.lut_prefix_length)) + 1;
 
         file.seek(SeekFrom::Start(4))?;
@@ -309,7 +324,8 @@ impl KmcReader {
         let signature_map_size = (1u32 << (2 * info.signature_len)) + 1;
 
         let content_size = file_size - 8;
-        let lut_area_size = content_size as i64 - 4 - (signature_map_size as i64 * 4) - header_offset;
+        let lut_area_size =
+            content_size as i64 - 4 - (signature_map_size as i64 * 4) - header_offset;
 
         let last_data_index = lut_area_size as u64 / 8;
 
@@ -357,14 +373,17 @@ impl KmcReader {
             // Move remaining bytes to start
             let remaining = self.suffix_buf_len - self.suffix_buf_pos;
             if remaining > 0 {
-                self.suffix_buf.copy_within(self.suffix_buf_pos..self.suffix_buf_len, 0);
+                self.suffix_buf
+                    .copy_within(self.suffix_buf_pos..self.suffix_buf_len, 0);
             }
             self.suffix_buf_pos = 0;
             self.suffix_buf_len = remaining;
 
             // Read more data - loop to fill buffer (read() may return less than requested)
             while self.suffix_buf_len < self.suffix_buf.len() {
-                let read = self.suffix_file.read(&mut self.suffix_buf[self.suffix_buf_len..])?;
+                let read = self
+                    .suffix_file
+                    .read(&mut self.suffix_buf[self.suffix_buf_len..])?;
                 if read == 0 {
                     break; // EOF
                 }

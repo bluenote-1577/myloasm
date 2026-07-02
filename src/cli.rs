@@ -1,17 +1,15 @@
-use clap::{Parser, ValueEnum};
 use crate::constants::CLI_HEADINGS;
+use clap::{Parser, ValueEnum};
 
 use crate::constants::{IDENTITY_THRESHOLDS, ID_THRESHOLD_ITERS};
 
 #[derive(Parser, Debug)]
 #[command(
     name = "myloasm",
-    about = 
-    "myloasm - high-resolution metagenomic assembly with noisy long reads. See online documentation for full options. \n\nEXAMPLE (Nanopore R10): myloasm nanopore_reads.fq.gz -o output_directory -t 50\nEXAMPLE (PacBio HiFi): myloasm pacbio_reads.fq.gz -o output_directory -t 50 --hifi",
+    about = "myloasm - high-resolution metagenomic assembly with noisy long reads. See online documentation for full options. \n\nEXAMPLE (Nanopore R10): myloasm nanopore_reads.fq.gz -o output_directory -t 50\nEXAMPLE (PacBio HiFi): myloasm pacbio_reads.fq.gz -o output_directory -t 50 --hifi",
     version,
     author
 )]
-
 #[derive(Default, Clone)]
 pub struct Cli {
     /// Input read file(s) -- multiple files are concatenated
@@ -22,14 +20,14 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[0])]
     pub nano_r10: bool,
 
-    /// R9 (old nanopore) mode for low (~90%) accuracy reads. Experimental. 
+    /// R9 (old nanopore) mode for low (~90%) accuracy reads. Experimental.
     #[arg(long, help_heading = CLI_HEADINGS[0], hide = true)]
     pub nano_r9: bool,
 
-    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy
+    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy. Sets -c to 20 at minimum.
     #[arg(long, help_heading = CLI_HEADINGS[0])]
     pub hifi: bool,
-        
+
     /// Output directory for results; created if it does not exist
     #[arg(short, long, default_value = "myloasm-out")]
     pub output_dir: String,
@@ -38,17 +36,22 @@ pub struct Cli {
     #[arg(short, long, default_value = "20")]
     pub threads: usize,
 
-     /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
+    /// Do not dump large intermediate data to disk (intermediate data is useful for rerunning)
     #[arg(long)]
     pub clean_dir: bool,
 
-    /// Compression ratio (1/c k-mers selected). Must be <= 15  
-    #[arg(short, long, default_value = "11", help_heading = CLI_HEADINGS[1])]
+    /// Compression ratio (1/c k-mers selected).
+    #[arg(long, default_value = "11", help_heading = CLI_HEADINGS[1], hide = true)]
     pub c: usize,
 
-    /// Use precomputed KMC database at this path for kmer counting. This helps if your run dies during the k-mer counting stage. Must use -b and -k21 for KMC db creation with version v3. 
+    /// Compression ratio (1/c k-mers selected). Default is -c 11 for nanopore data, -c 20 for --hifi. 
+    #[arg(short, long, default_value = None, help_heading = CLI_HEADINGS[1])]
+    pub compression: Option<usize>,
+
+
+    /// Use precomputed KMC database at this path for kmer counting. This helps if your run dies during the k-mer counting stage. Must use -b and -k21 for KMC db creation with version v3.
     #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
-    pub kmc_db: Option<String>, 
+    pub kmc_db: Option<String>,
 
     /// Use DFS-based back-safety search in graph cleaning (v2). Default is BFS-based (v1).
     #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
@@ -58,14 +61,14 @@ pub struct Cli {
     #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
     pub use_mph: bool,
 
-    /// Disallow reads with < % identity for graph building (estimated from base qualities) 
+    /// Disallow reads with < % identity for graph building (estimated from base qualities)
     #[arg(long, default_value_t=90., help_heading = CLI_HEADINGS[1])]
     pub quality_value_cutoff: f64,
 
     /// Minimum overlap length for graph construction
     #[arg(long, default_value_t=500, help_heading = CLI_HEADINGS[1])]
     pub min_ol: usize,
-        
+
     /// Bloom filter size in GB. Increase for massive datasets if initial k-mer counting is a bottleneck (default: automatic estimation)
     #[arg(short, long, help_heading = CLI_HEADINGS[1])]
     pub bloom_filter_size: Option<f64>,
@@ -74,22 +77,30 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub aggressive_bloom: bool,
 
-    /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets. 
+    /// New mode: trim windows during polishing. Takes slightly longer, may incrementally improve polishing for some datasets.
     #[arg(long, default_value_t=true, help_heading = CLI_HEADINGS[1], hide = true)]
     pub new_polish_trimming: bool,
 
-    /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex (> 150 Gbp) metagenomes. 
+    /// Experimental: homopolymer-compressed polishing. Compresses runs before POA, then expands using weighted-mode run lengths from read alignments.
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub hpc: bool,
+
+    /// Experimental: use abpoa instead of spoa for POA consensus.
+    #[arg(long, help_heading = CLI_HEADINGS[1], hide = true)]
+    pub abpoa: bool,
+
+    /// Allow for parallel graph resolution of bridged repeats. This will make the assembly slightly worse, but may resolve a bottleneck for huge, complex (> 150 Gbp) metagenomes.
     #[arg(long, help_heading = CLI_HEADINGS[1])]
     pub parallel_graph_bridging: bool,
 
     /// Remove highest frequency k-mers (1 / this).
     #[arg(long, default_value_t=100000, help_heading = CLI_HEADINGS[1])]
     pub high_freq_kmer_threshold: usize,
-        
-    /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall) 
+
+    /// Disallow reads with < % identity for polishing (set to > 0 otherwise polishing may stall)
     #[arg(long, default_value_t=75., help_heading = CLI_HEADINGS[1], hide = true)]
     pub min_qual_polishing: f64,
-    
+
     /// Verbosity level. Warning: trace is very verbose
     #[arg(short, long, value_enum, default_value = "debug")]
     pub log_level: LogLevel,
@@ -99,11 +110,11 @@ pub struct Cli {
     pub min_reads_contig: usize,
 
     /// Remove singleton contigs with <= this estimated coverage depth (DP1 coverage; 99% identity coverage)
-    #[arg(long, default_value_t=3., help_heading = "Output thresholds")]
+    #[arg(long, default_value_t = 3., help_heading = "Output thresholds")]
     pub singleton_coverage_threshold: f64,
 
     /// Remove contigs with <= this estimated coverage depth and <= 2 reads (DP1 coverage; 99% identity coverage)
-    #[arg(long, default_value_t=1., help_heading = "Output thresholds")]
+    #[arg(long, default_value_t = 1., help_heading = "Output thresholds")]
     pub secondary_coverage_threshold: f64,
 
     /// Remove all contigs with <= this estimated coverage depth (DP1 coverage; 99% identity coverage)
@@ -111,11 +122,11 @@ pub struct Cli {
     pub absolute_coverage_threshold: Option<f64>,
 
     /// Mark contigs with >= this average nucleotide identity (ANI) to a larger contig as alternate
-    #[arg(long, default_value_t=99.0, help_heading = "Output thresholds")]
+    #[arg(long, default_value_t = 99.0, help_heading = "Output thresholds")]
     pub dereplication_ani: f32,
 
     /// Mark contigs with > 90% aligned, < this length, and >= --dereplication-ani as alternate
-    #[arg(long, default_value_t=500_000., help_heading = "Output thresholds")]
+    #[arg(long, default_value_t = 500_000., help_heading = "Output thresholds")]
     pub dereplication_length: f32,
 
     /// No polishing (not recommended)
@@ -129,7 +140,7 @@ pub struct Cli {
     /// Batch size of indexing for read-to-read mapping and overlap stage. Higher = faster, but more memory.
     #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3], hide = true)]
     pub read_map_batch_size: usize,
-    
+
     /// Snpmer identity threshold for containment and strict overlaps
     #[arg(long, default_value_t=IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100., help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_threshold_strict: f64,
@@ -146,10 +157,10 @@ pub struct Cli {
     #[arg(long, default_value_t=0.00, help_heading =CLI_HEADINGS[3], hide = true)]
     pub snpmer_error_rate_strict: f64,
 
-    /// Relaxed compression ratio during containment; must be > c
-    #[arg(long, default_value_t=44, help_heading = CLI_HEADINGS[3], hide = true)]
+    /// Relaxed compression ratio during containment; k-mers are subsampled 0 mod this
+    #[arg(long, default_value_t=4, help_heading = CLI_HEADINGS[3], hide = true)]
     pub contain_subsample_rate: usize,
-    
+
     /// Cut overlaps with > (c * this) number of bases between minimizers on average
     #[arg(long, default_value_t=8., help_heading =CLI_HEADINGS[3], hide = true)]
     pub absolute_minimizer_cut_ratio: f64,
@@ -158,10 +169,6 @@ pub struct Cli {
     #[arg(long, default_value_t=5., help_heading =CLI_HEADINGS[3], hide = true)]
     pub relative_minimizer_cut_ratio: f64,
 
-    /// Disables a SNPmer error overlap rescue heuristic during graph construction
-    #[arg(long, help_heading =CLI_HEADINGS[3], hide = true)]
-    pub disable_error_overlap_rescue: bool,
-    
     /// Base bubble popping length threshold; this gets multiplied by 5-30x during progressive graph cleaning
     #[arg(long, default_value_t=50000, help_heading = CLI_HEADINGS[4], hide = true)]
     pub small_bubble_threshold: usize,
@@ -178,16 +185,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 3, help_heading = CLI_HEADINGS[4], hide = true)]
     pub tip_read_cutoff: usize,
 
-
     // ------ HIDDEN ARGUMENTS -----
-    
     /// K-mer size (must be odd and < 24)
     #[arg(short, long, default_value = "21", help_heading = CLI_HEADINGS[1], hide = true)]
     pub kmer_size: usize,
 
     /// Soft clips with < this # of bases are allowed for alignment
     #[arg(long, default_value_t=300, help_heading = CLI_HEADINGS[3], hide = true)]
-    pub maximal_end_fuzz: usize, 
+    pub maximal_end_fuzz: usize,
 
     /// Maximum bubble length to pop; keep alternates
     #[arg(long, default_value_t=500000, help_heading = CLI_HEADINGS[4], hide = true)]
@@ -208,7 +213,7 @@ pub enum LogLevel {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
-pub enum Preset{
+pub enum Preset {
     Error,
     Warn,
     Info,
@@ -221,7 +226,6 @@ impl Default for LogLevel {
         LogLevel::Debug
     }
 }
-
 
 impl Cli {
     pub fn log_level_filter(&self) -> log::LevelFilter {

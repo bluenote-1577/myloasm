@@ -25,28 +25,27 @@
 //SOFTWARE.
 //******************************
 
-use block_aligner::cigar::Operation;
-use smallvec::SmallVec;
-use fxhash::FxHashSet;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::collections::HashSet;
-use fxhash::FxHashMap;
-use std::hash::{BuildHasherDefault, Hasher};
-use std::path::PathBuf;
 use bio_seq::prelude::*;
-use rust_lapper::Lapper;
 use block_aligner::cigar::OpLen;
+use block_aligner::cigar::Operation;
+use fxhash::FxHashMap;
+use fxhash::FxHashSet;
+use minimum_redundancy::{BitsPerFragment, Code, Coding, DecodingResult};
+use rust_lapper::Lapper;
+use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use minimum_redundancy::{Coding, Code, DecodingResult, BitsPerFragment};
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::hash::{BuildHasherDefault, Hasher};
+use std::path::PathBuf;
 use std::sync::OnceLock;
-
 
 use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MAX_GAP_CHAINING;
 
-pub type NodeMap<K,V> = BTreeMap<K,V>;
+pub type NodeMap<K, V> = BTreeMap<K, V>;
 pub type Kmer64 = u64;
 pub type Kmer32 = u32;
 pub type KmerHash64 = u64;
@@ -66,13 +65,12 @@ pub const BYTE_TO_SEQ: [u8; 256] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 ];
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct Kmer48{
+pub struct Kmer48 {
     data: [u8; 6],
 }
 
-impl Kmer48{
+impl Kmer48 {
     // Be careful about endian
     #[inline]
     pub fn from_u64(n: u64) -> Self {
@@ -272,7 +270,7 @@ pub struct ChainInfo {
     pub chain: Vec<Anchor>,
     pub reverse: bool,
     pub score: i32,
-    pub large_indel: bool
+    pub large_indel: bool,
 }
 
 pub type EdgeIndex = usize;
@@ -283,7 +281,6 @@ pub struct TigRead {
     pub tig_seq: Vec<u32>,
     pub id: String,
 }
-
 
 pub type Percentage = f64;
 pub type Fraction = f32;
@@ -309,16 +306,13 @@ pub struct TwinRead {
     pub split_chimera: bool,
     pub split_start: u32,
     pub outer: bool,
-    pub snpmer_id_threshold: Option<f64>,
+    pub snpmer_id_threshold: Option<Percentage>,
     pub overlap_hang_length: Option<(usize, usize)>,
 }
 
-
-
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
-pub enum QualCompact3{
+pub enum QualCompact3 {
     Q33 = 0b0000,
     Q36 = 0b0001,
     Q39 = 0b0010,
@@ -337,7 +331,7 @@ pub enum QualCompact3{
     Q78 = 0b1111,
 }
 
-impl Codec for QualCompact3{
+impl Codec for QualCompact3 {
     const BITS: u8 = 4;
 
     /// Take the two least significant bits of a `u8` and map them to the
@@ -349,10 +343,9 @@ impl Codec for QualCompact3{
     /// We can efficient verify that a byte is a valid `Dna` value if it's
     /// between 0 and 3.
     fn try_from_bits(b: u8) -> Option<Self> {
-
         // Round to nearest 3 and map to enum variant
         let rounded = match b {
-            0..=34  => 0,  // Q33
+            0..=34 => 0,   // Q33
             35..=37 => 1,  // Q36
             38..=40 => 2,  // Q39
             41..=43 => 3,  // Q42
@@ -388,10 +381,10 @@ impl Codec for QualCompact3{
             13 => Some(Self::Q72),
             14 => Some(Self::Q75),
             15 => Some(Self::Q78),
-            _ => None,  // This case should never happen given our match above
+            _ => None, // This case should never happen given our match above
         };
 
-        return m
+        return m;
     }
 
     /// The ASCII values of 'A', 'C', 'G', and 'T' can be translated into
@@ -448,27 +441,26 @@ impl Codec for QualCompact3{
             QualCompact3::Q72,
             QualCompact3::Q75,
             QualCompact3::Q78,
-        ].into_iter()
+        ]
+        .into_iter()
     }
 }
 
-impl ComplementMut for QualCompact3{
-    fn comp(&mut self) {
-    }
+impl ComplementMut for QualCompact3 {
+    fn comp(&mut self) {}
 }
 
 impl Complement for QualCompact3 {}
 
 #[inline]
 fn reverse_bit_pairs(n: u64, k: usize) -> u64 {
-    let even_mask : u64 =  0xAAAAAAAAAAAAAAAAu64;
-    let odd_mask: u64 =  0x5555555555555555u64;
+    let even_mask: u64 = 0xAAAAAAAAAAAAAAAAu64;
+    let odd_mask: u64 = 0x5555555555555555u64;
 
     let odd_bits_rev = (n & odd_mask).reverse_bits() >> (64 - 2 * k);
     let even_bits_rev = (n & even_mask).reverse_bits() >> (64 - 2 * k);
 
     return (odd_bits_rev >> 1) | (even_bits_rev << 1);
-
 }
 
 /// Encode absolute positions as variable-length delta encoding.
@@ -593,7 +585,10 @@ pub fn encode_varints(values: &[u32]) -> Vec<u8> {
 // ---- Huffman coding for position delta bytes ----
 
 #[derive(Clone, Copy)]
-pub enum PositionKind { Minimizer, Snpmer }
+pub enum PositionKind {
+    Minimizer,
+    Snpmer,
+}
 
 static HUFFMAN_CODING_MINI: OnceLock<Coding<u8, BitsPerFragment>> = OnceLock::new();
 static HUFFMAN_CODES_MINI: OnceLock<[Code; 256]> = OnceLock::new();
@@ -620,27 +615,41 @@ fn huffman_codes_for(kind: PositionKind) -> Option<&'static [Code; 256]> {
 /// All 256 byte values are given a minimum frequency of 1 so that
 /// unseen bytes still get valid (long) codewords instead of zero-length codes.
 pub fn build_and_set_huffman_coding(reads: &[TwinRead], max_reads: usize) {
-    use std::collections::HashMap;
     use minimum_redundancy::Frequencies;
+    use std::collections::HashMap;
 
     let sample = &reads[..max_reads.min(reads.len())];
 
     // Build minimizer Huffman coding
     let mut mini_freq = HashMap::<u8, usize>::new();
-    for b in 0..=255u8 { mini_freq.insert(b, 1); }
-    mini_freq.add_occurences_of(sample.iter()
-        .flat_map(|r| r.minimizer_positions_enc.iter().copied()));
+    for b in 0..=255u8 {
+        mini_freq.insert(b, 1);
+    }
+    mini_freq.add_occurences_of(
+        sample
+            .iter()
+            .flat_map(|r| r.minimizer_positions_enc.iter().copied()),
+    );
     let coding_mini = Coding::from_frequencies(BitsPerFragment(1), mini_freq);
-    HUFFMAN_CODES_MINI.set(coding_mini.codes_for_values_array()).ok();
+    HUFFMAN_CODES_MINI
+        .set(coding_mini.codes_for_values_array())
+        .ok();
     HUFFMAN_CODING_MINI.set(coding_mini).ok();
 
     // Build snpmer Huffman coding
     let mut snp_freq = HashMap::<u8, usize>::new();
-    for b in 0..=255u8 { snp_freq.insert(b, 1); }
-    snp_freq.add_occurences_of(sample.iter()
-        .flat_map(|r| r.snpmer_positions_enc.iter().copied()));
+    for b in 0..=255u8 {
+        snp_freq.insert(b, 1);
+    }
+    snp_freq.add_occurences_of(
+        sample
+            .iter()
+            .flat_map(|r| r.snpmer_positions_enc.iter().copied()),
+    );
     let coding_snp = Coding::from_frequencies(BitsPerFragment(1), snp_freq);
-    HUFFMAN_CODES_SNP.set(coding_snp.codes_for_values_array()).ok();
+    HUFFMAN_CODES_SNP
+        .set(coding_snp.codes_for_values_array())
+        .ok();
     HUFFMAN_CODING_SNP.set(coding_snp).ok();
 }
 
@@ -732,7 +741,8 @@ pub fn decode_positions_huffman(encoded: &[u8], coding: &Coding<u8, BitsPerFragm
     }
 
     let huffman_bytes = &encoded[prefix_len..];
-    let mut bit_iter = huffman_bytes.iter()
+    let mut bit_iter = huffman_bytes
+        .iter()
         .flat_map(|&byte| (0..8u32).rev().map(move |i| ((byte >> i) & 1) as u32));
 
     let mut decoder = coding.decoder();
@@ -774,8 +784,12 @@ pub fn count_positions_huffman(encoded: &[u8]) -> usize {
 /// Re-encode reads from varint to Huffman encoding and set the flag.
 /// Must be called after build_and_set_huffman_coding.
 pub fn reencode_reads_huffman(reads: &mut [TwinRead]) {
-    let codes_mini = HUFFMAN_CODES_MINI.get().expect("Huffman coding not initialized");
-    let codes_snp = HUFFMAN_CODES_SNP.get().expect("Huffman coding not initialized");
+    let codes_mini = HUFFMAN_CODES_MINI
+        .get()
+        .expect("Huffman coding not initialized");
+    let codes_snp = HUFFMAN_CODES_SNP
+        .get()
+        .expect("Huffman coding not initialized");
 
     for read in reads.iter_mut() {
         if read.huffman_encoded {
@@ -799,14 +813,16 @@ pub fn reencode_reads_huffman(reads: &mut [TwinRead]) {
 
 /// Save Huffman coding tables to a file. Call after build_and_set_huffman_coding.
 pub fn save_huffman_tables(path: &std::path::Path) -> std::io::Result<()> {
-    let coding_mini = HUFFMAN_CODING_MINI.get()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized"))?;
-    let coding_snp = HUFFMAN_CODING_SNP.get()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized"))?;
+    let coding_mini = HUFFMAN_CODING_MINI.get().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized")
+    })?;
+    let coding_snp = HUFFMAN_CODING_SNP.get().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized")
+    })?;
 
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    coding_mini.write(&mut file, |w, v| { w.write_all(&[*v]) })?;
-    coding_snp.write(&mut file, |w, v| { w.write_all(&[*v]) })?;
+    coding_mini.write(&mut file, |w, v| w.write_all(&[*v]))?;
+    coding_snp.write(&mut file, |w, v| w.write_all(&[*v]))?;
     Ok(())
 }
 
@@ -819,14 +835,24 @@ pub fn load_huffman_tables(path: &std::path::Path) -> std::io::Result<bool> {
 
     let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
 
-    let coding_mini: Coding<u8, BitsPerFragment> =
-        Coding::read(&mut file, |r| { let mut b = [0u8; 1]; r.read_exact(&mut b)?; Ok(b[0]) })?;
-    let coding_snp: Coding<u8, BitsPerFragment> =
-        Coding::read(&mut file, |r| { let mut b = [0u8; 1]; r.read_exact(&mut b)?; Ok(b[0]) })?;
+    let coding_mini: Coding<u8, BitsPerFragment> = Coding::read(&mut file, |r| {
+        let mut b = [0u8; 1];
+        r.read_exact(&mut b)?;
+        Ok(b[0])
+    })?;
+    let coding_snp: Coding<u8, BitsPerFragment> = Coding::read(&mut file, |r| {
+        let mut b = [0u8; 1];
+        r.read_exact(&mut b)?;
+        Ok(b[0])
+    })?;
 
-    HUFFMAN_CODES_MINI.set(coding_mini.codes_for_values_array()).ok();
+    HUFFMAN_CODES_MINI
+        .set(coding_mini.codes_for_values_array())
+        .ok();
     HUFFMAN_CODING_MINI.set(coding_mini).ok();
-    HUFFMAN_CODES_SNP.set(coding_snp.codes_for_values_array()).ok();
+    HUFFMAN_CODES_SNP
+        .set(coding_snp.codes_for_values_array())
+        .ok();
     HUFFMAN_CODING_SNP.set(coding_snp).ok();
 
     log::info!("Loaded Huffman coding tables from {:?}", path);
@@ -874,10 +900,8 @@ impl<'a> Iterator for BoundaryPairIter<'a> {
     }
 }
 
-impl TwinRead{
-
-    pub fn compact(&mut self){
-
+impl TwinRead {
+    pub fn compact(&mut self) {
         // debug capacities vs lengths
         //  log::info!("BEFORE Minimizer positions: capacity = {}, length = {}", self.minimizer_positions_enc.capacity(), self.minimizer_positions_enc.len());
         //  log::info!("BEFORE Snpmer positions: capacity = {}, length = {}", self.snpmer_positions_enc.capacity(), self.snpmer_positions_enc.len());
@@ -894,9 +918,9 @@ impl TwinRead{
 
         //self.dna_seq.shrink_to_exact();
         self.dna_seq.shrink_to_fit();
-        if let Some(qual_seq) = self.qual_seq.as_mut(){
+        if let Some(qual_seq) = self.qual_seq.as_mut() {
             // qual_seq.shrink_to_exact();
-             qual_seq.shrink_to_fit();
+            qual_seq.shrink_to_fit();
         }
 
         // debug capacities vs lengths
@@ -906,21 +930,30 @@ impl TwinRead{
         //  log::info!("Qual seq: capacity = {}, length = {}", if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.capacity()} else {0}, if let Some(qual_seq) = self.qual_seq.as_ref(){qual_seq.len()} else {0});
     }
 
-    pub fn shrink_to_fit(&mut self){
+    pub fn shrink_to_fit(&mut self) {
         self.minimizer_positions_enc.shrink_to_fit();
         self.snpmer_positions_enc.shrink_to_fit();
         self.dna_seq.shrink_to_fit();
-        if let Some(qual_seq) = self.qual_seq.as_mut(){
+        if let Some(qual_seq) = self.qual_seq.as_mut() {
             qual_seq.shrink_to_fit();
         }
     }
 
     #[inline]
-    pub fn kmer_from_position(&self, pos:u32, k: usize) -> Kmer48{
+    pub fn kmer_from_position(&self, pos: u32, k: usize) -> Kmer48 {
         let pos = pos as usize;
         if pos + k > self.dna_seq.len() {
-            dbg!(&self.id, pos, k, self.dna_seq.len(), "Position out of bounds for k-mer extraction");
-            dbg!(self.minimizer_positions_enc.len(), self.snpmer_positions_enc.len());
+            dbg!(
+                &self.id,
+                pos,
+                k,
+                self.dna_seq.len(),
+                "Position out of bounds for k-mer extraction"
+            );
+            dbg!(
+                self.minimizer_positions_enc.len(),
+                self.snpmer_positions_enc.len()
+            );
             dbg!(self.huffman_encoded);
             panic!("Position out of bounds for k-mer extraction");
         }
@@ -928,20 +961,24 @@ impl TwinRead{
         //match various values of k from 17 - 23, odd
         //bio-seq stores CA = 0001.
         //our representation is CA = 0100.
-        // Internally, we want CA = 8 HEX = 0100. So 
-        let kmer = match k{
-            17 => {
-                reverse_bit_pairs(Kmer::<Dna, 17, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
-            }
-            19 => {
-                reverse_bit_pairs(Kmer::<Dna, 19, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
-            }
-            21 => {
-                reverse_bit_pairs(Kmer::<Dna, 21, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
-            }
-            23 => {
-                reverse_bit_pairs(Kmer::<Dna, 23, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k)
-            }
+        // Internally, we want CA = 8 HEX = 0100. So
+        let kmer = match k {
+            17 => reverse_bit_pairs(
+                Kmer::<Dna, 17, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
+            19 => reverse_bit_pairs(
+                Kmer::<Dna, 19, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
+            21 => reverse_bit_pairs(
+                Kmer::<Dna, 21, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
+            23 => reverse_bit_pairs(
+                Kmer::<Dna, 23, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
             _ => {
                 panic!("Invalid kmer size")
             }
@@ -950,15 +987,14 @@ impl TwinRead{
         // get canonical k-mer based on sides
         let reverse_kmer = reverse_bit_pairs(kmer ^ (u64::MAX), k);
         let mid_mask = !(3 << (k - 1));
-        if reverse_kmer & mid_mask < kmer & mid_mask{
+        if reverse_kmer & mid_mask < kmer & mid_mask {
             Kmer48::from_u64(reverse_kmer)
-        }
-        else{
+        } else {
             Kmer48::from_u64(kmer)
         }
     }
 
-    pub fn clear(&mut self){
+    pub fn clear(&mut self) {
         self.minimizer_positions_enc.clear();
         self.snpmer_positions_enc.clear();
         self.minimizer_positions_enc.shrink_to_fit();
@@ -968,13 +1004,21 @@ impl TwinRead{
     /// Decode minimizer positions (dispatches based on per-read flag)
     #[inline]
     pub fn minimizer_positions(&self) -> Vec<u32> {
-        decode_positions(&self.minimizer_positions_enc, PositionKind::Minimizer, self.huffman_encoded)
+        decode_positions(
+            &self.minimizer_positions_enc,
+            PositionKind::Minimizer,
+            self.huffman_encoded,
+        )
     }
 
     /// Decode snpmer positions (dispatches based on per-read flag)
     #[inline]
     pub fn snpmer_positions(&self) -> Vec<u32> {
-        decode_positions(&self.snpmer_positions_enc, PositionKind::Snpmer, self.huffman_encoded)
+        decode_positions(
+            &self.snpmer_positions_enc,
+            PositionKind::Snpmer,
+            self.huffman_encoded,
+        )
     }
 
     /// Get the count of minimizers (without full decoding)
@@ -989,32 +1033,56 @@ impl TwinRead{
 
     pub fn minimizer_kmers(&self) -> Vec<Kmer48> {
         let positions = self.minimizer_positions();
-        positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
+        positions
+            .iter()
+            .map(|&x| self.kmer_from_position(x, self.k as usize))
+            .collect()
     }
 
     pub fn snpmer_kmers(&self) -> Vec<Kmer48> {
         let positions = self.snpmer_positions();
-        positions.iter().map(|&x| self.kmer_from_position(x, self.k as usize)).collect()
+        positions
+            .iter()
+            .map(|&x| self.kmer_from_position(x, self.k as usize))
+            .collect()
     }
 
     pub fn minimizers_vec(&self) -> Vec<(u32, Kmer48)> {
         let positions = self.minimizer_positions();
-        positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
+        positions
+            .iter()
+            .map(|&x| (x, self.kmer_from_position(x, self.k as usize)))
+            .collect()
     }
 
     pub fn snpmers_vec(&self) -> Vec<(u32, Kmer48)> {
         let positions = self.snpmer_positions();
-        positions.iter().map(|&x| (x, self.kmer_from_position(x, self.k as usize))).collect()
+        positions
+            .iter()
+            .map(|&x| (x, self.kmer_from_position(x, self.k as usize)))
+            .collect()
     }
 
     #[inline]
     pub fn kmer_from_position_strand(&self, pos: u32, k: usize) -> FlagKmer48 {
         let pos = pos as usize;
         let kmer = match k {
-            17 => reverse_bit_pairs(Kmer::<Dna, 17, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
-            19 => reverse_bit_pairs(Kmer::<Dna, 19, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
-            21 => reverse_bit_pairs(Kmer::<Dna, 21, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
-            23 => reverse_bit_pairs(Kmer::<Dna, 23, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs, k),
+            17 => reverse_bit_pairs(
+                Kmer::<Dna, 17, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
+            19 => reverse_bit_pairs(
+                Kmer::<Dna, 19, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
+            21 => reverse_bit_pairs(
+                Kmer::<Dna, 21, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
+            23 => reverse_bit_pairs(
+                Kmer::<Dna, 23, u64>::unsafe_from_seqslice(&self.dna_seq[pos..pos + k]).bs,
+                k,
+            ),
             _ => panic!("Invalid kmer size"),
         };
         let reverse_kmer = reverse_bit_pairs(kmer ^ u64::MAX, k);
@@ -1032,12 +1100,18 @@ impl TwinRead{
     /// hash-map lookups.
     pub fn minimizers_vec_strand(&self) -> Vec<(u32, FlagKmer48)> {
         let positions = self.minimizer_positions();
-        positions.iter().map(|&x| (x, self.kmer_from_position_strand(x, self.k as usize))).collect()
+        positions
+            .iter()
+            .map(|&x| (x, self.kmer_from_position_strand(x, self.k as usize)))
+            .collect()
     }
 
     pub fn snpmers_vec_strand(&self) -> Vec<(u32, FlagKmer48)> {
         let positions = self.snpmer_positions();
-        positions.iter().map(|&x| (x, self.kmer_from_position_strand(x, self.k as usize))).collect()
+        positions
+            .iter()
+            .map(|&x| (x, self.kmer_from_position_strand(x, self.k as usize)))
+            .collect()
     }
 
     // Retain only the minimizers at the given INDICES, not positions.
@@ -1054,7 +1128,9 @@ impl TwinRead{
 
         filtered_positions.shrink_to_fit();
         if self.huffman_encoded {
-            let codes = HUFFMAN_CODES_MINI.get().expect("huffman_encoded but coding not initialized");
+            let codes = HUFFMAN_CODES_MINI
+                .get()
+                .expect("huffman_encoded but coding not initialized");
             self.minimizer_positions_enc = encode_positions_huffman(&filtered_positions, codes);
         } else {
             self.minimizer_positions_enc = encode_positions_delta(&filtered_positions);
@@ -1076,7 +1152,9 @@ impl TwinRead{
 
         filtered_positions.shrink_to_fit();
         if self.huffman_encoded {
-            let codes = HUFFMAN_CODES_SNP.get().expect("huffman_encoded but coding not initialized");
+            let codes = HUFFMAN_CODES_SNP
+                .get()
+                .expect("huffman_encoded but coding not initialized");
             self.snpmer_positions_enc = encode_positions_huffman(&filtered_positions, codes);
         } else {
             self.snpmer_positions_enc = encode_positions_delta(&filtered_positions);
@@ -1084,24 +1162,29 @@ impl TwinRead{
         // Do NOT change self.huffman_encoded -- both fields must stay in sync
     }
 
-
     // Re-encodes both position fields from another read, shifted and filtered.
     // Uses current global encoding state and sets huffman_encoded accordingly.
-    pub fn shift_and_retain(&mut self, other_read: &TwinRead, last_break: usize, bp_start: usize, k: usize){
+    pub fn shift_and_retain(
+        &mut self,
+        other_read: &TwinRead,
+        last_break: usize,
+        bp_start: usize,
+        k: usize,
+    ) {
         let other_mini_positions = other_read.minimizer_positions();
         let other_snp_positions = other_read.snpmer_positions();
 
         let mut mini_positions_filtered = Vec::new();
         let mut snp_positions_filtered = Vec::new();
 
-        for &pos in other_mini_positions.iter(){
-            if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
+        for &pos in other_mini_positions.iter() {
+            if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32 {
                 mini_positions_filtered.push(pos - last_break as u32);
             }
         }
 
-        for &pos in other_snp_positions.iter(){
-            if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32{
+        for &pos in other_snp_positions.iter() {
+            if pos >= last_break as u32 && pos + k as u32 - 1 < bp_start as u32 {
                 snp_positions_filtered.push(pos - last_break as u32);
             }
         }
@@ -1111,13 +1194,14 @@ impl TwinRead{
 
         // shift_and_retain creates a new encoding from scratch for both fields
         // simultaneously, so it's safe to use auto-dispatch here
-        self.minimizer_positions_enc = encode_positions(&mini_positions_filtered, PositionKind::Minimizer);
+        self.minimizer_positions_enc =
+            encode_positions(&mini_positions_filtered, PositionKind::Minimizer);
         self.snpmer_positions_enc = encode_positions(&snp_positions_filtered, PositionKind::Snpmer);
         self.huffman_encoded = huffman_initialized();
     }
 }
 
-pub fn retain_vec_indices<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
+pub fn retain_vec_indices<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>) {
     let mut i = 0;
     vec.retain(|_| {
         let keep = positions.contains(&i);
@@ -1125,7 +1209,6 @@ pub fn retain_vec_indices<T>(vec: &mut Vec<T>, positions: &FxHashSet<usize>){
         keep
     });
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct KmerGlobalInfo {
@@ -1148,12 +1231,12 @@ pub struct TwinReadContainer {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Ord, PartialOrd, Hash)]
 pub struct SnpmerInfo {
     pub split_kmer: u64,
-    pub mid_bases: [u8;2],
-    pub counts: [u32;2],
+    pub mid_bases: [u8; 2],
+    pub counts: [u32; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub struct TwinOverlap{
+pub struct TwinOverlap {
     pub i1: usize,
     pub i2: usize,
     pub start1: usize,
@@ -1170,12 +1253,12 @@ pub struct TwinOverlap{
     pub minimizer_chain: Option<Vec<Anchor>>,
 }
 
-impl TwinOverlap{
-    pub fn length1(&self) -> usize{
+impl TwinOverlap {
+    pub fn length1(&self) -> usize {
         self.end1 - self.start1
     }
 
-    pub fn length2(&self) -> usize{
+    pub fn length2(&self) -> usize {
         self.end2 - self.start2
     }
 }
@@ -1184,23 +1267,23 @@ impl TwinOverlap{
 pub struct SnpmerHit {
     pub pos1: u32,
     pub pos2: u32,
-    pub bases: (u8, u8)
+    pub bases: (u8, u8),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Hash, Eq)]
-pub struct CountsAndBases{
-    pub counts: SmallVec<[[u32;2];2]>,
+pub struct CountsAndBases {
+    pub counts: SmallVec<[[u32; 2]; 2]>,
     pub bases: SmallVec<[u8; 4]>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
-pub struct AnchorBuilder{
+pub struct AnchorBuilder {
     pub pos1: u32,
     pub pos2: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default, Eq, Hash)]
-pub struct Anchor{
+pub struct Anchor {
     pub i: Option<u32>,
     pub j: Option<u32>,
     pub pos1: u32,
@@ -1211,28 +1294,27 @@ pub struct Anchor{
 #[derive(PartialEq, Eq, Clone, Debug, Hash, Copy)]
 pub enum Direction {
     Incoming,
-    Outgoing
+    Outgoing,
 }
-impl Direction{
-    pub fn reverse(&self) -> Direction{
-        match self{
+impl Direction {
+    pub fn reverse(&self) -> Direction {
+        match self {
             Direction::Incoming => Direction::Outgoing,
-            Direction::Outgoing => Direction::Incoming
+            Direction::Outgoing => Direction::Incoming,
         }
     }
 }
 
 #[inline]
-pub fn bits_to_ascii(bit_rep: u8) -> u8{
-    match bit_rep{
+pub fn bits_to_ascii(bit_rep: u8) -> u8 {
+    match bit_rep {
         0 => b'A',
         1 => b'C',
         2 => b'G',
         3 => b'T',
-        _ => unreachable!()
+        _ => unreachable!(),
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MappingInfo {
@@ -1247,38 +1329,36 @@ pub struct MappingInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct BareMappingOverlap{
+pub struct BareMappingOverlap {
     pub snpmer_identity: Fraction,
 }
 
-impl Eq for BareMappingOverlap{}
+impl Eq for BareMappingOverlap {}
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TwoCycle {
     pub read_i: usize,
     pub read_j: usize,
-    pub hang_penalty: i64, 
+    pub hang_penalty: i64,
     pub circular_length: usize,
     pub total_mini: usize,
 }
 
-
-#[derive(Debug, Clone,  Default, Serialize, Deserialize)]
-pub struct SmallTwinOl{
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SmallTwinOl {
     pub query_id: u32,
     pub snpmer_identity: f32,
     pub reverse: bool,
-    pub alignment_result: Option<AlignmentResult>
+    pub alignment_result: Option<AlignmentResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Eq, Hash, Serialize, Deserialize)]
-pub struct BareInterval{
+pub struct BareInterval {
     pub start: u32,
-    pub stop: u32
+    pub stop: u32,
 }
 
-impl Ord for BareInterval
-{
+impl Ord for BareInterval {
     #[inline]
     fn cmp(&self, other: &BareInterval) -> Ordering {
         match self.start.cmp(&other.start) {
@@ -1289,19 +1369,20 @@ impl Ord for BareInterval
     }
 }
 
-impl PartialOrd for BareInterval
-{
+impl PartialOrd for BareInterval {
     #[inline]
     fn partial_cmp(&self, other: &BareInterval) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl Eq for SmallTwinOl{}
+impl Eq for SmallTwinOl {}
 
-impl PartialEq for SmallTwinOl{
-    fn eq(&self, other: &Self) -> bool{
-        self.query_id == other.query_id && self.snpmer_identity == other.snpmer_identity && self.reverse == other.reverse 
+impl PartialEq for SmallTwinOl {
+    fn eq(&self, other: &Self) -> bool {
+        self.query_id == other.query_id
+            && self.snpmer_identity == other.snpmer_identity
+            && self.reverse == other.reverse
     }
 }
 
@@ -1332,13 +1413,13 @@ pub struct SplitReadPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct GetSequenceInfoConfig{
+pub struct GetSequenceInfoConfig {
     pub blunted: bool,
     pub dna_seq_info: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BubblePopResult{
+pub struct BubblePopResult {
     pub original_direction: Direction,
     pub end_direction: Direction,
     pub source_hash_id: NodeIndex,
@@ -1347,31 +1428,37 @@ pub struct BubblePopResult{
     pub remove_edges: FxHashSet<EdgeIndex>,
 }
 
-impl BubblePopResult{
-    pub fn new(original_direction: Direction, end_direction: Direction, source_hash_id: NodeIndex, sink_hash_id: NodeIndex, remove_nodes: Vec<NodeIndex>, remove_edges: FxHashSet<EdgeIndex>) -> Self{
-        BubblePopResult{
+impl BubblePopResult {
+    pub fn new(
+        original_direction: Direction,
+        end_direction: Direction,
+        source_hash_id: NodeIndex,
+        sink_hash_id: NodeIndex,
+        remove_nodes: Vec<NodeIndex>,
+        remove_edges: FxHashSet<EdgeIndex>,
+    ) -> Self {
+        BubblePopResult {
             original_direction,
             end_direction,
             source_hash_id,
             sink_hash_id,
             remove_nodes,
-            remove_edges
+            remove_edges,
         }
     }
 }
 
-
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct BeamSearchSoln{
+pub struct BeamSearchSoln {
     pub path: Vec<EdgeIndex>,
-    pub coverages: Vec<(MultiCov, usize)>, 
+    pub coverages: Vec<(MultiCov, usize)>,
     pub score: f64,
     pub path_nodes: Vec<NodeIndex>,
     pub depth: usize,
-    pub current_length: usize
+    pub current_length: usize,
 }
 
-pub struct BeamStartState{
+pub struct BeamStartState {
     pub initial_unitig_length: usize,
     pub initial_unitig_size: usize,
 }
@@ -1416,20 +1503,28 @@ impl NibbleVec {
     #[inline]
     pub fn get(&self, idx: usize) -> u8 {
         let byte = self.data[idx / 2];
-        if idx % 2 == 0 { byte >> 4 } else { byte & 0x0F }
+        if idx % 2 == 0 {
+            byte >> 4
+        } else {
+            byte & 0x0F
+        }
     }
 
     /// Number of nibbles stored.
     #[inline]
-    pub fn len(&self) -> usize { self.len }
+    pub fn len(&self) -> usize {
+        self.len
+    }
 
     /// Raw packed byte storage (each byte holds two nibbles).
     #[inline]
-    pub fn as_bytes(&self) -> &[u8] { &self.data }
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct OpLenVec{
+pub struct OpLenVec {
     op_vec: NibbleVec,
     // Variable-length encoded lengths
     len_vec: Vec<u8>,
@@ -1437,24 +1532,24 @@ pub struct OpLenVec{
     count: usize,
 }
 
-impl OpLenVec{
-    pub fn new(cigar_vec: Vec<OpLen>) -> Self{
+impl OpLenVec {
+    pub fn new(cigar_vec: Vec<OpLen>) -> Self {
         let mut op_vec = Vec::new();
         let mut lengths: Vec<u32> = Vec::new();
         let mut last_op = Operation::Sentinel;
-        for op_len in cigar_vec{
-            if op_len.op == last_op{
+        for op_len in cigar_vec {
+            if op_len.op == last_op {
                 *lengths.last_mut().unwrap() += op_len.len as u32;
-            }
-            else if (op_len.op == Operation::X || op_len.op == Operation::Eq) && last_op == Operation::M{
+            } else if (op_len.op == Operation::X || op_len.op == Operation::Eq)
+                && last_op == Operation::M
+            {
                 *lengths.last_mut().unwrap() += op_len.len as u32;
-            }
-            else{
+            } else {
                 op_vec.push(op_len.op as u8);
                 lengths.push(op_len.len as u32);
                 last_op = op_len.op;
             }
-            if last_op == Operation::X || last_op == Operation::Eq{
+            if last_op == Operation::X || last_op == Operation::Eq {
                 last_op = Operation::M;
             }
         }
@@ -1466,14 +1561,14 @@ impl OpLenVec{
         let mut len_vec = encode_varints(&lengths);
         len_vec.shrink_to_fit();
 
-        OpLenVec{
+        OpLenVec {
             op_vec: NibbleVec::from_nibbles(&op_vec),
             len_vec,
             count,
         }
     }
 
-    pub fn len(&self) -> usize{
+    pub fn len(&self) -> usize {
         self.count
     }
 
@@ -1506,7 +1601,11 @@ impl<'a> Iterator for OpLenIter<'a> {
         }
 
         let byte = self.op_bytes[self.op_idx / 2];
-        let nibble = if self.op_idx % 2 == 0 { byte >> 4 } else { byte & 0x0F };
+        let nibble = if self.op_idx % 2 == 0 {
+            byte >> 4
+        } else {
+            byte & 0x0F
+        };
         let op = u8_to_operation(nibble);
         let (len, bytes_consumed) = decode_varint_u32(self.len_bytes, self.len_pos);
 
@@ -1524,8 +1623,8 @@ impl<'a> Iterator for OpLenIter<'a> {
 
 impl<'a> ExactSizeIterator for OpLenIter<'a> {}
 
-pub fn u8_to_operation(b: u8) -> Operation{
-    match b{
+pub fn u8_to_operation(b: u8) -> Operation {
+    match b {
         0 => Operation::Sentinel,
         1 => Operation::M,
         2 => Operation::Eq,
@@ -1536,9 +1635,8 @@ pub fn u8_to_operation(b: u8) -> Operation{
     }
 }
 
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AlignmentResult{
+pub struct AlignmentResult {
     pub cigar: OpLenVec,
     pub q_start: usize,
     pub q_end: usize,
@@ -1546,41 +1644,49 @@ pub struct AlignmentResult{
     pub r_end: usize,
 }
 
-pub fn dna_seq_to_u8(slice: &Seq<Dna>) -> Vec<u8>{
-    slice.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect()
+pub fn dna_seq_to_u8(slice: &Seq<Dna>) -> Vec<u8> {
+    slice
+        .iter()
+        .map(|x| x.to_char().to_ascii_uppercase() as u8)
+        .collect()
 }
 
-pub fn dna_slice_to_u8(slice: &SeqSlice<Dna>) -> Vec<u8>{
-    slice.iter().map(|x| x.to_char().to_ascii_uppercase() as u8).collect()
+pub fn dna_slice_to_u8(slice: &SeqSlice<Dna>) -> Vec<u8> {
+    slice
+        .iter()
+        .map(|x| x.to_char().to_ascii_uppercase() as u8)
+        .collect()
 }
 
-
-pub fn quality_slice_to_u8(slice: &SeqSlice<QualCompact3>) -> Vec<u8>{
+pub fn quality_slice_to_u8(slice: &SeqSlice<QualCompact3>) -> Vec<u8> {
     slice.iter().map(|x| x as u8 * 3).collect()
 }
 
-pub fn quality_seq_to_u8(slice: &Seq<QualCompact3>) -> Vec<u8>{
+pub fn quality_seq_to_u8(slice: &Seq<QualCompact3>) -> Vec<u8> {
     slice.iter().map(|x| x as u8 * 3).collect()
 }
 
-pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8>{
-    seq.iter().rev().map(|x| match x{
-        b'A' => b'T',
-        b'T' => b'A',
-        b'C' => b'G',
-        b'G' => b'C',
-        _ => b'N'
-    }).collect()
+pub fn revcomp_u8(seq: &Vec<u8>) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|x| match x {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            _ => b'N',
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct CompareTwinReadOptions{
+pub struct CompareTwinReadOptions {
     pub compare_snpmers: bool,
     pub retain_chain: bool,
     pub force_query_nonoverlap: bool,
     pub force_ref_nonoverlap: bool,
     pub supplementary_threshold_score: Option<f64>,
-    pub supplementary_threshold_ratio: Option<f64>, 
+    pub supplementary_threshold_ratio: Option<f64>,
     // When not forcing 1-to-1 alignments, allow query overlaps only if secondary threshold is below a certain amount
     pub secondary_threshold: Option<f64>,
     //Preload
@@ -1594,9 +1700,9 @@ pub struct CompareTwinReadOptions{
     pub debug: bool,
 }
 
-impl Default for CompareTwinReadOptions{
-    fn default() -> Self{
-        CompareTwinReadOptions{
+impl Default for CompareTwinReadOptions {
+    fn default() -> Self {
+        CompareTwinReadOptions {
             compare_snpmers: true,
             retain_chain: false,
             force_query_nonoverlap: false,
@@ -1616,8 +1722,7 @@ impl Default for CompareTwinReadOptions{
     }
 }
 
-pub struct HeavyCutOptions<'a> 
-{
+pub struct HeavyCutOptions<'a> {
     pub samples: usize,
     pub temperature: f64,
     pub steps: usize,
@@ -1635,9 +1740,6 @@ pub struct HeavyCutOptions<'a>
     pub debug: bool,
 }
 
-
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1649,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn bioseq_vs_ours(){
+    fn bioseq_vs_ours() {
         let kmer_bioseq = Kmer::<Dna, 5, u64>::unsafe_from_seqslice(dna!("ACGTG"));
         let kmer_bioseq_u64 = kmer_bioseq.bs;
         println!("{:08b}", kmer_bioseq_u64);
@@ -1661,7 +1763,7 @@ mod tests {
     }
 
     #[test]
-    fn reverse_comp_kmer(){
+    fn reverse_comp_kmer() {
         // ACGTG
         let kmer_ours = 0b00_01_10_11_10;
         //reverse comp is CACGT
@@ -1738,13 +1840,17 @@ mod tests {
     // ---- Huffman round-trip tests ----
     // These build local Coding instances to avoid polluting global OnceLock state.
 
-    use minimum_redundancy::{Coding, Code, BitsPerFragment, Frequencies};
+    use minimum_redundancy::{BitsPerFragment, Code, Coding, Frequencies};
     use std::collections::HashMap;
 
     /// Build a Huffman coding from sample positions, seeding all 256 byte values.
-    fn build_test_coding(sample_positions: &[Vec<u32>]) -> (Coding<u8, BitsPerFragment>, [Code; 256]) {
+    fn build_test_coding(
+        sample_positions: &[Vec<u32>],
+    ) -> (Coding<u8, BitsPerFragment>, [Code; 256]) {
         let mut freq = HashMap::<u8, usize>::new();
-        for b in 0..=255u8 { freq.insert(b, 1); }
+        for b in 0..=255u8 {
+            freq.insert(b, 1);
+        }
         for positions in sample_positions {
             let varint_bytes = encode_positions_delta(positions);
             freq.add_occurences_of(varint_bytes.into_iter());
@@ -1828,7 +1934,10 @@ mod tests {
         let large_positions = vec![0, 1000, 5000, 50000];
         let encoded = encode_positions_huffman(&large_positions, &codes);
         let decoded = decode_positions_huffman(&encoded, &coding);
-        assert_eq!(large_positions, decoded, "Unseen byte values should still round-trip correctly");
+        assert_eq!(
+            large_positions, decoded,
+            "Unseen byte values should still round-trip correctly"
+        );
     }
 
     #[test]
@@ -1837,8 +1946,11 @@ mod tests {
         let positions = vec![0, 10, 20];
         let (_, codes) = build_test_coding(&[positions]);
         for b in 0..=255u8 {
-            assert!(codes[b as usize].len > 0,
-                "Byte {} has zero-length code -- would corrupt bitstream", b);
+            assert!(
+                codes[b as usize].len > 0,
+                "Byte {} has zero-length code -- would corrupt bitstream",
+                b
+            );
         }
     }
 

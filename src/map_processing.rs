@@ -1,31 +1,30 @@
 use crate::cli::Cli;
-use crate::constants::QUALITY_SEQ_BIN;
-use crate::constants::READ_BLOCK_SIZE_FOR_COVERAGE;
 use crate::constants::ENDPOINT_MAPPING_FUZZ;
 use crate::constants::IDENTITY_THRESHOLDS;
 use crate::constants::ID_THRESHOLD_ITERS;
 use crate::constants::MINIMIZER_END_NTH_COV;
 use crate::constants::MIN_COV_READ;
 use crate::constants::MIN_READ_LENGTH;
+use crate::constants::QUALITY_SEQ_BIN;
+use crate::constants::READ_BLOCK_SIZE_FOR_COVERAGE;
 use crate::constants::SAMPLING_RATE_COV;
 use crate::graph::GraphNode;
 use crate::seeding::overlap_hang_length;
-use crate::utils;
-use std::io::Write;
-use flate2::write::GzEncoder;
-use rust_lapper::Interval;
-use std::io::BufWriter;
-use std::path::Path;
 use crate::types::*;
-use fxhash::FxHashMap;
-use rayon::prelude::*;
-use rust_lapper::Lapper;
-use std::sync::Mutex;
-use std::collections::BTreeMap;
-use fxhash::FxHashSet;
+use crate::utils;
+use flate2::write::GzEncoder;
 use flate2::Compression;
+use fxhash::FxHashMap;
+use fxhash::FxHashSet;
+use rayon::prelude::*;
+use rust_lapper::Interval;
+use rust_lapper::Lapper;
+use std::collections::BTreeMap;
+use std::io::BufWriter;
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
-
+use std::sync::Mutex;
 
 pub struct TwinReadMapping {
     pub tr_index: usize,
@@ -33,96 +32,115 @@ pub struct TwinReadMapping {
     pub all_intervals: Vec<BareInterval>,
 }
 
-
 pub fn median_and_min_depth_from_lapper_new(
-    lapper: &Lapper<u32, BareMappingOverlap>, 
-    sampling: usize, 
-    seq_start: usize, 
-    seq_length: usize, 
-    snpmer_identity_cutoff: f64
+    lapper: &Lapper<u32, BareMappingOverlap>,
+    sampling: usize,
+    seq_start: usize,
+    seq_length: usize,
+    snpmer_identity_cutoff: f64,
 ) -> Option<(f64, f64)> {
     let block_size = READ_BLOCK_SIZE_FOR_COVERAGE;
-    
+
     // Filter intervals based on snpmer_identity and maximal_overlap
     let intervals_cutoff = lapper
         .iter()
-        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff))
+        .filter(|x| x.val.snpmer_identity as f64 >= snpmer_identity_cutoff)
         .map(|x| x.clone())
         .collect::<Vec<_>>();
     let lapper_cutoff = Lapper::new(intervals_cutoff);
-    
+
     // If no qualifying intervals, return early
     if lapper_cutoff.intervals.is_empty() {
-        log::trace!("No qualifying intervals found for depth calculation, start {} end {}", seq_start, seq_length);
+        log::trace!(
+            "No qualifying intervals found for depth calculation, start {} end {}",
+            seq_start,
+            seq_length
+        );
         return Some((0., 0.));
     }
-    
+
     // Get depths at regular intervals using our new function
     let depths_at_points = depths_at_points(
         &lapper_cutoff,
         (seq_start + sampling) as u32,
         (seq_length - sampling) as u32,
-        sampling as u32
+        sampling as u32,
     );
-    
+
     if depths_at_points.is_empty() {
-        log::trace!("No points found for depth calculation, start {} end {}", seq_start, seq_length);
+        log::trace!(
+            "No points found for depth calculation, start {} end {}",
+            seq_start,
+            seq_length
+        );
         return Some((0., 0.));
     }
-    
+
     // Process depths in blocks
     let mut min_blocks = Vec::new();
     let mut median_blocks = Vec::new();
     let mut current_block = Vec::new();
     let mut next_block_boundary = block_size + seq_start;
-    
+
     for (pos, depth) in depths_at_points {
         current_block.push(depth as u32);
-        
+
         if pos as usize >= next_block_boundary && !current_block.is_empty() {
             // Process the completed block
             current_block.sort_unstable();
             let min = current_block.first().unwrap();
             let median = current_block[current_block.len() / 2];
-            
+
             // Add block_size/sampling copies of the min and median
             let copies = block_size / sampling;
             min_blocks.extend(std::iter::repeat(min).take(copies));
             median_blocks.extend(std::iter::repeat(median).take(copies));
-            
+
             // Reset for next block
             current_block.clear();
             next_block_boundary += block_size;
         }
     }
-    
+
     // Process any remaining points in the last block
     if !current_block.is_empty() {
         current_block.sort_unstable();
         let min = current_block.first().unwrap();
         let median = current_block[current_block.len() / 2];
-        
+
         let remaining = current_block.len();
         min_blocks.extend(std::iter::repeat(min).take(remaining));
         median_blocks.extend(std::iter::repeat(median).take(remaining));
     }
-    
+
     if min_blocks.is_empty() {
-        log::trace!("No blocks processed for depth calculation, start {} end {}", seq_start, seq_length);
+        log::trace!(
+            "No blocks processed for depth calculation, start {} end {}",
+            seq_start,
+            seq_length
+        );
         return Some((0., 0.));
     }
-    
+
     // Calculate final medians
     min_blocks.sort_unstable();
     median_blocks.sort_unstable();
     let median_over_min_blocks: u32 = min_blocks[min_blocks.len() / 2];
-    let median_over_median_blocks : u32 = median_blocks[median_blocks.len() / 2];
-    
-    Some((median_over_min_blocks as f64, median_over_median_blocks as f64))
+    let median_over_median_blocks: u32 = median_blocks[median_blocks.len() / 2];
+
+    Some((
+        median_over_min_blocks as f64,
+        median_over_median_blocks as f64,
+    ))
 }
 
-pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, BareMappingOverlap>, sampling: usize, seq_start: usize, seq_length: usize, snpmer_identity_cutoff: f64) -> Option<(f64,f64)> 
-{
+pub fn median_and_min_depth_from_lapper(
+    lapper: &Lapper<u32, BareMappingOverlap>,
+    sampling: usize,
+    seq_start: usize,
+    seq_length: usize,
+    snpmer_identity_cutoff: f64,
+) -> Option<(f64, f64)> {
     //TODO the block size should depend on read length
     let block_size = READ_BLOCK_SIZE_FOR_COVERAGE;
     let mut min_blocks = vec![];
@@ -130,25 +148,24 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, BareMappingOverlap>
     let mut depths = vec![];
     let intervals_cutoff = lapper
         .iter()
-        .filter(|x| (x.val.snpmer_identity as f64 >= snpmer_identity_cutoff))
-        .map (|x| x.clone())
+        .filter(|x| x.val.snpmer_identity as f64 >= snpmer_identity_cutoff)
+        .map(|x| x.clone())
         .collect::<Vec<_>>();
     let lapper_cutoff = Lapper::new(intervals_cutoff);
-    
+
     //Sample depth every 'sampling' bases, pad by block_size.
     let mut next_block = block_size;
-    for pos in ((seq_start + sampling)..(seq_length - sampling)).step_by(sampling)
-    {
+    for pos in ((seq_start + sampling)..(seq_length - sampling)).step_by(sampling) {
         let depth = lapper_cutoff.count(pos as u32, pos as u32 + 1);
         depths.push(depth);
-        if pos > next_block && depths.len() > 0{
+        if pos > next_block && depths.len() > 0 {
             depths.sort();
             next_block += block_size;
             //let min_ind = 3.min(depths.len()-1);
             //let min = depths[min_ind];
             let min = depths[0];
             let median = depths[depths.len() / 2];
-            for _ in 0..block_size / sampling{
+            for _ in 0..block_size / sampling {
                 min_blocks.push(min);
                 median_blocks.push(median);
             }
@@ -157,73 +174,92 @@ pub fn median_and_min_depth_from_lapper(lapper: &Lapper<u32, BareMappingOverlap>
     }
 
     //Leftover blocks
-    if depths.len() > 0{
+    if depths.len() > 0 {
         depths.sort();
         //let min_ind = 3.min(depths.len()-1);
         //let min = depths[min_ind];
         let min = depths[0];
         let median = depths[depths.len() / 2];
-        for _ in 0..depths.len(){
+        for _ in 0..depths.len() {
             min_blocks.push(min);
             median_blocks.push(median);
         }
     }
 
-    if min_blocks.len() == 0{
-        log::trace!("No blocks found for depth calculation, start {} end {}", seq_start, seq_length);
-        return Some((0.,0.))
+    if min_blocks.len() == 0 {
+        log::trace!(
+            "No blocks found for depth calculation, start {} end {}",
+            seq_start,
+            seq_length
+        );
+        return Some((0., 0.));
     }
-    
+
     min_blocks.sort();
     median_blocks.sort();
     let median_over_min_blocks = min_blocks[min_blocks.len() / 2];
     let median_over_median_blocks = median_blocks[median_blocks.len() / 2];
-    return Some((median_over_min_blocks as f64, median_over_median_blocks as f64));
+    return Some((
+        median_over_min_blocks as f64,
+        median_over_median_blocks as f64,
+    ));
 }
 
-pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: u32, id: &str, args: &Cli) -> Vec<Breakpoints>
-{
+pub fn cov_mapping_breakpoints(
+    intervals: &Vec<BareInterval>,
+    reference_length: u32,
+    id: &str,
+    args: &Cli,
+) -> Vec<Breakpoints> {
     if intervals.is_empty() {
         return vec![];
     }
 
     let mut breakpoints = vec![];
     let sampling = 5;
-    let coverages_at_sampling = depths_at_points_interval(
-        intervals,
-        0,
-        reference_length,
-        sampling,
-    );
+    let coverages_at_sampling = depths_at_points_interval(intervals, 0, reference_length, sampling);
 
     if coverages_at_sampling.is_empty() {
         return vec![];
     }
 
-    let intervals = intervals.iter().map(|x| Interval{start: x.start, stop: x.stop, val: false}).collect::<Vec<Interval<u32,bool>>>();
+    let intervals = intervals
+        .iter()
+        .map(|x| Interval {
+            start: x.start,
+            stop: x.stop,
+            val: false,
+        })
+        .collect::<Vec<Interval<u32, bool>>>();
     let lapper = Lapper::new(intervals);
     let depths = lapper.depth().collect::<Vec<_>>();
     if depths.len() < 3 {
         return vec![];
     }
     // <ooooo|-------
-    if depths[0].start > ENDPOINT_MAPPING_FUZZ{
+    if depths[0].start > ENDPOINT_MAPPING_FUZZ {
         breakpoints.push(Breakpoints {
             pos1: 0,
-            pos2 : depths[0].start as usize,
+            pos2: depths[0].start as usize,
             cov: 0,
             condition: -1,
         });
     }
     //<xxxxx|--------
-    //Cut bad left endpoints. 
-    let depth_start_right = if reference_length as usize > (ENDPOINT_MAPPING_FUZZ as usize) + depths[0].stop as usize{
-        lapper 
-            .count(depths[0].stop + ENDPOINT_MAPPING_FUZZ - 1, depths[0].stop + ENDPOINT_MAPPING_FUZZ)
-    } else {
-        0
-    };
-    if depths[0].stop > ENDPOINT_MAPPING_FUZZ && (depths[1].val > 3 || depth_start_right > 3) && depths[0].val <= 1 {
+    //Cut bad left endpoints.
+    let depth_start_right =
+        if reference_length as usize > (ENDPOINT_MAPPING_FUZZ as usize) + depths[0].stop as usize {
+            lapper.count(
+                depths[0].stop + ENDPOINT_MAPPING_FUZZ - 1,
+                depths[0].stop + ENDPOINT_MAPPING_FUZZ,
+            )
+        } else {
+            0
+        };
+    if depths[0].stop > ENDPOINT_MAPPING_FUZZ
+        && (depths[1].val > 3 || depth_start_right > 3)
+        && depths[0].val <= 1
+    {
         breakpoints.push(Breakpoints {
             pos1: depths[0].start as usize,
             pos2: depths[0].stop as usize,
@@ -242,11 +278,16 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         let cond1 = last_cov > 3 && next_cov > 3 && cov <= 1;
         let cond2;
         let cond3;
-        let cond4; 
+        let cond4;
         let cond5;
 
-        if depths[i].start - depths[i-1].stop > 1 || depths[i+1].start - depths[i].stop > 1 {
-            log::trace!("Gap in coverage intervals detected at {}-{} for read {}", depths[i].start, depths[i].stop, id);
+        if depths[i].start - depths[i - 1].stop > 1 || depths[i + 1].start - depths[i].stop > 1 {
+            log::trace!(
+                "Gap in coverage intervals detected at {}-{} for read {}",
+                depths[i].start,
+                depths[i].stop,
+                id
+            );
         }
 
         if start > 200 && stop + 200 < reference_length as usize {
@@ -262,7 +303,7 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
             //cond4 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3 && !args.hifi;
 
             //Super high coverage stuff...
-            cond5 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3 && !args.hifi; 
+            cond5 = (left_count > cov * 25 && right_count > cov * 25) && cov <= 3 && !args.hifi;
 
             cond4 = false;
             //cond5 = false;
@@ -274,11 +315,13 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
         }
 
         // 6-7 are for chimeras that skip from high to low coverage. can also cut repeats for low coverage genomes, which is probably okay
-        // it's really hard to assemble repetitive short coverage genomes 
+        // it's really hard to assemble repetitive short coverage genomes
         let cond6 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 1;
         let cond7 = (last_cov > (cov as u32 * 5) || next_cov > (cov as u32 * 5)) && cov <= 2;
         //let cond7 = (last_cov > (cov as u32 * 10) || next_cov > (cov as u32 * 10)) && cov <= 2 && !args.hifi;
-        let cond8 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 3 && !args.hifi;
+        let cond8 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25))
+            && cov <= 3
+            && !args.hifi;
         //let cond10 = (last_cov > (cov as u32 * 25) || next_cov > (cov as u32 * 25)) && cov <= 4 && !args.hifi;
 
         // Junk insertions/deletions <-- suspect we need higher ratios, like 40-50?
@@ -292,8 +335,17 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
 
         if start > 200
             && start as usize + 200 < reference_length as usize
-            && (cond1 || cond2 || cond3 || cond4 || cond5 || cond6 || cond7 || cond8 || cond9 || cond10)
-            //&& (cond1 || cond2 || cond3 || cond4 || cond5 || cond6 || cond9 || cond10)
+            && (cond1
+                || cond2
+                || cond3
+                || cond4
+                || cond5
+                || cond6
+                || cond7
+                || cond8
+                || cond9
+                || cond10)
+        //&& (cond1 || cond2 || cond3 || cond4 || cond5 || cond6 || cond9 || cond10)
         {
             breakpoints.push(Breakpoints {
                 pos1: start as usize,
@@ -309,18 +361,17 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
                     4
                 } else if cond5 {
                     5
-                } else if cond6{
+                } else if cond6 {
                     6
-                } else if cond7{
+                } else if cond7 {
                     7
-                } else if cond8{
+                } else if cond8 {
                     8
-                } else if cond9{
+                } else if cond9 {
                     9
-                }  else if cond10{
+                } else if cond10 {
                     10
-                }
-                else{
+                } else {
                     0
                 },
             });
@@ -328,7 +379,9 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     }
 
     // --------|xxxxx>
-    if depths[depths.len() - 1].start < reference_length - ENDPOINT_MAPPING_FUZZ && depths[depths.len() -1].start > ENDPOINT_MAPPING_FUZZ - 1{
+    if depths[depths.len() - 1].start < reference_length - ENDPOINT_MAPPING_FUZZ
+        && depths[depths.len() - 1].start > ENDPOINT_MAPPING_FUZZ - 1
+    {
         let depth_stop_left = lapper.count(
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ,
             depths[depths.len() - 1].start - ENDPOINT_MAPPING_FUZZ - 1,
@@ -346,10 +399,12 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     }
 
     // -----|ooooo>
-    if depths[depths.len() - 1].stop as usize + (ENDPOINT_MAPPING_FUZZ as usize) < reference_length as usize {
+    if depths[depths.len() - 1].stop as usize + (ENDPOINT_MAPPING_FUZZ as usize)
+        < reference_length as usize
+    {
         breakpoints.push(Breakpoints {
             pos1: depths[depths.len() - 1].stop as usize,
-            pos2: reference_length as usize ,
+            pos2: reference_length as usize,
             cov: depths[depths.len() - 1].val as usize,
             condition: -4,
         });
@@ -358,20 +413,28 @@ pub fn cov_mapping_breakpoints(intervals: &Vec<BareInterval>, reference_length: 
     return breakpoints;
 }
 
-fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinReadMapping, mut break_points: Vec<Breakpoints>, _args: &Cli) -> Vec<TwinRead>{
-
+fn split_read_and_populate_depth(
+    mut twin_read: TwinRead,
+    mapping_info: &TwinReadMapping,
+    mut break_points: Vec<Breakpoints>,
+    _args: &Cli,
+) -> Vec<TwinRead> {
     let mut new_reads = vec![];
-    break_points.push(Breakpoints{pos1: twin_read.base_length, pos2: twin_read.base_length, cov: 0, condition: -5});
+    break_points.push(Breakpoints {
+        pos1: twin_read.base_length,
+        pos2: twin_read.base_length,
+        cov: 0,
+        condition: -5,
+    });
 
     let mut last_break = 0;
     let k = twin_read.k as usize;
-    
-    for (i,break_point) in break_points.iter().enumerate(){
 
+    for (i, break_point) in break_points.iter().enumerate() {
         let bp_start = break_point.pos1;
         let bp_end = break_point.pos2;
 
-        if bp_start - last_break > MIN_READ_LENGTH{
+        if bp_start - last_break > MIN_READ_LENGTH {
             let mut new_read = TwinRead::default();
             //Repopulate minimizers and snpmers. This is kind of bad; should have a method that does this...
             new_read.shift_and_retain(&twin_read, last_break, bp_start, k);
@@ -382,7 +445,7 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
             new_read.dna_seq = twin_read.dna_seq[last_break..bp_start].to_owned();
             new_read.est_id = twin_read.est_id;
 
-            if let Some(qual_seq) = twin_read.qual_seq.as_ref(){
+            if let Some(qual_seq) = twin_read.qual_seq.as_ref() {
                 let start_qual = utils::div_rounded(last_break, QUALITY_SEQ_BIN);
                 let end_qual = utils::div_rounded(bp_start, QUALITY_SEQ_BIN).min(qual_seq.len());
                 let new_qual_seq = qual_seq[start_qual..end_qual].to_owned();
@@ -394,8 +457,7 @@ fn split_read_and_populate_depth(mut twin_read: TwinRead, mapping_info: &TwinRea
 
             if break_points.len() > 1 {
                 new_read.split_chimera = true;
-            }
-            else{
+            } else {
                 populate_depth_from_map_info(&mut new_read, mapping_info, last_break, bp_start);
             }
 
@@ -414,23 +476,39 @@ pub fn compute_coverage_stats(
     twin_read: &TwinRead,
     max_intervals: &[(BareInterval, BareMappingOverlap)],
     start: usize,
-    end: usize
+    end: usize,
 ) -> CoverageStats {
     let minimizer_positions = twin_read.minimizer_positions();
-    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &minimizer_positions);
+    let (first_mini, last_mini) = first_last_mini_in_range(
+        start,
+        end,
+        twin_read.k as usize,
+        MINIMIZER_END_NTH_COV,
+        &minimizer_positions,
+    );
 
-    let intervals = max_intervals.iter().map(|x| Interval {
-        start: x.0.start,
-        stop: x.0.stop,
-        val: x.1.clone(),
-    }).collect::<Vec<_>>();
+    let intervals = max_intervals
+        .iter()
+        .map(|x| Interval {
+            start: x.0.start,
+            stop: x.0.stop,
+            val: x.1.clone(),
+        })
+        .collect::<Vec<_>>();
     let lapper = Lapper::new(intervals);
 
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
 
     for (i, id) in IDENTITY_THRESHOLDS.iter().enumerate() {
-        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(
+            &lapper,
+            SAMPLING_RATE_COV,
+            first_mini,
+            last_mini,
+            *id,
+        )
+        .unwrap();
         median_depth = median_depth_t;
         min_depths[i] = min_depth;
     }
@@ -450,10 +528,22 @@ pub fn compute_coverage_stats(
             let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - step;
 
             loop {
-                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(
+                    &lapper,
+                    SAMPLING_RATE_COV,
+                    first_mini,
+                    last_mini,
+                    try_id,
+                )
+                .unwrap();
 
                 if min_depth_try <= min_depth_prev * 1.50 && min_depth_try >= MIN_COV_READ as f64 {
-                    log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, prev_id * 100., min_depth_try);
+                    log::trace!(
+                        "Read {} min_depth_identity:{} cov:{}",
+                        twin_read.id,
+                        prev_id * 100.,
+                        min_depth_try
+                    );
                     break prev_id * 100.;
                 }
 
@@ -477,28 +567,52 @@ pub fn compute_coverage_stats(
     }
 }
 
-pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &TwinReadMapping, start: usize, end: usize){
+pub fn populate_depth_from_map_info(
+    twin_read: &mut TwinRead,
+    mapping_info: &TwinReadMapping,
+    start: usize,
+    end: usize,
+) {
     let minimizer_positions = twin_read.minimizer_positions();
-    let (first_mini, last_mini) = first_last_mini_in_range(start, end, twin_read.k as usize, MINIMIZER_END_NTH_COV, &minimizer_positions);
+    let (first_mini, last_mini) = first_last_mini_in_range(
+        start,
+        end,
+        twin_read.k as usize,
+        MINIMIZER_END_NTH_COV,
+        &minimizer_positions,
+    );
     let mut min_depths = [0.; ID_THRESHOLD_ITERS];
     let mut median_depth = 0.;
-    let max_intervals = mapping_info.mapping_info.max_mapping_boundaries.as_ref().unwrap();
-    let intervals = max_intervals.iter().map(|x| Interval {
-        start: x.0.start,
-        stop: x.0.stop,
-        val: x.1.clone(),
-    }).collect::<Vec<_>>();
+    let max_intervals = mapping_info
+        .mapping_info
+        .max_mapping_boundaries
+        .as_ref()
+        .unwrap();
+    let intervals = max_intervals
+        .iter()
+        .map(|x| Interval {
+            start: x.0.start,
+            stop: x.0.stop,
+            val: x.1.clone(),
+        })
+        .collect::<Vec<_>>();
     let lapper = Lapper::new(intervals);
 
-    for (i,id) in IDENTITY_THRESHOLDS.iter().enumerate() {
-        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, *id).unwrap();
+    for (i, id) in IDENTITY_THRESHOLDS.iter().enumerate() {
+        let (min_depth, median_depth_t) = median_and_min_depth_from_lapper_new(
+            &lapper,
+            SAMPLING_RATE_COV,
+            first_mini,
+            last_mini,
+            *id,
+        )
+        .unwrap();
         median_depth = median_depth_t;
         min_depths[i] = min_depth;
     }
 
     // Change snpmer id threshold based on coverage
-    if twin_read.snpmer_id_threshold.is_none(){
-
+    if twin_read.snpmer_id_threshold.is_none() {
         let step = 0.05 / 100.;
 
         let sufficient_gap = min_depths[0] > 3.0 * min_depths[ID_THRESHOLD_ITERS - 1];
@@ -514,12 +628,24 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
             //0.10% increments; 100 -> 99.90 -> 99.8 ...
             let mut min_depth_prev = min_depths[ID_THRESHOLD_ITERS - 1];
             let mut try_id = IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] - step;
-            loop{
-                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(&lapper, SAMPLING_RATE_COV, first_mini, last_mini, try_id).unwrap();
+            loop {
+                let (min_depth_try, _) = median_and_min_depth_from_lapper_new(
+                    &lapper,
+                    SAMPLING_RATE_COV,
+                    first_mini,
+                    last_mini,
+                    try_id,
+                )
+                .unwrap();
 
                 //if min_depth_try >= MIN_COV_READ as f64  && min_depth_try < min_depth_prev * 1.50 {
                 if min_depth_try <= min_depth_prev * 1.50 && min_depth_try >= MIN_COV_READ as f64 {
-                    log::trace!("Read {} min_depth_identity:{} cov:{}", twin_read.id, prev_id * 100., min_depth_try);
+                    log::trace!(
+                        "Read {} min_depth_identity:{} cov:{}",
+                        twin_read.id,
+                        prev_id * 100.,
+                        min_depth_try
+                    );
                     twin_read.snpmer_id_threshold = Some(prev_id * 100.);
                     break;
                 }
@@ -528,9 +654,9 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
                 min_depth_prev = min_depth_try;
                 try_id -= step;
             }
-        }
-        else{
-            twin_read.snpmer_id_threshold = Some(IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100.);
+        } else {
+            twin_read.snpmer_id_threshold =
+                Some(IDENTITY_THRESHOLDS[ID_THRESHOLD_ITERS - 1] * 100.);
         }
     }
 
@@ -538,39 +664,44 @@ pub fn populate_depth_from_map_info(twin_read: &mut TwinRead, mapping_info: &Twi
     twin_read.median_depth = Some(median_depth);
 
     //Percentage, not fractinoal
-    if twin_read.snpmer_id_threshold.is_some(){
+    if twin_read.snpmer_id_threshold.is_some() {
         assert!(twin_read.snpmer_id_threshold.unwrap() > 1.1);
     }
-
 }
 
-pub fn first_last_mini_in_range(start: usize, end: usize, k: usize, nth: usize, minis: &[u32]) -> (usize, usize){
+pub fn first_last_mini_in_range(
+    start: usize,
+    end: usize,
+    k: usize,
+    nth: usize,
+    minis: &[u32],
+) -> (usize, usize) {
     let mut first_mini = start;
     let mut count_first = 0;
     let mut last_mini = end;
     let mut count_last = 0;
 
-    for mini_pos in minis.iter(){
-        if *mini_pos as usize >= start{
+    for mini_pos in minis.iter() {
+        if *mini_pos as usize >= start {
             count_first += 1;
             first_mini = *mini_pos as usize;
         }
-        if count_first == nth{
+        if count_first == nth {
             break;
         }
     }
 
-    for mini_pos in minis.iter().rev(){
-        if *mini_pos as usize + k - 1 < end{
+    for mini_pos in minis.iter().rev() {
+        if *mini_pos as usize + k - 1 < end {
             last_mini = *mini_pos as usize;
             count_last += 1;
         }
-        if count_last == nth{
+        if count_last == nth {
             break;
         }
     }
 
-    if last_mini <= first_mini{
+    if last_mini <= first_mini {
         return (start, end);
     }
 
@@ -583,7 +714,8 @@ pub fn apply_split_plans(
     split_plans: Vec<SplitReadPlan>,
     temp_dir: &PathBuf,
 ) -> (Vec<TwinRead>, Vec<usize>) {
-    let split_plans_dict = split_plans.iter()
+    let split_plans_dict = split_plans
+        .iter()
         .map(|x| (x.read_index, x))
         .collect::<FxHashMap<usize, &SplitReadPlan>>();
 
@@ -592,44 +724,58 @@ pub fn apply_split_plans(
     let buf = BufWriter::new(std::fs::File::create(cov_file).unwrap());
     let writer = Mutex::new(GzEncoder::new(buf, Compression::default()));
 
-    twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
-        if let Some(plan) = split_plans_dict.get(&i) {
-            // Log breakpoints
-            if !plan.breakpoints.is_empty() {
-                let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
-                for breakpoint in plan.breakpoints.iter() {
-                    read_id_and_breakpoint_string.push_str(
-                        format!("{}-{}-COND:{},", breakpoint.pos1, breakpoint.pos2, breakpoint.condition).as_str()
-                    );
+    twin_reads
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, twin_read)| {
+            if let Some(plan) = split_plans_dict.get(&i) {
+                // Log breakpoints
+                if !plan.breakpoints.is_empty() {
+                    let mut read_id_and_breakpoint_string =
+                        format!("{} BREAKPOINTS:", twin_read.id);
+                    for breakpoint in plan.breakpoints.iter() {
+                        read_id_and_breakpoint_string.push_str(
+                            format!(
+                                "{}-{}-COND:{},",
+                                breakpoint.pos1, breakpoint.pos2, breakpoint.condition
+                            )
+                            .as_str(),
+                        );
+                    }
+                    let writer = &mut writer.lock().unwrap();
+                    writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
                 }
-                let writer = &mut writer.lock().unwrap();
-                writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
-            }
 
-            // Create split reads using pre-computed coverage stats
-            let splitted_reads = split_read_with_coverage_stats(twin_read, plan);
-            for new_read in splitted_reads {
-                new_twin_reads_bools.lock().unwrap().push((new_read, true));
-            }
-        } else {
-            if twin_read.min_depth_multi.is_some() {
-                new_twin_reads_bools.lock().unwrap().push((twin_read, true));
+                // Create split reads using pre-computed coverage stats
+                let splitted_reads = split_read_with_coverage_stats(twin_read, plan);
+                for new_read in splitted_reads {
+                    new_twin_reads_bools.lock().unwrap().push((new_read, true));
+                }
             } else {
-                new_twin_reads_bools.lock().unwrap().push((twin_read, false));
+                if twin_read.min_depth_multi.is_some() {
+                    new_twin_reads_bools.lock().unwrap().push((twin_read, true));
+                } else {
+                    new_twin_reads_bools
+                        .lock()
+                        .unwrap()
+                        .push((twin_read, false));
+                }
             }
-        }
-    });
+        });
 
     let mut new_twin_reads_bools = new_twin_reads_bools.into_inner().unwrap();
     new_twin_reads_bools.sort_by_key(|x| x.0.id.clone());
 
     let good_reads_mask = new_twin_reads_bools.iter().map(|x| x.1).collect::<Vec<_>>();
-    let good_read_indexes = good_reads_mask.iter().enumerate()
+    let good_read_indexes = good_reads_mask
+        .iter()
+        .enumerate()
         .filter(|(_, &x)| x)
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
 
-    let new_twin_reads = new_twin_reads_bools.into_iter()
+    let new_twin_reads = new_twin_reads_bools
+        .into_iter()
         .map(|x| x.0)
         .collect::<Vec<_>>();
 
@@ -637,10 +783,7 @@ pub fn apply_split_plans(
 }
 
 /// Create split reads using pre-computed coverage statistics
-fn split_read_with_coverage_stats(
-    mut twin_read: TwinRead,
-    plan: &SplitReadPlan,
-) -> Vec<TwinRead> {
+fn split_read_with_coverage_stats(mut twin_read: TwinRead, plan: &SplitReadPlan) -> Vec<TwinRead> {
     let mut new_reads = vec![];
     let mut break_points = plan.breakpoints.clone();
     break_points.push(Breakpoints {
@@ -698,84 +841,139 @@ fn split_read_with_coverage_stats(
     new_reads
 }
 
-pub fn split_outer_reads(twin_reads: Vec<TwinRead>, tr_map_info: Vec<TwinReadMapping>, temp_dir: &PathBuf, args: &Cli)
--> (Vec<TwinRead>, Vec<usize>){
-    let tr_map_info_dict = tr_map_info.iter().map(|x| (x.tr_index, x)).collect::<FxHashMap<usize, &TwinReadMapping>>();
+pub fn split_outer_reads(
+    twin_reads: Vec<TwinRead>,
+    tr_map_info: Vec<TwinReadMapping>,
+    temp_dir: &PathBuf,
+    args: &Cli,
+) -> (Vec<TwinRead>, Vec<usize>) {
+    let tr_map_info_dict = tr_map_info
+        .iter()
+        .map(|x| (x.tr_index, x))
+        .collect::<FxHashMap<usize, &TwinReadMapping>>();
     let new_twin_reads_bools = Mutex::new(vec![]);
     let cov_file = Path::new(temp_dir).join("read_coverages.txt.gz");
     let buf = BufWriter::new(std::fs::File::create(cov_file).unwrap());
     let writer = Mutex::new(GzEncoder::new(buf, Compression::default()));
 
-    twin_reads.into_par_iter().enumerate().for_each(|(i, twin_read)| {
-        if tr_map_info_dict.contains_key(&i){
-            let map_info = tr_map_info_dict.get(&i).unwrap();
-            let breakpoints = cov_mapping_breakpoints(&map_info.all_intervals, map_info.mapping_info.length as u32, &twin_read.id, args);
+    twin_reads
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, twin_read)| {
+            if tr_map_info_dict.contains_key(&i) {
+                let map_info = tr_map_info_dict.get(&i).unwrap();
+                let breakpoints = cov_mapping_breakpoints(
+                    &map_info.all_intervals,
+                    map_info.mapping_info.length as u32,
+                    &twin_read.id,
+                    args,
+                );
 
-            //Broke right now 
-            if log::log_enabled!(log::Level::Trace) {
-                let depths = Lapper::new(map_info.all_intervals.iter().map(|x| Interval {
-                    start: x.start,
-                    stop: x.stop,
-                    val: false,
-                }).collect::<Vec<_>>());
-                let writer = &mut writer.lock().unwrap();
-                for depth in depths.depth(){
-                    let mut string = format!("{} {}-{} COV:{}, BREAKPOINTS:", twin_read.id, depth.start, depth.stop, depth.val);
-                    for breakpoint in breakpoints.iter(){
-                        string.push_str(format!("--{} to {} COND:{}--", breakpoint.pos1, breakpoint.pos2, breakpoint.condition).as_str());
-                    }
-                    writeln!(writer, "{}", &string).unwrap();
-                }
-            }
-            else{
-                if breakpoints.len() > 0{
-                    let mut read_id_and_breakpoint_string = format!("{} BREAKPOINTS:", twin_read.id);
-                    for breakpoint in breakpoints.iter(){
-                        read_id_and_breakpoint_string.push_str(format!("{}-{}-COND:{},", breakpoint.pos1, breakpoint.pos2, breakpoint.condition).as_str());
-                    }
+                //Broke right now
+                if log::log_enabled!(log::Level::Trace) {
+                    let depths = Lapper::new(
+                        map_info
+                            .all_intervals
+                            .iter()
+                            .map(|x| Interval {
+                                start: x.start,
+                                stop: x.stop,
+                                val: false,
+                            })
+                            .collect::<Vec<_>>(),
+                    );
                     let writer = &mut writer.lock().unwrap();
-                    writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
+                    for depth in depths.depth() {
+                        let mut string = format!(
+                            "{} {}-{} COV:{}, BREAKPOINTS:",
+                            twin_read.id, depth.start, depth.stop, depth.val
+                        );
+                        for breakpoint in breakpoints.iter() {
+                            string.push_str(
+                                format!(
+                                    "--{} to {} COND:{}--",
+                                    breakpoint.pos1, breakpoint.pos2, breakpoint.condition
+                                )
+                                .as_str(),
+                            );
+                        }
+                        writeln!(writer, "{}", &string).unwrap();
+                    }
+                } else {
+                    if breakpoints.len() > 0 {
+                        let mut read_id_and_breakpoint_string =
+                            format!("{} BREAKPOINTS:", twin_read.id);
+                        for breakpoint in breakpoints.iter() {
+                            read_id_and_breakpoint_string.push_str(
+                                format!(
+                                    "{}-{}-COND:{},",
+                                    breakpoint.pos1, breakpoint.pos2, breakpoint.condition
+                                )
+                                .as_str(),
+                            );
+                        }
+                        let writer = &mut writer.lock().unwrap();
+                        writeln!(writer, "{}", &read_id_and_breakpoint_string).unwrap();
+                    }
+                }
+
+                let splitted_reads =
+                    split_read_and_populate_depth(twin_read, map_info, breakpoints, args);
+                for new_read in splitted_reads {
+                    new_twin_reads_bools.lock().unwrap().push((new_read, true));
+                }
+            } else {
+                if twin_read.min_depth_multi.is_some() {
+                    new_twin_reads_bools.lock().unwrap().push((twin_read, true));
+                } else {
+                    new_twin_reads_bools
+                        .lock()
+                        .unwrap()
+                        .push((twin_read, false));
                 }
             }
-
-            let splitted_reads = split_read_and_populate_depth(twin_read, map_info, breakpoints, args);
-            for new_read in splitted_reads{
-                new_twin_reads_bools.lock().unwrap().push((new_read, true));
-            }
-        }
-        else{
-            if twin_read.min_depth_multi.is_some(){
-                new_twin_reads_bools.lock().unwrap().push((twin_read, true));
-            }
-            else{
-                new_twin_reads_bools.lock().unwrap().push((twin_read, false));
-            }
-        }
-
-    });
+        });
 
     let mut ntr_bools = new_twin_reads_bools.into_inner().unwrap();
-    ntr_bools.sort_by(|a,b| a.0.id.cmp(&b.0.id));
-    let new_outer_indices = ntr_bools.iter().enumerate().filter(|x| x.1.1).map(|x| x.0).collect::<Vec<usize>>();
-    let new_twin_reads = ntr_bools.into_iter().map(|x| x.0).collect::<Vec<TwinRead>>();
+    ntr_bools.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+    let new_outer_indices = ntr_bools
+        .iter()
+        .enumerate()
+        .filter(|x| x.1 .1)
+        .map(|x| x.0)
+        .collect::<Vec<usize>>();
+    let new_twin_reads = ntr_bools
+        .into_iter()
+        .map(|x| x.0)
+        .collect::<Vec<TwinRead>>();
     return (new_twin_reads, new_outer_indices);
 }
 
-pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: usize, len1: usize, len2: usize, reverse: bool, endpoint_fuzz: usize) -> bool {
+pub fn check_maximal_overlap(
+    start1: usize,
+    end1: usize,
+    start2: usize,
+    end2: usize,
+    len1: usize,
+    len2: usize,
+    reverse: bool,
+    endpoint_fuzz: usize,
+) -> bool {
     let edge_fuzz = endpoint_fuzz;
 
     //Can not extend to the left (cond1) and cannot extend to the right (cond2)
     //  ------->             OR          --------->
     // ---------->                            --------->
-    if !reverse{
-        if (start1 < edge_fuzz || start2 < edge_fuzz ) && (len1 < edge_fuzz + end1 || len2 < edge_fuzz + end2){
+    if !reverse {
+        if (start1 < edge_fuzz || start2 < edge_fuzz)
+            && (len1 < edge_fuzz + end1 || len2 < edge_fuzz + end2)
+        {
             return true;
         }
     }
-
     //  ------->             OR          --------->            OR          <----------
     //      <------                    <--------------                            -------->
-    else{
+    else {
         let max1right = len1 < edge_fuzz + end1;
         let max2right = len2 < edge_fuzz + end2;
         let max1left = start1 < edge_fuzz;
@@ -786,7 +984,7 @@ pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: us
         let contained1 = max1left && max1right;
         let contained2 = max2left && max2right;
 
-        if ol_plus_minus || ol_minus_plus || contained1 || contained2{
+        if ol_plus_minus || ol_minus_plus || contained1 || contained2 {
             return true;
         }
     }
@@ -794,7 +992,12 @@ pub fn check_maximal_overlap(start1: usize, end1: usize, start2: usize, end2: us
     return false;
 }
 
-pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)> {
+pub fn depths_at_points_interval(
+    intervals: &Vec<BareInterval>,
+    start: u32,
+    end: u32,
+    step: u32,
+) -> Vec<(u32, usize)> {
     if intervals.is_empty() || start > end || step == 0 {
         return Vec::new();
     }
@@ -802,7 +1005,7 @@ pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end:
     let mut result = Vec::new();
     let points = (end - start) / step + 1;
     result.reserve(points as usize);
-    
+
     let mut pos = start;
     let mut active_intervals = FxHashSet::default();
     let mut next_interval_idx = 0;
@@ -813,12 +1016,11 @@ pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end:
         let mut toremove_stops = vec![];
 
         // Remove intervals that end before or at current position
-        for (stop,idsxs) in stops_of_active_intervals.iter(){
-            if *stop <= pos{
+        for (stop, idsxs) in stops_of_active_intervals.iter() {
+            if *stop <= pos {
                 toremove_stops.push(*stop);
                 toremove_intervals.extend(idsxs.iter().cloned());
-            }
-            else{
+            } else {
                 break;
             }
         }
@@ -832,12 +1034,13 @@ pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end:
         }
 
         // Add new intervals that start before or at current position
-        while next_interval_idx < intervals.len() 
-            && intervals[next_interval_idx].start <= pos 
-        {
+        while next_interval_idx < intervals.len() && intervals[next_interval_idx].start <= pos {
             if intervals[next_interval_idx].stop > pos {
                 active_intervals.insert(next_interval_idx);
-                stops_of_active_intervals.entry(intervals[next_interval_idx].stop).or_insert(vec![]).push(next_interval_idx);
+                stops_of_active_intervals
+                    .entry(intervals[next_interval_idx].stop)
+                    .or_insert(vec![])
+                    .push(next_interval_idx);
             }
             next_interval_idx += 1;
         }
@@ -852,9 +1055,14 @@ pub fn depths_at_points_interval(intervals: &Vec<BareInterval>, start: u32, end:
     result
 }
 
-pub fn depths_at_points<T>(lapper: &Lapper<u32, T>, start: u32, end: u32, step: u32) -> Vec<(u32, usize)>
+pub fn depths_at_points<T>(
+    lapper: &Lapper<u32, T>,
+    start: u32,
+    end: u32,
+    step: u32,
+) -> Vec<(u32, usize)>
 where
-    T: Eq + Clone + Send + Sync
+    T: Eq + Clone + Send + Sync,
 {
     if lapper.intervals.is_empty() || start > end || step == 0 {
         return Vec::new();
@@ -874,12 +1082,11 @@ where
         let mut toremove_stops = vec![];
 
         // Remove intervals that end before or at current position
-        for (stop,idsxs) in stops_of_active_intervals.iter(){
-            if *stop <= pos{
+        for (stop, idsxs) in stops_of_active_intervals.iter() {
+            if *stop <= pos {
                 toremove_stops.push(*stop);
                 toremove_intervals.extend(idsxs.iter().cloned());
-            }
-            else{
+            } else {
                 break;
             }
         }
@@ -898,7 +1105,10 @@ where
         {
             if lapper.intervals[next_interval_idx].stop > pos {
                 active_intervals.insert(next_interval_idx);
-                stops_of_active_intervals.entry(lapper.intervals[next_interval_idx].stop).or_insert(vec![]).push(next_interval_idx);
+                stops_of_active_intervals
+                    .entry(lapper.intervals[next_interval_idx].stop)
+                    .or_insert(vec![])
+                    .push(next_interval_idx);
             }
             next_interval_idx += 1;
         }
@@ -942,7 +1152,6 @@ pub fn analyze_unitig_coverage(
     num_reads: usize,
     args: &Cli,
 ) -> PoorCoverageAnalysis {
-
     let mut poor_coverage_regions = vec![];
 
     if intervals.is_empty() {
@@ -963,7 +1172,8 @@ pub fn analyze_unitig_coverage(
     }
 
     // Get depth intervals using lapper (collapses all read mappings into depth structure)
-    let intervals_lapper = intervals.iter()
+    let intervals_lapper = intervals
+        .iter()
         .map(|x| Interval {
             start: x.start,
             stop: x.stop,
@@ -985,12 +1195,7 @@ pub fn analyze_unitig_coverage(
 
     // Get coverage at sampling points for chimera detection
     let sampling = 5;
-    let coverages_at_sampling = depths_at_points_interval(
-        intervals,
-        0,
-        reference_length,
-        sampling,
-    );
+    let coverages_at_sampling = depths_at_points_interval(intervals, 0, reference_length, sampling);
 
     let mut total_poor_coverage_length = 0;
 
@@ -1151,12 +1356,17 @@ pub fn filter_low_coverage_unitigs(
     use std::io::Write;
 
     let bed_file_path = output_dir.join("low_quality_regions.bed");
-    let bed_writer = Mutex::new(BufWriter::new(File::create(&bed_file_path).expect("Could not create BED file")));
+    let bed_writer = Mutex::new(BufWriter::new(
+        File::create(&bed_file_path).expect("Could not create BED file"),
+    ));
 
     // Write BED header
     {
-        writeln!(bed_writer.lock().unwrap(), "# Unitig\tStart\tEnd\tLength\tUnpolishedLength\tAvgDepth\tIsChimeric\tCondition")
-            .expect("Could not write to BED file");
+        writeln!(
+            bed_writer.lock().unwrap(),
+            "# Unitig\tStart\tEnd\tLength\tUnpolishedLength\tAvgDepth\tIsChimeric\tCondition"
+        )
+        .expect("Could not write to BED file");
     }
 
     let unitigs_to_filter = Mutex::new(vec![]);
@@ -1178,13 +1388,16 @@ pub fn filter_low_coverage_unitigs(
             return;
         }
 
-
         // Get intervals from mapping boundaries
         let intervals = if let Some(ref boundaries) = unitig.mapping_info.max_alignment_boundaries {
-            boundaries.intervals.iter().map(|interval| BareInterval {
-                start: interval.start,
-                stop: interval.stop,
-            }).collect::<Vec<BareInterval>>()
+            boundaries
+                .intervals
+                .iter()
+                .map(|interval| BareInterval {
+                    start: interval.start,
+                    stop: interval.stop,
+                })
+                .collect::<Vec<BareInterval>>()
         } else {
             vec![]
         };
@@ -1203,9 +1416,9 @@ pub fn filter_low_coverage_unitigs(
 
         // If genome is circular, prune poor coverage regions along the ends
         if unitig.has_circular_walk() && !analysis.poor_coverage_regions.is_empty() {
-            analysis.poor_coverage_regions.retain(|region| {
-                !(region.start == 0 || region.end + 10 > analysis.unitig_length)
-            });
+            analysis
+                .poor_coverage_regions
+                .retain(|region| !(region.start == 0 || region.end + 10 > analysis.unitig_length));
         };
 
         // Write poor coverage regions to BED file
@@ -1221,13 +1434,17 @@ pub fn filter_low_coverage_unitigs(
                 region.avg_depth,
                 region.is_chimeric,
                 region.chimera_condition
-            ).expect("Could not write to BED file");
+            )
+            .expect("Could not write to BED file");
             let mut total_regions_flagged = total_regions_flagged.lock().unwrap();
             *total_regions_flagged += 1;
         }
 
         // Mark unitig for filtering if it meets criteria
-        if analysis.poor_coverage_fraction > 0.10 && !unitig.has_circular_walk() && unitig.min_read_depth_multi.unwrap()[0] <= 5.0{
+        if analysis.poor_coverage_fraction > 0.10
+            && !unitig.has_circular_walk()
+            && unitig.min_read_depth_multi.unwrap()[0] <= 5.0
+        {
             let mut unitigs_to_filter = unitigs_to_filter.lock().unwrap();
             unitigs_to_filter.push(*unitig_hash_id);
             let mut total_filtered = total_filtered.lock().unwrap();
@@ -1250,35 +1467,43 @@ pub fn filter_low_coverage_unitigs(
         }
     });
 
-    bed_writer.lock().unwrap().flush().expect("Could not flush BED file");
+    bed_writer
+        .lock()
+        .unwrap()
+        .flush()
+        .expect("Could not flush BED file");
 
     log::info!(
         "Coverage analysis complete: flagged {} regions, filtering {} unitigs",
         *total_regions_flagged.lock().unwrap(),
         *total_filtered.lock().unwrap()
     );
-    log::info!("Poor coverage regions written to: {}", bed_file_path.display());
+    log::info!(
+        "Poor coverage regions written to: {}",
+        bed_file_path.display()
+    );
 
     // Actually remove the filtered unitigs from the graph
     let unitigs_to_filter = unitigs_to_filter.into_inner().unwrap();
     if !unitigs_to_filter.is_empty() {
-        log::info!("Removing {} low-quality unitigs from graph", unitigs_to_filter.len());
+        log::info!(
+            "Removing {} low-quality unitigs from graph",
+            unitigs_to_filter.len()
+        );
         unitig_graph.remove_nodes(&unitigs_to_filter, false);
     }
 
     unitigs_to_filter
 }
 
-
 #[cfg(test)]
 mod tests {
 
     use super::*;
-    use approx::assert_relative_eq;
     use crate::cli::Cli;
+    use approx::assert_relative_eq;
 
-
-    fn create_small_twinol(identity: f32, _maximal: bool) -> BareMappingOverlap{
+    fn create_small_twinol(identity: f32, _maximal: bool) -> BareMappingOverlap {
         BareMappingOverlap {
             snpmer_identity: identity,
             ..Default::default()
@@ -1286,9 +1511,8 @@ mod tests {
     }
 
     #[test]
-    fn test_maximal_overlap(){
-
-        let fuzz = 200; 
+    fn test_maximal_overlap() {
+        let fuzz = 200;
 
         let len1 = 3000;
         let len2 = 3000;
@@ -1300,12 +1524,18 @@ mod tests {
         let start2 = 0;
         let end2 = 3000;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            true
+        );
 
         //  ------>
         // <----------
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            true
+        );
 
         // ------------>
         //    ----->
@@ -1316,7 +1546,10 @@ mod tests {
         let start2 = 0;
         let end2 = 2000;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            true
+        );
 
         let len1 = 3000;
         let len2 = 3000;
@@ -1328,7 +1561,10 @@ mod tests {
         let start2 = 100;
         let end2 = 1500;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            true
+        );
 
         //     ------>
         // ------->
@@ -1337,7 +1573,10 @@ mod tests {
         let start2 = 1400;
         let end2 = 2900;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            true
+        );
 
         //   ---xxxx>
         // -----x>
@@ -1346,16 +1585,22 @@ mod tests {
         let start2 = 2000;
         let end2 = 2500;
         let reverse = false;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), false);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            false
+        );
 
-        // <-----xxxx 
+        // <-----xxxx
         //  -----xxxx->
         let start1 = 1500;
         let end1 = 3000;
         let start2 = 0;
         let end2 = 1500;
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), false);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            false
+        );
 
         // <------
         //    -------->
@@ -1364,7 +1609,10 @@ mod tests {
         let start2 = 0;
         let end2 = 1500;
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), true);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            true
+        );
 
         // <--|||xx
         //    |||xx--->
@@ -1373,7 +1621,10 @@ mod tests {
         let start2 = 0;
         let end2 = 1000;
         let reverse = true;
-        assert_eq!(check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz), false);
+        assert_eq!(
+            check_maximal_overlap(start1, end1, start2, end2, len1, len2, reverse, fuzz),
+            false
+        );
     }
 
     // fn _test_get_min_depth_various_thresholds(){
@@ -1455,171 +1706,251 @@ mod tests {
     fn test_depths_at_points() {
         // Test case with overlapping intervals
         let data = vec![
-            Interval { start: 0, stop: 10, val: SmallTwinOl::default() },
-            Interval { start: 5, stop: 15, val: SmallTwinOl::default() },
-            Interval { start: 10, stop: 20, val: SmallTwinOl::default() },
+            Interval {
+                start: 0,
+                stop: 10,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 5,
+                stop: 15,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 10,
+                stop: 20,
+                val: SmallTwinOl::default(),
+            },
         ];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 0, 20, 5);
-        assert_eq!(depths, vec![
-            (0, 1),   // Only first interval
-            (5, 2),   // First and second intervals
-            (10, 2),  // Second and third intervals
-            (15, 1),  // Only third interval
-            (20, 0),  // No intervals
-        ]);
+        assert_eq!(
+            depths,
+            vec![
+                (0, 1),  // Only first interval
+                (5, 2),  // First and second intervals
+                (10, 2), // Second and third intervals
+                (15, 1), // Only third interval
+                (20, 0), // No intervals
+            ]
+        );
     }
 
     #[test]
     fn test_depths_at_points_empty() {
         let data: Vec<Interval<u32, SmallTwinOl>> = vec![];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 0, 10, 5);
         assert_eq!(depths, vec![]);
     }
 
     #[test]
     fn test_depths_at_points_single_interval() {
-        let data = vec![
-            Interval { start: 5, stop: 15, val: SmallTwinOl::default() },
-        ];
+        let data = vec![Interval {
+            start: 5,
+            stop: 15,
+            val: SmallTwinOl::default(),
+        }];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 0, 20, 5);
-        assert_eq!(depths, vec![
-            (0, 0),
-            (5, 1),
-            (10, 1),
-            (15, 0),
-            (20, 0),
-        ]);
+        assert_eq!(depths, vec![(0, 0), (5, 1), (10, 1), (15, 0), (20, 0),]);
     }
 
-
-        #[test]
+    #[test]
     fn test_depths_at_points_dense_overlap() {
         let data = vec![
-            Interval { start: 0, stop: 10, val: SmallTwinOl::default() },
-            Interval { start: 0, stop: 5, val: SmallTwinOl::default() },
-            Interval { start: 0, stop: 3, val: SmallTwinOl::default() },
+            Interval {
+                start: 0,
+                stop: 10,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 0,
+                stop: 5,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 0,
+                stop: 3,
+                val: SmallTwinOl::default(),
+            },
         ];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 0, 10, 1);
-        assert_eq!(depths, vec![
-            (0, 3),  // All three intervals
-            (1, 3),  // All three intervals
-            (2, 3),  // All three intervals
-            (3, 2),  // Two intervals remain
-            (4, 2),  // Two intervals remain
-            (5, 1),  // Only the longest interval
-            (6, 1),  // Only the longest interval
-            (7, 1),  // Only the longest interval
-            (8, 1),  // Only the longest interval
-            (9, 1),  // Only the longest interval
-            (10, 0), // No intervals
-        ]);
+        assert_eq!(
+            depths,
+            vec![
+                (0, 3),  // All three intervals
+                (1, 3),  // All three intervals
+                (2, 3),  // All three intervals
+                (3, 2),  // Two intervals remain
+                (4, 2),  // Two intervals remain
+                (5, 1),  // Only the longest interval
+                (6, 1),  // Only the longest interval
+                (7, 1),  // Only the longest interval
+                (8, 1),  // Only the longest interval
+                (9, 1),  // Only the longest interval
+                (10, 0), // No intervals
+            ]
+        );
     }
 
     #[test]
     fn test_depths_at_points_staggered_overlap() {
         let data = vec![
-            Interval { start: 0, stop: 10, val: SmallTwinOl::default() },
-            Interval { start: 2, stop: 8, val: SmallTwinOl::default() },
-            Interval { start: 4, stop: 6, val: SmallTwinOl::default() },
+            Interval {
+                start: 0,
+                stop: 10,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 2,
+                stop: 8,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 4,
+                stop: 6,
+                val: SmallTwinOl::default(),
+            },
         ];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 0, 10, 2);
-        assert_eq!(depths, vec![
-            (0, 1),  // First interval only
-            (2, 2),  // First and second intervals
-            (4, 3),  // All three intervals
-            (6, 2),  // Back to two intervals
-            (8, 1),  // Back to one interval
-            (10, 0), // No intervals
-        ]);
+        assert_eq!(
+            depths,
+            vec![
+                (0, 1),  // First interval only
+                (2, 2),  // First and second intervals
+                (4, 3),  // All three intervals
+                (6, 2),  // Back to two intervals
+                (8, 1),  // Back to one interval
+                (10, 0), // No intervals
+            ]
+        );
     }
 
     #[test]
     fn test_depths_at_points_exact_boundaries() {
         let data = vec![
-            Interval { start: 5, stop: 10, val: SmallTwinOl::default() },
-            Interval { start: 10, stop: 15, val: SmallTwinOl::default() },
-            Interval { start: 15, stop: 20, val: SmallTwinOl::default() },
+            Interval {
+                start: 5,
+                stop: 10,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 10,
+                stop: 15,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 15,
+                stop: 20,
+                val: SmallTwinOl::default(),
+            },
         ];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 5, 20, 5);
-        assert_eq!(depths, vec![
-            (5, 1),   // First interval
-            (10, 1),  // Second interval (boundary)
-            (15, 1),  // Third interval (boundary)
-            (20, 0),  // No intervals
-        ]);
+        assert_eq!(
+            depths,
+            vec![
+                (5, 1),  // First interval
+                (10, 1), // Second interval (boundary)
+                (15, 1), // Third interval (boundary)
+                (20, 0), // No intervals
+            ]
+        );
     }
 
     #[test]
     fn test_depths_at_points_non_standard_step() {
         let data = vec![
-            Interval { start: 0, stop: 20, val: SmallTwinOl::default() },
-            Interval { start: 5, stop: 15, val: SmallTwinOl::default() },
+            Interval {
+                start: 0,
+                stop: 20,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 5,
+                stop: 15,
+                val: SmallTwinOl::default(),
+            },
         ];
         let lapper = Lapper::new(data);
-        
+
         let depths = depths_at_points(&lapper, 0, 20, 3);
-        assert_eq!(depths, vec![
-            (0, 1),   // First interval only
-            (3, 1),   // First interval only
-            (6, 2),   // Both intervals
-            (9, 2),   // Both intervals
-            (12, 2),  // Both intervals
-            (15, 1),  // First interval only
-            (18, 1),  // First interval only
-        ]);
+        assert_eq!(
+            depths,
+            vec![
+                (0, 1),  // First interval only
+                (3, 1),  // First interval only
+                (6, 2),  // Both intervals
+                (9, 2),  // Both intervals
+                (12, 2), // Both intervals
+                (15, 1), // First interval only
+                (18, 1), // First interval only
+            ]
+        );
     }
 
     #[test]
     fn test_depths_at_points_query_subset() {
         let data = vec![
-            Interval { start: 0, stop: 100, val: SmallTwinOl::default() },
-            Interval { start: 20, stop: 80, val: SmallTwinOl::default() },
-            Interval { start: 40, stop: 60, val: SmallTwinOl::default() },
+            Interval {
+                start: 0,
+                stop: 100,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 20,
+                stop: 80,
+                val: SmallTwinOl::default(),
+            },
+            Interval {
+                start: 40,
+                stop: 60,
+                val: SmallTwinOl::default(),
+            },
         ];
         let lapper = Lapper::new(data);
-        
+
         // Query only middle section
         let depths = depths_at_points(&lapper, 30, 70, 10);
-        assert_eq!(depths, vec![
-            (30, 2),  // Two intervals
-            (40, 3),  // Three intervals
-            (50, 3),  // Three intervals
-            (60, 2),  // Back to two intervals
-            (70, 2),  // Two intervals
-        ]);
+        assert_eq!(
+            depths,
+            vec![
+                (30, 2), // Two intervals
+                (40, 3), // Three intervals
+                (50, 3), // Three intervals
+                (60, 2), // Back to two intervals
+                (70, 2), // Two intervals
+            ]
+        );
     }
 
     #[test]
     fn test_depths_at_points_edge_cases() {
-        let data = vec![
-            Interval { start: 10, stop: 20, val: SmallTwinOl::default() },
-        ];
+        let data = vec![Interval {
+            start: 10,
+            stop: 20,
+            val: SmallTwinOl::default(),
+        }];
         let lapper = Lapper::new(data);
-        
+
         // Test empty range
         assert_eq!(depths_at_points(&lapper, 5, 4, 1), vec![]);
-        
+
         // Test zero step
         assert_eq!(depths_at_points(&lapper, 0, 20, 0), vec![]);
-        
+
         // Test single point
-        assert_eq!(
-            depths_at_points(&lapper, 15, 15, 5),
-            vec![(15, 1)]
-        );
-        
+        assert_eq!(depths_at_points(&lapper, 15, 15, 5), vec![(15, 1)]);
+
         // Test points beyond interval
         assert_eq!(
             depths_at_points(&lapper, 0, 30, 10),
@@ -1627,7 +1958,7 @@ mod tests {
         );
     }
 
-     #[test]
+    #[test]
     fn test_median_and_min_depth_basic() {
         let intervals = vec![
             Interval {
@@ -1636,7 +1967,7 @@ mod tests {
                 val: BareMappingOverlap {
                     snpmer_identity: 1.0,
                     ..Default::default()
-                }
+                },
             },
             Interval {
                 start: 25,
@@ -1644,11 +1975,11 @@ mod tests {
                 val: BareMappingOverlap {
                     snpmer_identity: 1.0,
                     ..Default::default()
-                }
+                },
             },
         ];
         let lapper = Lapper::new(intervals);
-        
+
         let result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
         assert!(result.is_some());
         let (min_depth, median_depth) = result.unwrap();
@@ -1660,14 +1991,13 @@ mod tests {
         let (min_depth, median_depth) = result.unwrap();
         assert!(min_depth > 0.0);
         assert!(median_depth >= min_depth);
-
     }
 
     #[test]
     fn test_median_and_min_depth_empty() {
         let intervals = vec![];
         let lapper = Lapper::new(intervals);
-        
+
         let result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
         assert_eq!(result, Some((0.0, 0.0)));
 
@@ -1677,79 +2007,74 @@ mod tests {
 
     #[test]
     fn test_median_and_min_depth_filtered_out() {
-        let intervals = vec![
-            Interval {
-                start: 0,
-                stop: 100,
-                val: BareMappingOverlap {
-                    snpmer_identity: 0.5, // Below cutoff
-                    ..Default::default()
-                }
+        let intervals = vec![Interval {
+            start: 0,
+            stop: 100,
+            val: BareMappingOverlap {
+                snpmer_identity: 0.5, // Below cutoff
+                ..Default::default()
             },
-        ];
+        }];
         let lapper = Lapper::new(intervals);
-        
+
         let result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
         assert_eq!(result, Some((0.0, 0.0)));
-
 
         let result = median_and_min_depth_from_lapper_new(&lapper, 10, 0, 100, 0.9);
         assert_eq!(result, Some((0.0, 0.0)));
     }
 
-      #[test]
+    #[test]
     fn test_sparse_coverage() {
         let intervals = vec![
             Interval {
                 start: 0,
                 stop: 20,
-                val: create_small_twinol(1.0, true)
+                val: create_small_twinol(1.0, true),
             },
             Interval {
                 start: 50,
                 stop: 70,
-                val: create_small_twinol(1.0, true)
+                val: create_small_twinol(1.0, true),
             },
             Interval {
                 start: 90,
                 stop: 100,
-                val: create_small_twinol(1.0, true)
+                val: create_small_twinol(1.0, true),
             },
         ];
         let lapper = Lapper::new(intervals);
-        
+
         let old_result = median_and_min_depth_from_lapper(&lapper, 5, 0, 100, 0.9);
         let new_result = median_and_min_depth_from_lapper_new(&lapper, 5, 0, 100, 0.9);
-        
+
         assert!(old_result.is_some() && new_result.is_some());
         let (old_min, old_median) = old_result.unwrap();
         let (new_min, new_median) = new_result.unwrap();
-        
+
         assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
         assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
     }
 
     #[test]
     fn test_maximal_overlap_filtering() {
-        let intervals = vec![
-            Interval {
-                start: 0,
-                stop: 100,
-                val: create_small_twinol(1.0, true)
-            },
-        ];
+        let intervals = vec![Interval {
+            start: 0,
+            stop: 100,
+            val: create_small_twinol(1.0, true),
+        }];
         let lapper = Lapper::new(intervals);
-        
+
         let old_result = median_and_min_depth_from_lapper(&lapper, 10, 0, 100, 0.9);
         let new_result = median_and_min_depth_from_lapper_new(&lapper, 10, 0, 100, 0.9);
-        
+
         assert!(old_result.is_some() && new_result.is_some());
         let (old_min, old_median) = old_result.unwrap();
         let (new_min, new_median) = new_result.unwrap();
-        
+
         assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
         assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
-        assert_relative_eq!(old_min, 1.0, epsilon = 1e-10);  // Should only count maximal intervals
+        assert_relative_eq!(old_min, 1.0, epsilon = 1e-10); // Should only count maximal intervals
     }
 
     #[test]
@@ -1762,13 +2087,11 @@ mod tests {
         assert_eq!(old_empty, Some((0.0, 0.0)));
 
         // Single point interval
-        let point_intervals = vec![
-            Interval {
-                start: 50,
-                stop: 51,
-                val: create_small_twinol(1.0, true)
-            },
-        ];
+        let point_intervals = vec![Interval {
+            start: 50,
+            stop: 51,
+            val: create_small_twinol(1.0, true),
+        }];
         let point_lapper = Lapper::new(point_intervals);
         let old_point = median_and_min_depth_from_lapper(&point_lapper, 1, 0, 100, 0.9);
         let new_point = median_and_min_depth_from_lapper_new(&point_lapper, 1, 0, 100, 0.9);
@@ -1782,25 +2105,25 @@ mod tests {
             Interval {
                 start: 0,
                 stop: 100,
-                val: create_small_twinol(1.0, true)
+                val: create_small_twinol(1.0, true),
             },
             Interval {
                 start: 25,
                 stop: 75,
-                val: create_small_twinol(1.0, true)
+                val: create_small_twinol(1.0, true),
             },
         ];
         let lapper = Lapper::new(intervals);
-        
+
         for sampling in [1, 5, 10].iter() {
             let old_result = median_and_min_depth_from_lapper(&lapper, *sampling, 0, 100, 0.9);
             let new_result = median_and_min_depth_from_lapper_new(&lapper, *sampling, 0, 100, 0.9);
-            
+
             dbg!(sampling);
             assert!(old_result.is_some() && new_result.is_some());
             let (old_min, old_median) = old_result.unwrap();
             let (new_min, new_median) = new_result.unwrap();
-            
+
             assert_relative_eq!(old_min, new_min, epsilon = 1e-10);
             assert_relative_eq!(old_median, new_median, epsilon = 1e-10);
         }
@@ -1809,20 +2132,30 @@ mod tests {
     #[test]
     fn timing_test_depth_over_points() {
         let mut intervals = vec![];
-        for i in 0..1000{
+        for i in 0..1000 {
             intervals.push((i as u32, i as u32 + 100, create_small_twinol(1.0, true)));
         }
 
-        for j in 0..1000{
-            intervals.push((j as u32 + 500 , j as u32 + 500 + 100, create_small_twinol(1.0, true)));
-
+        for j in 0..1000 {
+            intervals.push((
+                j as u32 + 500,
+                j as u32 + 500 + 100,
+                create_small_twinol(1.0, true),
+            ));
         }
 
-        for k in 0..1000{
+        for k in 0..1000 {
             intervals.push((k as u32, k as u32 + 100, create_small_twinol(1.0, true)));
         }
 
-        let intervals = intervals.into_iter().map(|x| Interval{start: x.0, stop: x.1, val: x.2}).collect::<Vec<_>>();
+        let intervals = intervals
+            .into_iter()
+            .map(|x| Interval {
+                start: x.0,
+                stop: x.1,
+                val: x.2,
+            })
+            .collect::<Vec<_>>();
         let lapper = Lapper::new(intervals);
 
         let start = std::time::Instant::now();
@@ -1842,23 +2175,28 @@ mod tests {
 
     /// Creates a mapping interval with sensible defaults
     fn make_interval(start: u32, stop: u32) -> (u32, u32, f32, bool) {
-        (start, stop, 1.0, true)  // Default to 100% identity and maximal overlap
+        (start, stop, 1.0, true) // Default to 100% identity and maximal overlap
     }
 
     /// Creates a TwinReadMapping from a list of (start, stop) positions
     /// Optionally override identity and maximal_overlap with full tuples
-    fn make_test_mapping<T>(intervals: T) -> TwinReadMapping 
-    where 
-        T: IntoIterator<Item = (u32, u32, f32, bool)> + Clone
+    fn make_test_mapping<T>(intervals: T) -> TwinReadMapping
+    where
+        T: IntoIterator<Item = (u32, u32, f32, bool)> + Clone,
     {
-
-        let lapper_intervals_map = intervals.clone()
+        let lapper_intervals_map = intervals
+            .clone()
             .into_iter()
             .enumerate()
-            .map(|(_, (start, stop, identity, _))| ( BareInterval {
-                start,
-                stop,
-            }, BareMappingOverlap{snpmer_identity: identity, ..Default::default() }))
+            .map(|(_, (start, stop, identity, _))| {
+                (
+                    BareInterval { start, stop },
+                    BareMappingOverlap {
+                        snpmer_identity: identity,
+                        ..Default::default()
+                    },
+                )
+            })
             .collect();
 
         let lapper_intervals = intervals
@@ -1894,7 +2232,7 @@ mod tests {
         let mut read = make_test_read();
         // Single interval covering whole region
         let mapping = make_test_mapping(vec![make_interval(0, 100)]);
-        
+
         populate_depth_from_map_info(&mut read, &mapping, 0, 100);
 
         assert!(read.min_depth_multi.is_some());
@@ -1908,11 +2246,11 @@ mod tests {
     fn test_varying_identity() {
         let mut read = make_test_read();
         let mapping = make_test_mapping(vec![
-            (0, 100, 1.0, true),    // 100% identity
-            (0, 100, 0.998, true),   // 95% identity
-            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 1.0, true),   // 100% identity
+            (0, 100, 0.998, true), // 95% identity
+            (0, 100, 0.991, true), // 90% identity
         ]);
-        
+
         populate_depth_from_map_info(&mut read, &mapping, 0, 100);
 
         if let Some(min_depths) = read.min_depth_multi {
@@ -1926,23 +2264,23 @@ mod tests {
     fn test_varying_identity_adaptive() {
         let mut read = make_test_read();
         let mapping = make_test_mapping(vec![
-            (0, 100, 1.0, true),    // 100% identity
-            (0, 100, 0.998, true),   // 95% identity
-            (0, 100, 0.997, true),   // 95% identity
-            (0, 100, 0.996, true),   // 95% identity
-            (0, 100, 0.995, true),   // 95% identity
-            (0, 100, 0.994, true),   // 95% identity
-            (0, 100, 0.993, true),   // 95% identity
-            (0, 100, 0.992, true),   // 95% identity
-            (0, 100, 0.991, true),   // 90% identity
-            (0, 100, 0.991, true),   // 90% identity
-            (0, 100, 0.991, true),   // 90% identity
-            (0, 100, 0.991, true),   // 90% identity
-            (0, 100, 0.991, true),   // 90% identity
-            (0, 100, 0.991, true),   // 90% identity
-            (0, 100, 0.991, true),   // 90% identity
+            (0, 100, 1.0, true),   // 100% identity
+            (0, 100, 0.998, true), // 95% identity
+            (0, 100, 0.997, true), // 95% identity
+            (0, 100, 0.996, true), // 95% identity
+            (0, 100, 0.995, true), // 95% identity
+            (0, 100, 0.994, true), // 95% identity
+            (0, 100, 0.993, true), // 95% identity
+            (0, 100, 0.992, true), // 95% identity
+            (0, 100, 0.991, true), // 90% identity
+            (0, 100, 0.991, true), // 90% identity
+            (0, 100, 0.991, true), // 90% identity
+            (0, 100, 0.991, true), // 90% identity
+            (0, 100, 0.991, true), // 90% identity
+            (0, 100, 0.991, true), // 90% identity
+            (0, 100, 0.991, true), // 90% identity
         ]);
-        
+
         populate_depth_from_map_info(&mut read, &mapping, 0, 100);
 
         dbg!(&read.snpmer_id_threshold);
@@ -1954,14 +2292,14 @@ mod tests {
     fn test_gaps_in_coverage() {
         let mut read = make_test_read();
         let mapping = make_test_mapping(vec![
-            make_interval(0, 25),     // First quarter
-            make_interval(75, 100),   // Last quarter
+            make_interval(0, 25),   // First quarter
+            make_interval(75, 100), // Last quarter
         ]);
-        
+
         populate_depth_from_map_info(&mut read, &mapping, 0, 100);
 
         if let Some(min_depths) = read.min_depth_multi {
-            assert!(min_depths[0] < 1.0);  // Should be less than 1 due to gaps
+            assert!(min_depths[0] < 1.0); // Should be less than 1 due to gaps
         }
     }
 
@@ -1980,13 +2318,8 @@ mod tests {
         let args = get_test_args();
         let intervals = vec![];
 
-        let analysis = analyze_unitig_coverage(
-            &intervals,
-            1000,
-            "test_unitig".to_string(),
-            2,
-            &args,
-        );
+        let analysis =
+            analyze_unitig_coverage(&intervals, 1000, "test_unitig".to_string(), 2, &args);
 
         assert_eq!(analysis.unitig_length, 1000);
         assert_eq!(analysis.num_reads, 2);
@@ -2002,17 +2335,18 @@ mod tests {
 
         // Coverage from 0-300, gap from 300-400, coverage from 400-1000
         let intervals = vec![
-            BareInterval { start: 0, stop: 300 },
-            BareInterval { start: 400, stop: 1000 },
+            BareInterval {
+                start: 0,
+                stop: 300,
+            },
+            BareInterval {
+                start: 400,
+                stop: 1000,
+            },
         ];
 
-        let analysis = analyze_unitig_coverage(
-            &intervals,
-            1000,
-            "test_unitig".to_string(),
-            3,
-            &args,
-        );
+        let analysis =
+            analyze_unitig_coverage(&intervals, 1000, "test_unitig".to_string(), 3, &args);
 
         assert_eq!(analysis.unitig_length, 1000);
         assert_eq!(analysis.num_reads, 3);
@@ -2030,17 +2364,13 @@ mod tests {
         let args = get_test_args();
 
         // Full coverage
-        let intervals = vec![
-            BareInterval { start: 0, stop: 1000 },
-        ];
+        let intervals = vec![BareInterval {
+            start: 0,
+            stop: 1000,
+        }];
 
-        let analysis = analyze_unitig_coverage(
-            &intervals,
-            1000,
-            "test_unitig".to_string(),
-            10,
-            &args,
-        );
+        let analysis =
+            analyze_unitig_coverage(&intervals, 1000, "test_unitig".to_string(), 10, &args);
 
         assert_eq!(analysis.unitig_length, 1000);
         assert_eq!(analysis.num_reads, 10);
@@ -2054,9 +2384,10 @@ mod tests {
         let args = get_test_args();
 
         // Coverage only in first 500bp, rest is uncovered
-        let intervals = vec![
-            BareInterval { start: 0, stop: 500 },
-        ];
+        let intervals = vec![BareInterval {
+            start: 0,
+            stop: 500,
+        }];
 
         let analysis = analyze_unitig_coverage(
             &intervals,
@@ -2080,9 +2411,10 @@ mod tests {
         let args = get_test_args();
 
         // Large gap but many reads
-        let intervals = vec![
-            BareInterval { start: 0, stop: 400 },
-        ];
+        let intervals = vec![BareInterval {
+            start: 0,
+            stop: 400,
+        }];
 
         let analysis = analyze_unitig_coverage(
             &intervals,
