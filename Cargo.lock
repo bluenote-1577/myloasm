@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "myloasm"
-version = "0.7.0-dev"
+version = "0.7.1-dev"
 dependencies = [
  "abpoa",
  "approx 0.4.0",

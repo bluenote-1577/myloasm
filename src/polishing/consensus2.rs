@@ -14,6 +14,7 @@ use fxhash::FxHashSet;
 use rayon::prelude::*;
 use rust_lapper::Interval;
 use rust_spoa::poa_consensus;
+use std::cmp::Ordering;
 use std::fs::File;
 use std::io::BufWriter;
 use std::io::Write;
@@ -30,6 +31,7 @@ pub struct BaseConsensusSimple {
 pub struct PoaConsensusBuilder {
     seq: Vec<Mutex<Vec<Vec<u8>>>>,
     qual: Vec<Mutex<Vec<Vec<u8>>>>,
+    order: Vec<Mutex<Vec<u32>>>,
     breakpoints: Vec<usize>,
     genome_length: usize,
     window_overlap_len: usize,
@@ -37,6 +39,24 @@ pub struct PoaConsensusBuilder {
     bp_len: usize,
     genome: Vec<u8>,
     args: Cli,
+}
+
+fn compare_cigars(a: &OpLenVec, b: &OpLenVec) -> Ordering {
+    let mut a_iter = a.iter();
+    let mut b_iter = b.iter();
+    loop {
+        match (a_iter.next(), b_iter.next()) {
+            (Some((a_op, a_len)), Some((b_op, b_len))) => {
+                let ordering = (a_op as u8, a_len).cmp(&(b_op as u8, b_len));
+                if ordering != Ordering::Equal {
+                    return ordering;
+                }
+            }
+            (Some(_), None) => return Ordering::Greater,
+            (None, Some(_)) => return Ordering::Less,
+            (None, None) => return Ordering::Equal,
+        }
+    }
 }
 
 impl PoaConsensusBuilder {
@@ -61,27 +81,50 @@ impl PoaConsensusBuilder {
         //parallel iter over seq and qual
         self.seq
             .into_par_iter()
-            .enumerate()
             .zip(self.qual.into_par_iter())
-            .for_each(|((i, seq), qual)| {
+            .zip(self.order.into_par_iter())
+            .enumerate()
+            .for_each(|(i, ((seq, qual), order))| {
                 let mut seqs = seq.lock().unwrap();
                 let mut quals = qual.lock().unwrap();
+                let mut orders = order.lock().unwrap();
                 let debug = i % 100 == 0 && false;
                 let start_time_everything = std::time::Instant::now();
 
                 assert!(seqs.len() == quals.len());
+                assert!(seqs.len() == orders.len());
                 let preprocess_time = std::time::Instant::now();
 
                 let max_len = seqs.iter().map(|x| x.len()).max().unwrap_or(0).min(self.window_overlap_len + self.bp_len);
 
                 if seqs.len() <= 3 {
-                    seqs.retain(|y| y.len() > max_len * 4 / 5);
-                    quals.retain(|y| y.len() > max_len * 4 / 5);
+                    let keep = seqs
+                        .iter()
+                        .map(|seq| seq.len() > max_len * 4 / 5)
+                        .collect::<Vec<_>>();
+                    let mut item_i = 0;
+                    seqs.retain(|_| {
+                        let retain = keep[item_i];
+                        item_i += 1;
+                        retain
+                    });
+                    item_i = 0;
+                    quals.retain(|_| {
+                        let retain = keep[item_i];
+                        item_i += 1;
+                        retain
+                    });
+                    item_i = 0;
+                    orders.retain(|_| {
+                        let retain = keep[item_i];
+                        item_i += 1;
+                        retain
+                    });
                 }
 
                 //log::trace!("Processing block {} of {}: {:?}",i, self.contig_name, seqs.iter().map(|x| x.len()).collect::<Vec<_>>());
 
-                let mut qual_map = FxHashMap::default();
+                let mut ranked_indices = Vec::with_capacity(quals.len());
                 let mut length_dist = vec![];
                 for (i, qual) in quals.iter().enumerate() {
                     let mean_qual = estimate_sequence_identity(Some(&qual[0..qual.len()-1])).unwrap_or(0.0);
@@ -98,56 +141,59 @@ impl PoaConsensusBuilder {
 
                     //let mean_qual = qual.iter().map(|x| (*x - 33)as f64).sum::<f64>() / qual.len() as f64;
                     length_dist.push(qual.len());
-                    //qual_map.insert(i, -(qual.len() as i32) * mean_qual);
-                    qual_map.insert(i, (mean_qual) as i32);
+                    ranked_indices.push((i, mean_qual as i32));
                 }
                 length_dist.sort();
                 let median_length_dist;
                 let twenty_five_length;
                 let seventy_five_length;
-                if qual_map.len() == 0{
+                if ranked_indices.is_empty() {
                     median_length_dist = self.window_overlap_len + self.bp_len;
                     twenty_five_length = self.window_overlap_len + self.bp_len;
                     seventy_five_length = self.window_overlap_len + self.bp_len;
-                } 
-                else{
+                } else {
                     median_length_dist = length_dist[length_dist.len() / 2];
                     twenty_five_length = length_dist[length_dist.len() / 4];
                     seventy_five_length = length_dist[length_dist.len() * 3 / 4];
                 }
-                log::trace!("Median length distribution: {} ({}-{}) with {} seqs at block {}", median_length_dist, twenty_five_length, seventy_five_length, qual_map.len(), i);
+                log::trace!("Median length distribution: {} ({}-{}) with {} seqs at block {}", median_length_dist, twenty_five_length, seventy_five_length, ranked_indices.len(), i);
 
-                for (i, mean_qual) in qual_map.iter_mut() {
+                for (i, mean_qual) in ranked_indices.iter_mut() {
                     //De-prioritize reads that are very different in length from the median
                     let length_penalty = (seventy_five_length as i32 - quals[*i].len() as i32).abs();
                     *mean_qual -= length_penalty;
                 }
 
-                //Sort seqs and quals by the qual_map
-                let mut sorted_indices = qual_map.into_iter().collect::<Vec<_>>();
-                sorted_indices.sort_by_key(|x| -x.1);
-                let mut sorted_indices = sorted_indices.into_iter().map(|x| x.0).collect::<Vec<_>>();
-                if seqs.len() > 20{
-                    let trim = sorted_indices.len()  / 20;
-                    if sorted_indices.len() > 10{
-                        sorted_indices = sorted_indices[..sorted_indices.len() - trim].to_vec();
-                    }
-                    else{
-                        log::debug!("Many low quality sequences ({}) for block {} of contig {}, proceeding with available sequences", seqs.len() - sorted_indices.len(), i, self.contig_name);
+                // Use the stable mapping rank to break equal-score ties. Sequence and
+                // quality bytes make the result deterministic even if duplicate mapping
+                // records have identical keys. No sequence data is copied here.
+                ranked_indices.sort_by(|(index_a, score_a), (index_b, score_b)| {
+                    score_b
+                        .cmp(score_a)
+                        .then_with(|| orders[*index_a].cmp(&orders[*index_b]))
+                        .then_with(|| seqs[*index_a].cmp(&seqs[*index_b]))
+                        .then_with(|| quals[*index_a].cmp(&quals[*index_b]))
+                });
+                if seqs.len() > 20 {
+                    let trim = ranked_indices.len() / 20;
+                    if ranked_indices.len() > 10 {
+                        ranked_indices.truncate(ranked_indices.len() - trim);
+                    } else {
+                        log::debug!("Many low quality sequences ({}) for block {} of contig {}, proceeding with available sequences", seqs.len() - ranked_indices.len(), i, self.contig_name);
                     }
                 }
 
-                let mut seqs = sorted_indices
+                // Truncate the index list before moving sequences, avoiding temporary
+                // ownership of candidates that will immediately be discarded.
+                ranked_indices.truncate(MAX_OL_POLISHING);
+                let seqs = ranked_indices
                     .iter()
-                    .map(|&i| std::mem::take(&mut seqs[i]))
+                    .map(|&(i, _)| std::mem::take(&mut seqs[i]))
                     .collect::<Vec<_>>();
-                let mut quals = sorted_indices
+                let quals = ranked_indices
                     .iter()
-                    .map(|&i| std::mem::take(&mut quals[i]))
+                    .map(|&(i, _)| std::mem::take(&mut quals[i]))
                     .collect::<Vec<_>>();
-                
-                seqs.truncate(MAX_OL_POLISHING);
-                quals.truncate(MAX_OL_POLISHING);
 
                 //Write seqs and quals to consensus_latest.txt for debugging
                 // let writer = &mut writer.lock().unwrap();
@@ -419,6 +465,7 @@ impl PoaConsensusBuilder {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
+            order: Vec::new(),
             breakpoints: Vec::new(),
             contig_name,
             genome_length,
@@ -434,6 +481,7 @@ impl PoaConsensusBuilder {
         PoaConsensusBuilder {
             seq: Vec::new(),
             qual: Vec::new(),
+            order: Vec::new(),
             breakpoints: Vec::new(),
             contig_name: "test".to_string(),
             genome_length,
@@ -459,6 +507,9 @@ impl PoaConsensusBuilder {
             .map(|_| Mutex::new(vec![]))
             .collect();
         self.qual = (0..self.breakpoints.len())
+            .map(|_| Mutex::new(vec![]))
+            .collect();
+        self.order = (0..self.breakpoints.len())
             .map(|_| Mutex::new(vec![]))
             .collect();
     }
@@ -514,14 +565,17 @@ impl PoaConsensusBuilder {
         bp_i: usize,
         current_position_q: usize,
         breakpoint_q: usize,
+        mapping_order: u32,
     ) {
         current_block_string.push(0);
         current_block_qual.push(0);
         {
             let mut seq_lock = self.seq[bp_i].lock().unwrap();
             let mut qual_lock = self.qual[bp_i].lock().unwrap();
+            let mut order_lock = self.order[bp_i].lock().unwrap();
             seq_lock.push(std::mem::take(current_block_string));
             qual_lock.push(std::mem::take(current_block_qual));
+            order_lock.push(mapping_order);
         }
         current_block_string.extend(&seq[breakpoint_q..current_position_q]);
         current_block_qual.extend(&qual[breakpoint_q..current_position_q]);
@@ -534,6 +588,18 @@ impl PoaConsensusBuilder {
         cigar: &OpLenVec,
         align_start_r: usize,
         align_start_q: usize,
+    ) {
+        self.add_seq_with_order(seq, qual, cigar, align_start_r, align_start_q, 0);
+    }
+
+    fn add_seq_with_order(
+        &self,
+        seq: Vec<u8>,
+        qual: Vec<u8>,
+        cigar: &OpLenVec,
+        align_start_r: usize,
+        align_start_q: usize,
+        mapping_order: u32,
     ) {
         //Process CIGAR, store the aligned strings fore very breakpoint block
         let start_bp_i = self.breakpoints.iter().position(|&x| x > align_start_r);
@@ -578,6 +644,7 @@ impl PoaConsensusBuilder {
                                 bp_i - 1,
                                 current_position_q,
                                 breakpoint_q,
+                                mapping_order,
                             );
                             window_breakpoint = breakpoint + self.window_overlap_len;
                             past_breakpoint = false;
@@ -613,6 +680,7 @@ impl PoaConsensusBuilder {
                                 bp_i - 1,
                                 current_position_q,
                                 breakpoint_q,
+                                mapping_order,
                             );
                             window_breakpoint = breakpoint + self.window_overlap_len;
                             past_breakpoint = false;
@@ -633,75 +701,114 @@ impl PoaConsensusBuilder {
                 last_bp_i,
                 current_position_q,
                 current_position_q,
+                mapping_order,
             );
         }
     }
 
     pub fn process_mapping_boundaries(
         &mut self,
-        mapping_boundaries: &[&Interval<u32, SmallTwinOl>],
+        mapping_boundaries: &mut [&Interval<u32, SmallTwinOl>],
         twin_reads: &[TwinRead],
     ) {
-        mapping_boundaries.par_iter().for_each(|interval| {
-            let ol = &interval.val;
-            let ar = &ol.alignment_result.as_ref().unwrap();
+        // Sort the existing reference slice in place, so parallel insertion order can
+        // be recovered without cloning alignments, sequences, or CIGARs.
+        mapping_boundaries.sort_unstable_by(|a, b| {
+            let a_ol = &a.val;
+            let b_ol = &b.val;
+            let a_ar = a_ol.alignment_result.as_ref().unwrap();
+            let b_ar = b_ol.alignment_result.as_ref().unwrap();
 
-            let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
-            let query_seq_u8: Vec<u8>;
+            (
+                a.start,
+                a.stop,
+                a_ol.query_id,
+                a_ar.r_start,
+                a_ar.r_end,
+                a_ar.q_start,
+                a_ar.q_end,
+                a_ol.reverse,
+            )
+                .cmp(&(
+                    b.start,
+                    b.stop,
+                    b_ol.query_id,
+                    b_ar.r_start,
+                    b_ar.r_end,
+                    b_ar.q_start,
+                    b_ar.q_end,
+                    b_ol.reverse,
+                ))
+                .then_with(|| a_ol.snpmer_identity.total_cmp(&b_ol.snpmer_identity))
+                .then_with(|| compare_cigars(&a_ar.cigar, &b_ar.cigar))
+        });
 
-            if ol.reverse {
-                query_seq_u8 = query_seq
-                    .to_revcomp()
-                    .iter()
-                    .map(|x| x.to_char().to_ascii_uppercase() as u8)
-                    .collect();
-            } else {
-                query_seq_u8 = query_seq
-                    .iter()
-                    .map(|x| x.to_char().to_ascii_uppercase() as u8)
-                    .collect();
-            }
+        mapping_boundaries
+            .par_iter()
+            .enumerate()
+            .for_each(|(mapping_order, interval)| {
+                let ol = &interval.val;
+                let ar = &ol.alignment_result.as_ref().unwrap();
 
-            let query_quals_opt = &twin_reads[ol.query_id as usize].qual_seq;
-            //query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
-            let mut query_quals_u8: Vec<u8>;
-            if let Some(query_quals) = query_quals_opt {
-                let query_quals_u8_binned: Vec<u8>;
+                let query_seq = &twin_reads[ol.query_id as usize].dna_seq;
+                let query_seq_u8: Vec<u8>;
+
                 if ol.reverse {
-                    query_quals_u8_binned = query_quals
+                    query_seq_u8 = query_seq
                         .to_revcomp()
                         .iter()
-                        .map(|x| (x as u8) * 3 + 33)
+                        .map(|x| x.to_char().to_ascii_uppercase() as u8)
                         .collect();
                 } else {
-                    query_quals_u8_binned =
-                        query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
+                    query_seq_u8 = query_seq
+                        .iter()
+                        .map(|x| x.to_char().to_ascii_uppercase() as u8)
+                        .collect();
                 }
 
-                let bin_size = QUALITY_SEQ_BIN;
-                query_quals_u8 = query_quals_u8_binned
-                    .iter()
-                    .flat_map(|x| vec![*x; bin_size])
-                    .collect::<Vec<u8>>();
+                let query_quals_opt = &twin_reads[ol.query_id as usize].qual_seq;
+                //query_quals = &twin_reads[ol.query_id as usize].qual_seq.as_ref().unwrap();
+                let mut query_quals_u8: Vec<u8>;
+                if let Some(query_quals) = query_quals_opt {
+                    let query_quals_u8_binned: Vec<u8>;
+                    if ol.reverse {
+                        query_quals_u8_binned = query_quals
+                            .to_revcomp()
+                            .iter()
+                            .map(|x| (x as u8) * 3 + 33)
+                            .collect();
+                    } else {
+                        query_quals_u8_binned =
+                            query_quals.iter().map(|x| (x as u8) * 3 + 33).collect();
+                    }
 
-                if query_quals_u8.len() > query_seq.len() {
-                    query_quals_u8.truncate(query_seq.len());
-                } else if query_quals_u8.len() < query_seq.len() {
-                    let last_qual = query_quals_u8[query_quals_u8.len() - 1];
-                    query_quals_u8.extend(vec![last_qual; query_seq.len() - query_quals_u8.len()]);
+                    let bin_size = QUALITY_SEQ_BIN;
+                    query_quals_u8 = query_quals_u8_binned
+                        .iter()
+                        .flat_map(|x| vec![*x; bin_size])
+                        .collect::<Vec<u8>>();
+
+                    if query_quals_u8.len() > query_seq.len() {
+                        query_quals_u8.truncate(query_seq.len());
+                    } else if query_quals_u8.len() < query_seq.len() {
+                        let last_qual = query_quals_u8[query_quals_u8.len() - 1];
+                        query_quals_u8
+                            .extend(vec![last_qual; query_seq.len() - query_quals_u8.len()]);
+                    }
+                } else {
+                    query_quals_u8 = vec![70; query_seq_u8.len()];
                 }
-            } else {
-                query_quals_u8 = vec![70; query_seq_u8.len()];
-            }
 
-            self.add_seq(
-                query_seq_u8,
-                query_quals_u8,
-                &ar.cigar,
-                ar.r_start,
-                ar.q_start,
-            );
-        })
+                self.add_seq_with_order(
+                    query_seq_u8,
+                    query_quals_u8,
+                    &ar.cigar,
+                    ar.r_start,
+                    ar.q_start,
+                    u32::try_from(mapping_order)
+                        .expect("too many polishing mappings for one contig"),
+                );
+            })
     }
 }
 

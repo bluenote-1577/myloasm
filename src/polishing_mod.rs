@@ -58,7 +58,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
         {
             return;
         }
-        let mapping_boundaries = contig
+        let mut mapping_boundaries = contig
             .mapping_info
             .max_alignment_boundaries
             .as_ref()
@@ -66,7 +66,7 @@ pub fn polish_assembly(final_graph: UnitigGraph, twin_reads: Vec<TwinRead>, args
             .iter()
             .collect::<Vec<&Interval<u32, SmallTwinOl>>>();
 
-        poa_cons_builder.process_mapping_boundaries(&mapping_boundaries, &twin_reads);
+        poa_cons_builder.process_mapping_boundaries(&mut mapping_boundaries, &twin_reads);
         let (
             _blocks_filled,
             _total_seqs,

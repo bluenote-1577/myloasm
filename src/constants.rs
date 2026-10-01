@@ -26,6 +26,24 @@ pub const ID_THRESHOLD_ITERS: usize = 3;
 pub const IDENTITY_THRESHOLDS: [f64; ID_THRESHOLD_ITERS] = [0.99, 0.9975, 1.0];
 //pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.0, 0.0, 1.0];
 pub const COV_MULTI_WEIGHTS: [f64; ID_THRESHOLD_ITERS] = [0.333, 0.333, 0.333];
+/// Minimum spacing kept between rungs of the identity ladder (see `identity_ladder`).
+pub const MIN_LADDER_GAP: f64 = 0.0005;
+
+/// The DP1/DP2/DP3 identity ladder, with the strict (top) rung taken from
+/// `--snpmer-threshold-strict` instead of being pinned at 100%. `strict_frac` is a
+/// fraction (0.998), not a percentage.
+///
+/// With the default `--snpmer-threshold-strict 100` this returns `IDENTITY_THRESHOLDS`
+/// unchanged. Lowering it also pulls down any rung that would otherwise sit above the new
+/// top, because `sufficient_gap` in `map_processing` assumes the ladder is increasing.
+pub fn identity_ladder(strict_frac: f64) -> [f64; ID_THRESHOLD_ITERS] {
+    let mut ladder = IDENTITY_THRESHOLDS;
+    ladder[ID_THRESHOLD_ITERS - 1] = strict_frac;
+    for i in (0..ID_THRESHOLD_ITERS - 1).rev() {
+        ladder[i] = ladder[i].min(ladder[i + 1] - MIN_LADDER_GAP);
+    }
+    ladder
+}
 pub const MIN_COV_READ: usize = 5;
 pub const MIN_COV_READ_SMALL: usize = 3;
 pub const SPECIFICITY_THRESHOLD: usize = 20;
@@ -88,3 +106,24 @@ pub const CLI_HEADINGS: [&str; 5] = [
     "Overlap Parameters (advanced)",
     "Graph Parameters (advanced)",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identity_ladder_default_is_unchanged() {
+        // The default --snpmer-threshold-strict is 100, which must leave the ladder
+        // (and therefore DP1/DP2/DP3 and every downstream threshold) exactly as it was.
+        assert_eq!(identity_ladder(1.0), IDENTITY_THRESHOLDS);
+    }
+
+    #[test]
+    fn identity_ladder_stays_increasing() {
+        for strict in [1.0, 0.998, 0.997, 0.995, 0.99] {
+            let ladder = identity_ladder(strict);
+            assert_eq!(ladder[ID_THRESHOLD_ITERS - 1], strict);
+            assert!(ladder.windows(2).all(|w| w[0] < w[1]), "{:?}", ladder);
+        }
+    }
+}

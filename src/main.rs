@@ -150,12 +150,16 @@ fn main() {
                 true,
                 &args,
             );
-            small_genomes::two_cycle_retrieval(
-                &mut unitig_graph,
-                &twin_reads,
-                &args,
-                &heavy_cleaning_temp_dir,
-            );
+            if !args.disable_two_cycle_retrieval {
+                small_genomes::two_cycle_retrieval(
+                    &mut unitig_graph,
+                    &twin_reads,
+                    &args,
+                    &heavy_cleaning_temp_dir,
+                );
+            } else {
+                log::info!("Two-cycle retrieval disabled by command-line option.");
+            }
         });
         let out_file = graph_dir.join("small_and_tip_bubble-3.gfa");
         unitig_graph.to_gfa(out_file, true, true, &twin_reads, &args);

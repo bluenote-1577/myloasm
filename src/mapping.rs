@@ -1625,8 +1625,13 @@ pub fn map_reads_to_outer_reads_efficient(
 
                 if breakpoints.is_empty() || !break_chimeras {
                     // No breakpoints - compute coverage for entire read if long enough
-                    let cov_stats =
-                        compute_coverage_stats(outer_read, &max_intervals, 0, outer_read_length);
+                    let cov_stats = compute_coverage_stats(
+                        outer_read,
+                        &max_intervals,
+                        0,
+                        outer_read_length,
+                        args.snpmer_threshold_strict / 100.,
+                    );
                     coverage_stats.push(cov_stats);
                 } else {
                     // Compute coverage for each segment that's >= MIN_READ_LENGTH
@@ -1639,6 +1644,7 @@ pub fn map_reads_to_outer_reads_efficient(
                                 &max_intervals,
                                 last_break,
                                 bp_start,
+                                args.snpmer_threshold_strict / 100.,
                             );
                             coverage_stats.push(cov_stats);
                         }

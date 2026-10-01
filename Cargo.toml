@@ -1,6 +1,6 @@
 [package]
 name = "myloasm"
-version = "0.7.0-dev"
+version = "0.7.1-dev"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 #build = "build.rs"

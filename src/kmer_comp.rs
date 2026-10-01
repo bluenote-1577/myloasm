@@ -37,11 +37,80 @@ pub fn homopolymer_compression(seq: Vec<u8>) -> Vec<u8> {
     return compressed_seq;
 }
 
+type TwinReadInput = (Vec<u8>, Option<Vec<u8>>, String);
+
+fn spawn_twin_read_workers(
+    rx: spmc::Receiver<TwinReadInput>,
+    num_threads: usize,
+    k: usize,
+    c: usize,
+    snpmer_set: Arc<FxHashSet<Kmer64>>,
+    solid_kmers: Arc<HashSet<Kmer48>>,
+    high_freq_kmers: Arc<HashSet<Kmer48>>,
+    twin_reads: Arc<Mutex<Vec<TwinRead>>>,
+    num_reads_removed_repetitive: Arc<Mutex<usize>>,
+) -> Vec<thread::JoinHandle<()>> {
+    let mut handles = Vec::with_capacity(num_threads);
+    for _ in 0..num_threads {
+        let rx = rx.clone();
+        let set = Arc::clone(&snpmer_set);
+        let solid = Arc::clone(&solid_kmers);
+        let highfreq = Arc::clone(&high_freq_kmers);
+        let twrv = Arc::clone(&twin_reads);
+        let num_repetitive = Arc::clone(&num_reads_removed_repetitive);
+        handles.push(thread::spawn(move || {
+            while let Ok((seq, qualities, id)) = rx.recv() {
+                let seqlen = seq.len();
+                let twin_read = seeding::get_twin_read_syncmer(seq, qualities, k, c, &set, id);
+                if let Some(mut twin_read) = twin_read {
+                    let mut kmer_counter_map = FxHashMap::default();
+                    for mini in twin_read.minimizer_kmers().iter() {
+                        *kmer_counter_map.entry(*mini).or_insert(0) += 1;
+                    }
+
+                    let mut solid_mini_indices = FxHashSet::default();
+                    for (i, mini) in twin_read.minimizer_kmers().iter().enumerate() {
+                        if kmer_counter_map[mini] > MAX_KMER_COUNT_IN_READ {
+                            continue;
+                        }
+                        if (USE_SOLID_KMERS && solid.contains(mini))
+                            || (!USE_SOLID_KMERS && !highfreq.contains(mini))
+                        {
+                            solid_mini_indices.insert(i);
+                        }
+                    }
+
+                    // < 5% of the k-mers are solid; remove. This is usually due to
+                    // highly repetitive sequence.
+                    if solid_mini_indices.len() < seqlen / c / 20 {
+                        *num_repetitive.lock().unwrap() += 1;
+                        continue;
+                    }
+
+                    let mut solid_snpmer_indices = FxHashSet::default();
+                    for (i, snpmer) in twin_read.snpmer_kmers().iter().enumerate() {
+                        if (USE_SOLID_KMERS && solid.contains(snpmer))
+                            || (!USE_SOLID_KMERS && !highfreq.contains(snpmer))
+                        {
+                            solid_snpmer_indices.insert(i);
+                        }
+                    }
+
+                    twin_read.retain_mini_indices(solid_mini_indices);
+                    twin_read.retain_snpmer_indices(solid_snpmer_indices);
+                    twrv.lock().unwrap().push(twin_read);
+                }
+            }
+        }));
+    }
+    handles
+}
+
 pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Vec<TwinRead> {
     let start = std::time::Instant::now();
 
     let fastq_files = &kmer_info.read_files;
-    let mut snpmer_set = HashSet::default();
+    let mut snpmer_set = FxHashSet::default();
     for snpmer_i in kmer_info.snpmer_info.iter() {
         let k = args.kmer_size as usize;
         let snpmer1 = snpmer_i.split_kmer as u64 | ((snpmer_i.mid_bases[0] as u64) << (k - 1));
@@ -58,165 +127,102 @@ pub fn twin_reads_from_snpmers(kmer_info: &mut KmerGlobalInfo, args: &Cli) -> Ve
     let high_freq_kmers_take = std::mem::take(&mut kmer_info.high_freq_kmers);
     let arc_solid = Arc::new(solid_kmers_take);
     let arc_high_freq = Arc::new(high_freq_kmers_take);
-    let arc_number_seen_reads = Arc::new(Mutex::new(0usize));
     let num_reads_removed_repetitive = Arc::new(Mutex::new(0));
 
-    for fastq_file in files_owned {
-        let (mut tx, rx) = spmc::channel();
-        thread::spawn(move || {
+    // The input producer pauses after a deterministic prefix. All prefix work is
+    // drained before the Huffman tables are built and atomically published; only
+    // then may later reads be encoded. This is a real phase boundary rather than a
+    // worker-scheduling-dependent counter.
+    let (prefix_tx, prefix_rx) = spmc::channel::<TwinReadInput>();
+    let (mut suffix_tx, suffix_rx) = spmc::channel::<TwinReadInput>();
+    let (phase_tx, phase_rx) = std::sync::mpsc::channel::<bool>();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel::<()>();
+    let input_handle = thread::spawn(move || {
+        let mut prefix_tx = Some(prefix_tx);
+        let mut prefix_count = 0usize;
+        let mut in_prefix = true;
+
+        for fastq_file in files_owned {
             let mut reader = needletail::parse_fastx_file(fastq_file).expect("valid path");
             while let Some(record) = reader.next() {
                 let rec = record.expect("Error reading record");
-                let seq;
-                seq = rec.seq().to_vec();
+                let seq = rec.seq().to_vec();
                 if seq.len() < MIN_READ_LENGTH {
                     continue;
                 }
                 let id = String::from_utf8_lossy(rec.id()).to_string();
-                if let Some(qualities) = rec.qual() {
-                    tx.send((seq, Some(qualities.to_vec()), id)).unwrap();
+                let qualities = rec.qual().map(|qualities| qualities.to_vec());
+                let message = (seq, qualities, id);
+
+                if in_prefix {
+                    prefix_tx.as_mut().unwrap().send(message).unwrap();
+                    prefix_count += 1;
+                    if prefix_count == HUFFMAN_SAMPLE_MAX {
+                        drop(prefix_tx.take());
+                        phase_tx.send(true).unwrap();
+                        resume_rx.recv().unwrap();
+                        in_prefix = false;
+                    }
                 } else {
-                    tx.send((seq, None, id)).unwrap();
+                    suffix_tx.send(message).unwrap();
                 }
             }
-        });
-
-        let mut handles = Vec::new();
-        let k = args.kmer_size;
-        let c = args.c;
-        for _ in 0..args.threads {
-            let rx = rx.clone();
-            let set = Arc::clone(&snpmer_set);
-            let solid = Arc::clone(&arc_solid);
-            let highfreq = Arc::clone(&arc_high_freq);
-            let twrv = Arc::clone(&twin_read_vec);
-            let num_repetitive = Arc::clone(&num_reads_removed_repetitive);
-            let num_seen_reads = Arc::clone(&arc_number_seen_reads);
-            handles.push(thread::spawn(move || {
-                loop {
-                    match rx.recv() {
-                        Ok(msg) => {
-                            let seq = msg.0;
-                            let seqlen = seq.len();
-                            let qualities = msg.1;
-                            let id = msg.2;
-
-                            // This branch is done before any operations on twin read is done.
-                            // This is crucial because building huffman changes global state, which
-                            // invalidates intermediate twin reads.
-                            {
-                                let mut nsr = num_seen_reads.lock().unwrap();
-                                *nsr += 1;
-                                if *nsr == HUFFMAN_SAMPLE_MAX {
-                                    log::info!(
-                                        "Reached {} reads, building Huffman coding...",
-                                        HUFFMAN_SAMPLE_MAX
-                                    );
-                                    if huffman_initialized() == false {
-                                        let mut vec = twrv.lock().unwrap();
-                                        log::info!(
-                                            "Building Huffman coding from first {} reads...",
-                                            vec.len()
-                                        );
-                                        build_and_set_huffman_coding(&vec, vec.len());
-                                        reencode_reads_huffman(&mut vec);
-                                        log::info!(
-                                            "Huffman coding built and {} reads re-encoded.",
-                                            vec.len()
-                                        );
-                                    }
-                                }
-                            }
-                            let twin_read = seeding::get_twin_read_syncmer(
-                                seq,
-                                qualities,
-                                k,
-                                c,
-                                set.as_ref(),
-                                id,
-                            );
-                            if twin_read.is_some() {
-                                let mut kmer_counter_map = FxHashMap::default();
-                                for mini in twin_read.as_ref().unwrap().minimizer_kmers().iter() {
-                                    *kmer_counter_map.entry(*mini).or_insert(0) += 1;
-                                }
-
-                                let mut solid_mini_indices = FxHashSet::default();
-                                for (i, mini) in twin_read
-                                    .as_ref()
-                                    .unwrap()
-                                    .minimizer_kmers()
-                                    .iter()
-                                    .enumerate()
-                                {
-                                    if kmer_counter_map[mini] > MAX_KMER_COUNT_IN_READ {
-                                        continue;
-                                    }
-                                    if USE_SOLID_KMERS {
-                                        if solid.contains(&mini) {
-                                            solid_mini_indices.insert(i);
-                                        }
-                                    } else {
-                                        if !highfreq.contains(&mini) {
-                                            solid_mini_indices.insert(i);
-                                        }
-                                    }
-                                }
-                                //< 5 % of the k-mers are solid; remove. This is usually due to highly repetitive stuff.
-                                if solid_mini_indices.len() < seqlen / c / 20 {
-                                    *num_repetitive.lock().unwrap() += 1;
-                                    continue;
-                                }
-
-                                let mut solid_snpmer_indices = FxHashSet::default();
-                                for (i, snpmer) in twin_read
-                                    .as_ref()
-                                    .unwrap()
-                                    .snpmer_kmers()
-                                    .iter()
-                                    .enumerate()
-                                {
-                                    if USE_SOLID_KMERS {
-                                        if solid.contains(&snpmer) {
-                                            solid_snpmer_indices.insert(i);
-                                        }
-                                    } else {
-                                        if !highfreq.contains(&snpmer) {
-                                            solid_snpmer_indices.insert(i);
-                                        }
-                                    }
-                                }
-
-                                let mut twin_read = twin_read.unwrap();
-                                twin_read.retain_mini_indices(solid_mini_indices);
-                                twin_read.retain_snpmer_indices(solid_snpmer_indices);
-
-                                let mut vec = twrv.lock().unwrap();
-                                vec.push(twin_read);
-                            }
-                        }
-                        Err(_) => {
-                            // When sender is dropped, recv will return an Err, and we can break the loop
-                            break;
-                        }
-                    }
-                }
-            }));
         }
 
-        for handle in handles {
-            handle.join().unwrap();
+        if in_prefix {
+            drop(prefix_tx.take());
+            phase_tx.send(false).unwrap();
         }
+    });
+
+    let prefix_handles = spawn_twin_read_workers(
+        prefix_rx,
+        args.threads,
+        args.kmer_size,
+        args.c,
+        Arc::clone(&snpmer_set),
+        Arc::clone(&arc_solid),
+        Arc::clone(&arc_high_freq),
+        Arc::clone(&twin_read_vec),
+        Arc::clone(&num_reads_removed_repetitive),
+    );
+    let reached_sample_limit = phase_rx.recv().unwrap();
+    for handle in prefix_handles {
+        handle.join().unwrap();
     }
 
-    // Fallback: if fewer than 100k reads total, build Huffman now from what we have
     if !huffman_initialized() {
         let mut reads = twin_read_vec.lock().unwrap();
+        if reached_sample_limit {
+            log::info!(
+                "Reached deterministic prefix of {} input reads.",
+                HUFFMAN_SAMPLE_MAX
+            );
+        }
         log::info!("Building Huffman coding from {} reads...", reads.len());
         build_and_set_huffman_coding(&reads, reads.len());
         reencode_reads_huffman(&mut reads);
         log::info!("Huffman coding built and {} reads re-encoded.", reads.len());
     }
+
+    if reached_sample_limit {
+        let suffix_handles = spawn_twin_read_workers(
+            suffix_rx,
+            args.threads,
+            args.kmer_size,
+            args.c,
+            Arc::clone(&snpmer_set),
+            Arc::clone(&arc_solid),
+            Arc::clone(&arc_high_freq),
+            Arc::clone(&twin_read_vec),
+            Arc::clone(&num_reads_removed_repetitive),
+        );
+        resume_tx.send(()).unwrap();
+        for handle in suffix_handles {
+            handle.join().unwrap();
+        }
+    }
+    input_handle.join().unwrap();
 
     kmer_info.solid_kmers = Arc::try_unwrap(arc_solid).unwrap();
     kmer_info.high_freq_kmers = Arc::try_unwrap(arc_high_freq).unwrap();

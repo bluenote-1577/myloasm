@@ -590,23 +590,29 @@ pub enum PositionKind {
     Snpmer,
 }
 
-static HUFFMAN_CODING_MINI: OnceLock<Coding<u8, BitsPerFragment>> = OnceLock::new();
-static HUFFMAN_CODES_MINI: OnceLock<[Code; 256]> = OnceLock::new();
-static HUFFMAN_CODING_SNP: OnceLock<Coding<u8, BitsPerFragment>> = OnceLock::new();
-static HUFFMAN_CODES_SNP: OnceLock<[Code; 256]> = OnceLock::new();
+struct HuffmanTables {
+    coding_mini: Coding<u8, BitsPerFragment>,
+    codes_mini: [Code; 256],
+    coding_snp: Coding<u8, BitsPerFragment>,
+    codes_snp: [Code; 256],
+}
+
+// Publish all four related tables together. Readers must never observe a minimizer
+// table without the matching SNPmer table (or a coding without its encoder table).
+static HUFFMAN_TABLES: OnceLock<HuffmanTables> = OnceLock::new();
 
 fn huffman_coding_for(kind: PositionKind) -> Option<&'static Coding<u8, BitsPerFragment>> {
-    match kind {
-        PositionKind::Minimizer => HUFFMAN_CODING_MINI.get(),
-        PositionKind::Snpmer => HUFFMAN_CODING_SNP.get(),
-    }
+    HUFFMAN_TABLES.get().map(|tables| match kind {
+        PositionKind::Minimizer => &tables.coding_mini,
+        PositionKind::Snpmer => &tables.coding_snp,
+    })
 }
 
 fn huffman_codes_for(kind: PositionKind) -> Option<&'static [Code; 256]> {
-    match kind {
-        PositionKind::Minimizer => HUFFMAN_CODES_MINI.get(),
-        PositionKind::Snpmer => HUFFMAN_CODES_SNP.get(),
-    }
+    HUFFMAN_TABLES.get().map(|tables| match kind {
+        PositionKind::Minimizer => &tables.codes_mini,
+        PositionKind::Snpmer => &tables.codes_snp,
+    })
 }
 
 /// Build separate Huffman codings for minimizer and snpmer delta bytes,
@@ -615,47 +621,40 @@ fn huffman_codes_for(kind: PositionKind) -> Option<&'static [Code; 256]> {
 /// All 256 byte values are given a minimum frequency of 1 so that
 /// unseen bytes still get valid (long) codewords instead of zero-length codes.
 pub fn build_and_set_huffman_coding(reads: &[TwinRead], max_reads: usize) {
-    use minimum_redundancy::Frequencies;
-    use std::collections::HashMap;
-
     let sample = &reads[..max_reads.min(reads.len())];
 
-    // Build minimizer Huffman coding
-    let mut mini_freq = HashMap::<u8, usize>::new();
-    for b in 0..=255u8 {
-        mini_freq.insert(b, 1);
+    // Arrays give equal-frequency bytes a deterministic initial ordering. Seed every
+    // value so bytes absent from the sample still have a valid codeword.
+    let mut mini_freq = [1usize; 256];
+    let mut snp_freq = [1usize; 256];
+    for read in sample {
+        for &byte in &read.minimizer_positions_enc {
+            mini_freq[byte as usize] += 1;
+        }
+        for &byte in &read.snpmer_positions_enc {
+            snp_freq[byte as usize] += 1;
+        }
     }
-    mini_freq.add_occurences_of(
-        sample
-            .iter()
-            .flat_map(|r| r.minimizer_positions_enc.iter().copied()),
-    );
-    let coding_mini = Coding::from_frequencies(BitsPerFragment(1), mini_freq);
-    HUFFMAN_CODES_MINI
-        .set(coding_mini.codes_for_values_array())
-        .ok();
-    HUFFMAN_CODING_MINI.set(coding_mini).ok();
 
-    // Build snpmer Huffman coding
-    let mut snp_freq = HashMap::<u8, usize>::new();
-    for b in 0..=255u8 {
-        snp_freq.insert(b, 1);
-    }
-    snp_freq.add_occurences_of(
-        sample
-            .iter()
-            .flat_map(|r| r.snpmer_positions_enc.iter().copied()),
-    );
+    let coding_mini = Coding::from_frequencies(BitsPerFragment(1), mini_freq);
+    let codes_mini = coding_mini.codes_for_values_array();
     let coding_snp = Coding::from_frequencies(BitsPerFragment(1), snp_freq);
-    HUFFMAN_CODES_SNP
-        .set(coding_snp.codes_for_values_array())
-        .ok();
-    HUFFMAN_CODING_SNP.set(coding_snp).ok();
+    let codes_snp = coding_snp.codes_for_values_array();
+
+    let tables = HuffmanTables {
+        coding_mini,
+        codes_mini,
+        coding_snp,
+        codes_snp,
+    };
+    if HUFFMAN_TABLES.set(tables).is_err() {
+        panic!("Huffman coding was initialized more than once");
+    }
 }
 
 /// Returns true if Huffman coding has been initialized.
 pub fn huffman_initialized() -> bool {
-    HUFFMAN_CODING_MINI.get().is_some() && HUFFMAN_CODING_SNP.get().is_some()
+    HUFFMAN_TABLES.get().is_some()
 }
 
 /// Encode positions: uses Huffman if initialized, otherwise varint delta.
@@ -665,6 +664,28 @@ pub fn encode_positions(positions: &[u32], kind: PositionKind) -> Vec<u8> {
         encode_positions_huffman(positions, codes)
     } else {
         encode_positions_delta(positions)
+    }
+}
+
+/// Encode both position streams from one snapshot of the global Huffman state.
+/// The returned flag always describes both encoded vectors.
+#[inline]
+pub fn encode_position_pair(
+    minimizer_positions: &[u32],
+    snpmer_positions: &[u32],
+) -> (Vec<u8>, Vec<u8>, bool) {
+    if let Some(tables) = HUFFMAN_TABLES.get() {
+        (
+            encode_positions_huffman(minimizer_positions, &tables.codes_mini),
+            encode_positions_huffman(snpmer_positions, &tables.codes_snp),
+            true,
+        )
+    } else {
+        (
+            encode_positions_delta(minimizer_positions),
+            encode_positions_delta(snpmer_positions),
+            false,
+        )
     }
 }
 
@@ -784,10 +805,7 @@ pub fn count_positions_huffman(encoded: &[u8]) -> usize {
 /// Re-encode reads from varint to Huffman encoding and set the flag.
 /// Must be called after build_and_set_huffman_coding.
 pub fn reencode_reads_huffman(reads: &mut [TwinRead]) {
-    let codes_mini = HUFFMAN_CODES_MINI
-        .get()
-        .expect("Huffman coding not initialized");
-    let codes_snp = HUFFMAN_CODES_SNP
+    let tables = HUFFMAN_TABLES
         .get()
         .expect("Huffman coding not initialized");
 
@@ -797,13 +815,13 @@ pub fn reencode_reads_huffman(reads: &mut [TwinRead]) {
         }
         if !read.minimizer_positions_enc.is_empty() {
             let positions = decode_positions_delta(&read.minimizer_positions_enc);
-            let mut enc = encode_positions_huffman(&positions, codes_mini);
+            let mut enc = encode_positions_huffman(&positions, &tables.codes_mini);
             enc.shrink_to_fit();
             read.minimizer_positions_enc = enc;
         }
         if !read.snpmer_positions_enc.is_empty() {
             let positions = decode_positions_delta(&read.snpmer_positions_enc);
-            let mut enc = encode_positions_huffman(&positions, codes_snp);
+            let mut enc = encode_positions_huffman(&positions, &tables.codes_snp);
             enc.shrink_to_fit();
             read.snpmer_positions_enc = enc;
         }
@@ -813,16 +831,17 @@ pub fn reencode_reads_huffman(reads: &mut [TwinRead]) {
 
 /// Save Huffman coding tables to a file. Call after build_and_set_huffman_coding.
 pub fn save_huffman_tables(path: &std::path::Path) -> std::io::Result<()> {
-    let coding_mini = HUFFMAN_CODING_MINI.get().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized")
-    })?;
-    let coding_snp = HUFFMAN_CODING_SNP.get().ok_or_else(|| {
+    let tables = HUFFMAN_TABLES.get().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::Other, "Huffman coding not initialized")
     })?;
 
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
-    coding_mini.write(&mut file, |w, v| w.write_all(&[*v]))?;
-    coding_snp.write(&mut file, |w, v| w.write_all(&[*v]))?;
+    tables
+        .coding_mini
+        .write(&mut file, |w, v| w.write_all(&[*v]))?;
+    tables
+        .coding_snp
+        .write(&mut file, |w, v| w.write_all(&[*v]))?;
     Ok(())
 }
 
@@ -846,14 +865,18 @@ pub fn load_huffman_tables(path: &std::path::Path) -> std::io::Result<bool> {
         Ok(b[0])
     })?;
 
-    HUFFMAN_CODES_MINI
-        .set(coding_mini.codes_for_values_array())
-        .ok();
-    HUFFMAN_CODING_MINI.set(coding_mini).ok();
-    HUFFMAN_CODES_SNP
-        .set(coding_snp.codes_for_values_array())
-        .ok();
-    HUFFMAN_CODING_SNP.set(coding_snp).ok();
+    let tables = HuffmanTables {
+        codes_mini: coding_mini.codes_for_values_array(),
+        codes_snp: coding_snp.codes_for_values_array(),
+        coding_mini,
+        coding_snp,
+    };
+    if HUFFMAN_TABLES.set(tables).is_err() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Huffman coding was initialized more than once",
+        ));
+    }
 
     log::info!("Loaded Huffman coding tables from {:?}", path);
     Ok(true)
@@ -1128,8 +1151,7 @@ impl TwinRead {
 
         filtered_positions.shrink_to_fit();
         if self.huffman_encoded {
-            let codes = HUFFMAN_CODES_MINI
-                .get()
+            let codes = huffman_codes_for(PositionKind::Minimizer)
                 .expect("huffman_encoded but coding not initialized");
             self.minimizer_positions_enc = encode_positions_huffman(&filtered_positions, codes);
         } else {
@@ -1152,8 +1174,7 @@ impl TwinRead {
 
         filtered_positions.shrink_to_fit();
         if self.huffman_encoded {
-            let codes = HUFFMAN_CODES_SNP
-                .get()
+            let codes = huffman_codes_for(PositionKind::Snpmer)
                 .expect("huffman_encoded but coding not initialized");
             self.snpmer_positions_enc = encode_positions_huffman(&filtered_positions, codes);
         } else {
@@ -1192,12 +1213,11 @@ impl TwinRead {
         mini_positions_filtered.shrink_to_fit();
         snp_positions_filtered.shrink_to_fit();
 
-        // shift_and_retain creates a new encoding from scratch for both fields
-        // simultaneously, so it's safe to use auto-dispatch here
-        self.minimizer_positions_enc =
-            encode_positions(&mini_positions_filtered, PositionKind::Minimizer);
-        self.snpmer_positions_enc = encode_positions(&snp_positions_filtered, PositionKind::Snpmer);
-        self.huffman_encoded = huffman_initialized();
+        let (mini_encoded, snp_encoded, huffman_encoded) =
+            encode_position_pair(&mini_positions_filtered, &snp_positions_filtered);
+        self.minimizer_positions_enc = mini_encoded;
+        self.snpmer_positions_enc = snp_encoded;
+        self.huffman_encoded = huffman_encoded;
     }
 }
 

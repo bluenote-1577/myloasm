@@ -24,7 +24,7 @@ pub struct Cli {
     #[arg(long, help_heading = CLI_HEADINGS[0], hide = true)]
     pub nano_r9: bool,
 
-    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy. 
+    /// PacBio HiFi mode -- assumes less chimericism and higher accuracy.
     #[arg(long, help_heading = CLI_HEADINGS[0])]
     pub hifi: bool,
 
@@ -56,10 +56,9 @@ pub struct Cli {
     #[arg(long, default_value = "11", help_heading = CLI_HEADINGS[1], hide = true)]
     pub c: usize,
 
-    /// Compression ratio (1/c k-mers selected). Default is -c 11. 
+    /// Compression ratio (1/c k-mers selected). Default is -c 11.
     #[arg(short, long, default_value = None, help_heading = CLI_HEADINGS[1])]
     pub compression: Option<usize>,
-
 
     /// Use DFS-based back-safety search in graph cleaning (v2). Default is BFS-based (v1).
     #[arg(long, default_value_t = true, help_heading = CLI_HEADINGS[1], hide = true)]
@@ -145,6 +144,10 @@ pub struct Cli {
     #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
     pub no_snpmers: bool,
 
+    /// Disable retrieval of small circular contigs represented by two-node cycles
+    #[arg(long, default_value_t = false, help_heading = CLI_HEADINGS[4], hide = true)]
+    pub disable_two_cycle_retrieval: bool,
+
     /// Batch size of indexing for read-to-read mapping and overlap stage. Higher = faster, but more memory.
     #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3], hide = true)]
     pub read_map_batch_size: usize,
@@ -188,7 +191,6 @@ pub struct Cli {
     /// Base length of tip to remove; this gets multiplied by 5-30x during simplification
     #[arg(long, default_value_t = 20000, help_heading = CLI_HEADINGS[4], hide = true)]
     pub tip_length_cutoff: usize,
-
 
     /// Base length of tip to remove during heavy simplification;
     #[arg(long, default_value_t = 100000, help_heading = CLI_HEADINGS[4], hide = true)]

@@ -881,13 +881,13 @@ pub fn get_overlaps_outer_reads_twin(
                     if r1_contained_r2(&twlap, &read, &read2, true, args.c, args.hifi){
                         twlap_contain = true;
                         possible_containment = true;
-                        snpmer_threshold = read.snpmer_id_threshold.unwrap_or(100.);
+                        snpmer_threshold = read.snpmer_id_threshold.unwrap_or(args.snpmer_threshold_strict);
                     }
                     else if r1_contained_r2(&twlap, &read2, &read, true, args.c, args.hifi){
                         twlap_contain = true;
                         possible_containment = true;
                         smaller_read_index = outer_ref_id as usize;
-                        snpmer_threshold = read2.snpmer_id_threshold.unwrap_or(100.);
+                        snpmer_threshold = read2.snpmer_id_threshold.unwrap_or(args.snpmer_threshold_strict);
                     }
                     if twlap_contain {
                         if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict, twlap.large_indel){

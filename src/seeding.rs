@@ -572,10 +572,11 @@ pub fn get_twin_read_syncmer(
 
     dna_seq.shrink_to_fit();
 
-    let use_huffman = huffman_initialized();
+    let (minimizer_positions_enc, snpmer_positions_enc, use_huffman) =
+        encode_position_pair(&minimizer_positions, &snpmer_positions_final);
     let mut tr = TwinRead {
-        minimizer_positions_enc: encode_positions(&minimizer_positions, PositionKind::Minimizer),
-        snpmer_positions_enc: encode_positions(&snpmer_positions_final, PositionKind::Snpmer),
+        minimizer_positions_enc,
+        snpmer_positions_enc,
         huffman_encoded: use_huffman,
         base_id: first_word(&id),
         id: first_word(&id),

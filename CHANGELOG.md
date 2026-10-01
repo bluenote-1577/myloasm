@@ -1,6 +1,8 @@
 # v0.7.1 (TODO) 
 
 - Fixed an issue for linux-aarch64 compatibility. 
+- Updated how myloasm works when some advanced tuning parameters (--snpmer-error-rate-strict) are used. This is for experimental testing. 
+- Fixing some reproducability issues. 
 
 # v0.7.0 (9-4-2026) - Length-aware overlap pruning, cleaning parameter changes
 
