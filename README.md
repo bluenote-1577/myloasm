@@ -1,4 +1,4 @@
-# myloasm - a  metagenome assembler for modern (noisy) long reads
+# myloasm - a high-resolution metagenome assembler for modern (noisy) long reads
 
 >[!IMPORTANT]
 > Documentation is hosted at https://myloasm-docs.github.io/.
