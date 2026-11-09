@@ -60,6 +60,11 @@ pub const GAPS_LAX_INDEL: block_aligner::scores::Gaps = block_aligner::scores::G
     extend: -1,
 };
 pub const MAX_OL_POLISHING: usize = 75;
+/// A polishing window whose consensus is shorter than this fraction of the reads spanning it
+/// gets a second, semi-global consensus (see `rescue_short_consensus`).
+pub const RESCUE_SHORT_FRAC: f64 = 0.9;
+/// Reads that must span a polishing window before its consensus can be rescued.
+pub const RESCUE_MIN_SPANNING_READS: usize = 3;
 pub const READ_BLOCK_SIZE_FOR_COVERAGE: usize = 50_000;
 pub const OVERLAP_HANG_LENGTH: usize = 350;
 

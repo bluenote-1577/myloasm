@@ -11,6 +11,22 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli) {
     let initial_fasta_path = Path::new(args.output_dir.as_str()).join(polished_fasta);
     assert!(initial_fasta_path.exists());
 
+    // Both skani and needletail panic on an empty FASTA, so handle a 0-contig assembly here:
+    // write empty output files (so downstream tools still find them) and stop.
+    let has_contigs = needletail::parse_fastx_file(&initial_fasta_path)
+        .map(|mut reader| reader.next().is_some())
+        .unwrap_or(false);
+    if !has_contigs {
+        let alternate_assembly_dir =
+            Path::new(args.output_dir.as_str()).join("alternate_assemblies");
+        std::fs::create_dir_all(&alternate_assembly_dir).unwrap();
+        File::create(Path::new(args.output_dir.as_str()).join("assembly_primary.fa")).unwrap();
+        File::create(alternate_assembly_dir.join("assembly_alternate.fa")).unwrap();
+        File::create(alternate_assembly_dir.join("duplicated_contigs.fa")).unwrap();
+        log::warn!("No contigs were assembled; writing empty assembly files.");
+        return;
+    }
+
     let command_params = params::CommandParams {
         ref_files: vec![initial_fasta_path.to_str().unwrap().to_string()],
         individual_contig_q: true,

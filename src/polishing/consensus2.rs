@@ -67,6 +67,7 @@ impl PoaConsensusBuilder {
         let mismatch_score = -2;
         let gap_open = -2;
         let gap_extend = -1;
+        let num_rescued = std::sync::atomic::AtomicUsize::new(0);
 
         let consensuses = Mutex::new(vec![]);
 
@@ -90,6 +91,9 @@ impl PoaConsensusBuilder {
                 let mut orders = order.lock().unwrap();
                 let debug = i % 100 == 0 && false;
                 let start_time_everything = std::time::Instant::now();
+                let window_span = ((i + 1) * self.bp_len + self.window_overlap_len)
+                    .min(self.genome.len())
+                    .saturating_sub(i * self.bp_len);
 
                 assert!(seqs.len() == quals.len());
                 assert!(seqs.len() == orders.len());
@@ -259,6 +263,13 @@ impl PoaConsensusBuilder {
                     if cons.is_empty() && !hpc.seqs.is_empty() {
                         cons = hpc.seqs[0][..hpc.seqs[0].len() - 1].to_vec();
                     }
+                    if !use_abpoa {
+                        if let Some(rescued) = rescue_short_consensus(&cons, &hpc.seqs, &hpc.quals, &seqs, window_span, consensus_max_length, match_score, mismatch_score, gap_open, gap_extend) {
+                            log::debug!("Rescued short (HPC) consensus for {} block {}: {} -> {} bp", self.contig_name, i, cons.len(), rescued.len());
+                            cons = rescued;
+                            num_rescued.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                     if debug {
                         log::debug!("POA consensus time for block {} of contig {} with {} HPC seqs: {:?}",
                         i, self.contig_name, hpc.seqs.len(), start_time.elapsed());
@@ -290,6 +301,13 @@ impl PoaConsensusBuilder {
                     };
                     if cons.is_empty() && !seqs.is_empty() {
                         cons = seqs[0][..seqs[0].len() - 1].to_vec();
+                    }
+                    if !use_abpoa {
+                        if let Some(rescued) = rescue_short_consensus(&cons, &seqs, &quals, &seqs, window_span, consensus_max_length, match_score, mismatch_score, gap_open, gap_extend) {
+                            log::debug!("Rescued short consensus for {} block {}: {} -> {} bp", self.contig_name, i, cons.len(), rescued.len());
+                            cons = rescued;
+                            num_rescued.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                     if debug{
                         log::debug!("POA consensus time for block {} of contig {} with {} seqs: {:?}",
@@ -324,6 +342,10 @@ impl PoaConsensusBuilder {
             });
 
         log::trace!("Consensus building complete for {}", self.contig_name);
+        let num_rescued = num_rescued.into_inner();
+        if num_rescued > 0 {
+            log::debug!("{}: rescued {} short polishing windows", self.contig_name, num_rescued);
+        }
         let mut consensuses = consensuses.into_inner().unwrap();
         consensuses.sort_by_key(|x| x.0);
         let consensuses = consensuses.into_iter().map(|x| x.1).collect::<Vec<_>>();
@@ -902,6 +924,49 @@ pub fn join_circular_ends(
 /// Trims consensus sequence ends based on alignment coverage.
 /// Finds regions where fewer than half of the sequences cover the consensus,
 /// and trims those regions from the ends.
+/// Global spoa can stop short when a partial read ends inside the window: in one case it
+/// dropped a 54 bp segment that 40 of 49 reads carried. If enough reads span the whole window
+/// but the consensus is much shorter than they are, rebuild it semi-globally and return that
+/// consensus if its length is closer to the spanning reads'. Semi-global is not used everywhere
+/// because it introduces other errors. `poa_seqs` are what POA saw (maybe homopolymer-compressed);
+/// `raw_seqs` are the same reads uncompressed, used to decide which reads span the window.
+/// All sequences carry a trailing null byte.
+fn rescue_short_consensus(
+    cons: &[u8],
+    poa_seqs: &Vec<Vec<u8>>,
+    poa_quals: &Vec<Vec<u8>>,
+    raw_seqs: &[Vec<u8>],
+    window_span: usize,
+    consensus_max_length: usize,
+    match_score: i32,
+    mismatch_score: i32,
+    gap_open: i32,
+    gap_extend: i32,
+) -> Option<Vec<u8>> {
+    let mut spanning_lens = raw_seqs
+        .iter()
+        .zip(poa_seqs.iter())
+        .filter(|(raw, _)| raw.len() - 1 >= window_span * 9 / 10)
+        .map(|(_, poa)| poa.len() - 1)
+        .collect::<Vec<_>>();
+    if spanning_lens.len() < RESCUE_MIN_SPANNING_READS {
+        return None;
+    }
+    spanning_lens.sort_unstable();
+    let expected = spanning_lens[spanning_lens.len() / 2] as i64;
+    if cons.len() as f64 >= RESCUE_SHORT_FRAC * expected as f64 {
+        return None;
+    }
+
+    let semiglobal = poa_consensus(poa_seqs, poa_quals, consensus_max_length, 2, match_score, mismatch_score, gap_open, gap_extend);
+    let distance = |c: &[u8]| (c.len() as i64 - expected).abs();
+    if !semiglobal.is_empty() && distance(&semiglobal) < distance(cons) {
+        Some(semiglobal)
+    } else {
+        None
+    }
+}
+
 pub fn trim_consensus_by_coverage(consensus: &[u8], seqs: &[Vec<u8>]) -> Vec<u8> {
     if consensus.is_empty() || seqs.is_empty() {
         return consensus.to_vec();
@@ -1317,6 +1382,45 @@ fn expand_hpc_consensus(hpc_cons: &[u8], hpc: &HpcSeqsCompressed) -> Vec<u8> {
 mod tests {
 
     use super::*;
+
+    /// `n` copies of a fixed pseudo-random sequence of length `len`, with uniform qualities,
+    /// null-terminated as POA expects.
+    fn rescue_reads(n: usize, len: usize) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let mut state = 7u64;
+        let mut seq: Vec<u8> = (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                b"ACGT"[(state >> 62) as usize]
+            })
+            .collect();
+        seq.push(0);
+        let mut qual = vec![b'5'; len];
+        qual.push(0);
+        (vec![seq; n], vec![qual; n])
+    }
+
+    #[test]
+    fn test_rescue_short_consensus() {
+        let window = 600;
+        let (seqs, quals) = rescue_reads(5, window);
+        let full = seqs[0][..window].to_vec();
+        let truncated = full[..300].to_vec();
+        let rescue = |cons: &[u8], seqs: &Vec<Vec<u8>>, quals: &Vec<Vec<u8>>| {
+            rescue_short_consensus(cons, seqs, quals, seqs, window, 1500, 5, -2, -2, -1)
+        };
+
+        // Truncated consensus with enough spanning reads is replaced by the full-length one.
+        assert_eq!(rescue(&truncated, &seqs, &quals), Some(full.clone()));
+        // A consensus that is not short is left alone.
+        assert_eq!(rescue(&full, &seqs, &quals), None);
+        // Too few reads span the window to trust a length estimate.
+        let few = RESCUE_MIN_SPANNING_READS - 1;
+        let (seqs_few, quals_few) = (seqs[..few].to_vec(), quals[..few].to_vec());
+        assert_eq!(rescue(&truncated, &seqs_few, &quals_few), None);
+        // Reads that do not span the window don't count, however many there are.
+        let (partial, partial_quals) = rescue_reads(10, window / 2);
+        assert_eq!(rescue(&truncated, &partial, &partial_quals), None);
+    }
 
     #[test]
     fn test_generate_breakpoints() {
