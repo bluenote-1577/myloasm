@@ -7,6 +7,38 @@ use std::io::Write;
 use std::path::Path;
 
 use skani::params;
+
+/// First depth value (DP1) from a contig name like
+/// `u15589ctg_len-6790_circular-yes_depth-844-844-842_duplicated-no mult=1.00`.
+fn contig_depth(name: &str) -> Option<f32> {
+    name.split("_depth-").nth(1)?.split('-').next()?.parse().ok()
+}
+
+/// True if `larger` is a shallow, near-identical copy that contains the circular contig
+/// `smaller`, which is more than 50x deeper. `smaller_af` is the fraction of `smaller`
+/// aligned to `larger`. `larger` must be at most twice as long, so a small circular element
+/// embedded in a much larger contig (e.g. an IS element in a chromosome) never demotes it.
+fn is_shallow_copy_of_deep_circular(
+    smaller: &str,
+    larger: &str,
+    smaller_len: f32,
+    larger_len: f32,
+    ani: f32,
+    smaller_af: f32,
+) -> bool {
+    if !smaller.contains(CIRC_STRICT_STRING)
+        || larger_len > 2. * smaller_len
+        || ani <= 0.999
+        || smaller_af <= 0.90
+    {
+        return false;
+    }
+    match (contig_depth(smaller), contig_depth(larger)) {
+        (Some(smaller_depth), Some(larger_depth)) => smaller_depth > 50. * larger_depth,
+        _ => false,
+    }
+}
+
 pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli) {
     let initial_fasta_path = Path::new(args.output_dir.as_str()).join(polished_fasta);
     assert!(initial_fasta_path.exists());
@@ -170,9 +202,22 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli) {
                     length_id_query
                 };
 
+                let smaller_af = if smaller.1 == query_id {
+                    ani_result.align_fraction_query
+                } else {
+                    ani_result.align_fraction_ref
+                };
+
+                // A shallow contig that wraps a far deeper circular one (e.g. a partial second
+                // copy around a high-copy plasmid) is the artifact: demote the larger contig.
+                if is_shallow_copy_of_deep_circular(smaller.2, larger.2, smaller.0, larger.0, ani_result.ani, smaller_af) {
+                    alternate_indices.insert(larger.1, (smaller.2, ani_result));
+                    contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
+                    contig_name_to_id_map.insert(ani_result.ref_contig.clone(), ref_id);
+                }
                 // Don't allow circular contigs to be considered alternate if they are not duplicates
                 // If smaller is the query, remove the reference
-                if smaller.0 < args.dereplication_length && !smaller.2.contains(CIRC_STRICT_STRING)
+                else if smaller.0 < args.dereplication_length && !smaller.2.contains(CIRC_STRICT_STRING)
                 {
                     alternate_indices.insert(smaller.1, (larger.2, ani_result));
                     contig_name_to_id_map.insert(ani_result.query_contig.clone(), query_id);
@@ -313,4 +358,43 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli) {
 
     // Remove the polished fasta
     let _ = std::fs::remove_file(initial_fasta_path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // From a Shigella flexneri isolate: a perfect 6.8 kb plasmid at depth 844, and a
+    // depth-5 linear contig that wraps 1.2 copies of it.
+    const DEEP_CIRCULAR: &str = "u15589ctg_len-6790_circular-yes_depth-844-844-842_duplicated-no mult=1.00";
+    const SHALLOW_WRAP: &str = "u32126ctg_len-8252_circular-no_depth-5-5-5_duplicated-possibly mult=1.20";
+
+    #[test]
+    fn test_contig_depth() {
+        assert_eq!(contig_depth(DEEP_CIRCULAR), Some(844.));
+        assert_eq!(contig_depth("u1ctg_len-10_circular-no_depth-5.5-5-5_duplicated-no"), Some(5.5));
+        assert_eq!(contig_depth("u1ctg_len-10_circular-no"), None);
+    }
+
+    #[test]
+    fn test_shallow_copy_of_deep_circular() {
+        let check = |smaller: &str, larger: &str, larger_len: f32, ani: f32, af: f32| {
+            is_shallow_copy_of_deep_circular(smaller, larger, 6790., larger_len, ani, af)
+        };
+        assert!(check(DEEP_CIRCULAR, SHALLOW_WRAP, 8252., 1.0, 0.9882));
+        // Not enough deeper (844 vs 20 is ~42x).
+        let shallow_20 = SHALLOW_WRAP.replace("depth-5-5-5", "depth-20-20-20");
+        assert!(!check(DEEP_CIRCULAR, &shallow_20, 8252., 1.0, 0.9882));
+        // The smaller contig must be strictly circular.
+        let not_circular = DEEP_CIRCULAR.replace("circular-yes", "circular-possibly");
+        assert!(!check(&not_circular, SHALLOW_WRAP, 8252., 1.0, 0.9882));
+        // Identity too low to call it a copy (e.g. a different strain).
+        assert!(!check(DEEP_CIRCULAR, SHALLOW_WRAP, 8252., 0.995, 0.9882));
+        // The deep circular contig must be mostly contained in the larger one.
+        assert!(!check(DEEP_CIRCULAR, SHALLOW_WRAP, 8252., 1.0, 0.80));
+        // A deep circular element embedded in a much larger contig (e.g. an integrated copy in a
+        // 5 Mb chromosome) must never demote that contig.
+        let chromosome = "u2ctg_len-5000000_circular-yes_depth-5-5-5_duplicated-no mult=1.00";
+        assert!(!check(DEEP_CIRCULAR, chromosome, 5_000_000., 1.0, 1.0));
+    }
 }
