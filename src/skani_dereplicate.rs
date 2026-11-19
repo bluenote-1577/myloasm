@@ -39,6 +39,17 @@ fn is_shallow_copy_of_deep_circular(
     }
 }
 
+/// Write the primary/alternate assembly files downstream tools expect, all empty.
+/// Used when no contigs were assembled (or all were filtered out).
+pub fn write_empty_assembly_outputs(args: &Cli) {
+    let output_dir = Path::new(args.output_dir.as_str());
+    let alternate_assembly_dir = output_dir.join("alternate_assemblies");
+    std::fs::create_dir_all(&alternate_assembly_dir).unwrap();
+    File::create(output_dir.join("assembly_primary.fa")).unwrap();
+    File::create(alternate_assembly_dir.join("assembly_alternate.fa")).unwrap();
+    File::create(alternate_assembly_dir.join("duplicated_contigs.fa")).unwrap();
+}
+
 pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli) {
     let initial_fasta_path = Path::new(args.output_dir.as_str()).join(polished_fasta);
     assert!(initial_fasta_path.exists());
@@ -49,13 +60,8 @@ pub fn dereplicate_with_skani(polished_fasta: &str, args: &Cli) {
         .map(|mut reader| reader.next().is_some())
         .unwrap_or(false);
     if !has_contigs {
-        let alternate_assembly_dir =
-            Path::new(args.output_dir.as_str()).join("alternate_assemblies");
-        std::fs::create_dir_all(&alternate_assembly_dir).unwrap();
-        File::create(Path::new(args.output_dir.as_str()).join("assembly_primary.fa")).unwrap();
-        File::create(alternate_assembly_dir.join("assembly_alternate.fa")).unwrap();
-        File::create(alternate_assembly_dir.join("duplicated_contigs.fa")).unwrap();
         log::warn!("No contigs were assembled; writing empty assembly files.");
+        write_empty_assembly_outputs(args);
         return;
     }
 
@@ -396,5 +402,38 @@ mod tests {
         // 5 Mb chromosome) must never demote that contig.
         let chromosome = "u2ctg_len-5000000_circular-yes_depth-5-5-5_duplicated-no mult=1.00";
         assert!(!check(DEEP_CIRCULAR, chromosome, 5_000_000., 1.0, 1.0));
+    }
+
+    #[test]
+    fn test_triangle_return_handles_no_sketches() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let empty_fasta = temp_dir.path().join("empty.fa");
+        std::fs::write(&empty_fasta, "").unwrap();
+        let short_fasta = temp_dir.path().join("short.fa");
+        std::fs::write(&short_fasta, ">short\nACGTACGTACGTACGT\n").unwrap();
+
+        for path in [&empty_fasta, &short_fasta] {
+            let command_params = params::CommandParams {
+                ref_files: vec![path.to_str().unwrap().to_string()],
+                individual_contig_q: true,
+                individual_contig_r: true,
+                min_aligned_frac: 0.15,
+                learned_ani: true,
+                rescue_small: false,
+                mode: params::Mode::Triangle,
+                screen: true,
+                screen_val: 0.9,
+                ..Default::default()
+            };
+            let sketch_params = params::SketchParams {
+                c: 15,
+                k: 15,
+                marker_c: 50,
+                ..Default::default()
+            };
+            // Must return an empty result instead of underflowing (`len() - 1`).
+            let results = skani::triangle::triangle_return(command_params, sketch_params);
+            assert!(results.is_empty());
+        }
     }
 }

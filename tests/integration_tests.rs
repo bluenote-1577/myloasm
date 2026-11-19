@@ -56,6 +56,47 @@ fn test_missing_input() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// A tiny input where no contig survives should exit 0 and write empty output files.
+#[test]
+fn test_empty_assembly_writes_empty_outputs() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let input = temp_dir.path().join("tiny.fa");
+    fs::write(
+        &input,
+        ">r1\nACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGTACGT\n",
+    )?;
+    let output_dir = temp_dir.path().join("output");
+
+    let mut cmd = Command::cargo_bin("myloasm")?;
+    cmd.arg(input.to_str().unwrap())
+        .arg("-o")
+        .arg(output_dir.to_str().unwrap())
+        .arg("-t")
+        .arg("2")
+        .arg("--hifi");
+    let output = cmd.output()?;
+    assert!(output.status.success());
+    // Make sure we exercised the zero-contig path and not some earlier exit.
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(log.contains("No contigs were assembled"), "unexpected log:\n{log}");
+
+    let primary = output_dir.join("assembly_primary.fa");
+    assert!(primary.exists());
+    assert_eq!(fs::metadata(&primary)?.len(), 0);
+
+    let alternate_dir = output_dir.join("alternate_assemblies");
+    for name in ["assembly_alternate.fa", "duplicated_contigs.fa"] {
+        let path = alternate_dir.join(name);
+        assert!(path.exists(), "{} should exist", name);
+        assert_eq!(fs::metadata(&path)?.len(), 0);
+    }
+
+    // The GFA is still written (header only).
+    assert!(output_dir.join("final_contig_graph.gfa").exists());
+
+    Ok(())
+}
+
 #[test]
 fn test_nanopore_basic_run_2kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;

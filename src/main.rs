@@ -222,6 +222,26 @@ fn main() {
         return;
     }
 
+    // No contigs left: write empty outputs and skip mapping, polishing and dereplication.
+    // (An empty polished FASTA can still occur later; skani handles empty input.)
+    let has_contigs = contig_graph
+        .nodes
+        .iter()
+        .any(|(_, node)| unitig::UnitigGraph::unitig_pass_filter(node, &args));
+    if !has_contigs {
+        log::warn!("No contigs were assembled; writing empty output files.");
+        contig_graph.to_gfa(
+            output_dir.join("final_contig_graph.gfa"),
+            true,
+            false,
+            &twin_reads,
+            &args,
+        );
+        skani_dereplicate::write_empty_assembly_outputs(&args);
+        finish_pipeline(&timer, &args, total_start_time);
+        return;
+    }
+
     contig_graph.to_gfa(
         output_dir.join("final_contig_graph.gfa"),
         true,
@@ -269,10 +289,14 @@ fn main() {
     log::info!("Dereplicating polished contigs with skani...");
     skani_dereplicate::dereplicate_with_skani(POLISHED_CONTIGS_NAME, &args);
 
+    finish_pipeline(&timer, &args, total_start_time);
+}
+
+/// Write the final timing file and completion message (normal and empty-assembly paths).
+fn finish_pipeline(timer: &PipelineTimer, args: &cli::Cli, total_start_time: Instant) {
     let etc_dir = Path::new(&args.output_dir).join("misc");
     std::fs::create_dir_all(&etc_dir).expect("Could not create temp directory for misc files");
     timer.write_tsv(&etc_dir.join("timing_steps.tsv"));
-
     log::info!(
         "Assembly completed. Total time elapsed is {:?}",
         total_start_time.elapsed()

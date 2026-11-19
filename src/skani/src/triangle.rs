@@ -191,6 +191,12 @@ pub fn triangle_return(command_params: CommandParams, mut sketch_params: SketchP
     } else {
         screen_val = command_params.screen_val;
     }
+    // No sketches (empty or too-short input): `ref_sketches.len() - 1` below would underflow.
+    if ref_sketches.is_empty() {
+        warn!("No valid sequences found for ANI calculation; skipping.");
+        return FxHashMap::default();
+    }
+
     let anis: Mutex<FxHashMap<usize, FxHashMap<usize, AniEstResult>>> =
         Mutex::new(FxHashMap::default());
 
